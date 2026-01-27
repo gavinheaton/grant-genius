@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -13,11 +13,57 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Search, Pencil } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Plus, Search, Pencil, Archive, ArchiveRestore, Trash2 } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
+
+interface GrantVersion {
+  id: string;
+  version_number: number;
+  is_published: boolean;
+  created_at: string;
+  applications: { count: number }[];
+}
+
+interface Grant {
+  id: string;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  grant_versions: GrantVersion[];
+}
 
 export default function Grants() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
+  const [grantToArchive, setGrantToArchive] = useState<Grant | null>(null);
+  const [grantToDelete, setGrantToDelete] = useState<Grant | null>(null);
 
   const { data: grants, isLoading } = useQuery({
     queryKey: ["admin-grants"],
@@ -30,23 +76,102 @@ export default function Grants() {
             id,
             version_number,
             is_published,
-            created_at
+            created_at,
+            applications:applications(count)
           )
         `)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      return data;
+      return data as Grant[];
     },
   });
 
-  const filteredGrants = grants?.filter(
-    (grant) =>
-      grant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      grant.description?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const toggleArchiveMutation = useMutation({
+    mutationFn: async (grant: Grant) => {
+      const { error } = await supabase
+        .from("grants")
+        .update({ is_active: !grant.is_active })
+        .eq("id", grant.id);
+      if (error) throw error;
+      return grant;
+    },
+    onSuccess: (grant) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-grants"] });
+      toast({
+        title: grant.is_active ? "Grant archived" : "Grant activated",
+        description: grant.is_active
+          ? "The grant is now hidden from researchers."
+          : "The grant is now visible to researchers.",
+      });
+      setGrantToArchive(null);
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to update grant status. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
 
-  const getLatestVersion = (versions: any[]) => {
+  const deleteGrantMutation = useMutation({
+    mutationFn: async (grantId: string) => {
+      const { error } = await supabase
+        .from("grants")
+        .delete()
+        .eq("id", grantId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-grants"] });
+      toast({
+        title: "Grant deleted",
+        description: "The grant has been permanently deleted.",
+      });
+      setGrantToDelete(null);
+    },
+    onError: () => {
+      toast({
+        title: "Cannot delete grant",
+        description: "This grant has existing applications and cannot be deleted. Consider archiving instead.",
+        variant: "destructive",
+      });
+      setGrantToDelete(null);
+    },
+  });
+
+  const hasApplications = (grant: Grant): boolean => {
+    if (!grant.grant_versions || grant.grant_versions.length === 0) return false;
+    return grant.grant_versions.some(
+      (version) => version.applications && version.applications.length > 0 && version.applications[0].count > 0
+    );
+  };
+
+  const getTotalApplications = (grant: Grant): number => {
+    if (!grant.grant_versions || grant.grant_versions.length === 0) return 0;
+    return grant.grant_versions.reduce((total, version) => {
+      if (version.applications && version.applications.length > 0) {
+        return total + version.applications[0].count;
+      }
+      return total;
+    }, 0);
+  };
+
+  const filteredGrants = grants?.filter((grant) => {
+    const matchesSearch =
+      grant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      grant.description?.toLowerCase().includes(searchQuery.toLowerCase());
+
+    const matchesStatus =
+      statusFilter === "all" ||
+      (statusFilter === "active" && grant.is_active) ||
+      (statusFilter === "archived" && !grant.is_active);
+
+    return matchesSearch && matchesStatus;
+  });
+
+  const getLatestVersion = (versions: GrantVersion[]) => {
     if (!versions || versions.length === 0) return null;
     return versions.reduce((latest, current) =>
       current.version_number > (latest?.version_number || 0) ? current : latest
@@ -78,6 +203,19 @@ export default function Grants() {
             className="pl-10"
           />
         </div>
+        <Select
+          value={statusFilter}
+          onValueChange={(value: "all" | "active" | "archived") => setStatusFilter(value)}
+        >
+          <SelectTrigger className="w-[150px]">
+            <SelectValue placeholder="Filter by status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Grants</SelectItem>
+            <SelectItem value="active">Active</SelectItem>
+            <SelectItem value="archived">Archived</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="border rounded-lg">
@@ -88,25 +226,29 @@ export default function Grants() {
               <TableHead>Description</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Latest Version</TableHead>
-              <TableHead className="w-[100px]">Actions</TableHead>
+              <TableHead>Applications</TableHead>
+              <TableHead className="w-[120px]">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-8">
+                <TableCell colSpan={6} className="text-center py-8">
                   Loading grants...
                 </TableCell>
               </TableRow>
             ) : filteredGrants?.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-8">
+                <TableCell colSpan={6} className="text-center py-8">
                   No grants found
                 </TableCell>
               </TableRow>
             ) : (
               filteredGrants?.map((grant) => {
                 const latestVersion = getLatestVersion(grant.grant_versions);
+                const totalApps = getTotalApplications(grant);
+                const canDelete = !hasApplications(grant);
+                
                 return (
                   <TableRow key={grant.id}>
                     <TableCell className="font-medium">{grant.name}</TableCell>
@@ -115,7 +257,7 @@ export default function Grants() {
                     </TableCell>
                     <TableCell>
                       <Badge variant={grant.is_active ? "default" : "secondary"}>
-                        {grant.is_active ? "Active" : "Inactive"}
+                        {grant.is_active ? "Active" : "Archived"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -134,13 +276,67 @@ export default function Grants() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => navigate(`/admin/grants/${grant.id}`)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
+                      <span className="text-muted-foreground">{totalApps}</span>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => navigate(`/admin/grants/${grant.id}`)}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit grant</TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setGrantToArchive(grant)}
+                              >
+                                {grant.is_active ? (
+                                  <Archive className="h-4 w-4" />
+                                ) : (
+                                  <ArchiveRestore className="h-4 w-4" />
+                                )}
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {grant.is_active ? "Archive grant" : "Restore grant"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setGrantToDelete(grant)}
+                                disabled={!canDelete}
+                                className={!canDelete ? "opacity-50 cursor-not-allowed" : ""}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {canDelete
+                                ? "Delete grant"
+                                : "Cannot delete - has applications"}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -149,6 +345,55 @@ export default function Grants() {
           </TableBody>
         </Table>
       </div>
+
+      {/* Archive Confirmation Dialog */}
+      <AlertDialog open={!!grantToArchive} onOpenChange={() => setGrantToArchive(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {grantToArchive?.is_active ? "Archive" : "Restore"} "{grantToArchive?.name}"?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {grantToArchive?.is_active
+                ? "This grant will be hidden from researchers but existing applications will remain accessible."
+                : "This grant will become visible to researchers again."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => grantToArchive && toggleArchiveMutation.mutate(grantToArchive)}
+              disabled={toggleArchiveMutation.isPending}
+            >
+              {grantToArchive?.is_active ? "Archive Grant" : "Restore Grant"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!grantToDelete} onOpenChange={() => setGrantToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete "{grantToDelete?.name}"?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the grant and all its versions.
+              <br />
+              <strong>This action cannot be undone.</strong>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => grantToDelete && deleteGrantMutation.mutate(grantToDelete.id)}
+              disabled={deleteGrantMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete Grant
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
