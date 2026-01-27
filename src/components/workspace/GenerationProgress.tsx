@@ -1,7 +1,7 @@
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw } from "lucide-react";
 
 const RESEARCH_STEPS = [
   "Extracting research context from article",
@@ -22,9 +22,10 @@ interface GenerationProgressProps {
   status: "pending" | "running" | "completed" | "failed" | "stalled";
   errorMessage?: string;
   onCancel?: () => void;
+  onRestart?: () => void;
 }
 
-export function GenerationProgress({ currentStep, totalSteps, status, errorMessage, onCancel }: GenerationProgressProps) {
+export function GenerationProgress({ currentStep, totalSteps, status, errorMessage, onCancel, onRestart }: GenerationProgressProps) {
   const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
     ? RESEARCH_STEPS[currentStep - 1] 
@@ -57,8 +58,21 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
           <Progress value={progressPercent} className="h-2" />
         </div>
 
-        {status === "failed" && errorMessage && (
-          <p className="text-sm text-destructive">{errorMessage}</p>
+        {status === "failed" && (
+          <div className="space-y-3">
+            {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
+            {onRestart && (
+              <>
+                <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Try Again
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Your credit was refunded. You can try again now.
+                </p>
+              </>
+            )}
+          </div>
         )}
 
         {status === "stalled" && (
