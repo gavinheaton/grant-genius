@@ -292,13 +292,17 @@ export default function ApplicationWorkspace() {
 
         {/* Progress Indicator */}
         <div ref={progressRef}>
-          {(isGenerating || activeRun?.status === "failed") && activeRun && (
+          {(isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
             <GenerationProgress
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}
               status={activeRun.status}
               onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
-              onRestart={activeRun.status === "failed" ? () => retryFromFailedStep(activeRun.id) : undefined}
+              onRestart={
+                (activeRun.status === "failed" || activeRun.status === "stalled") 
+                  ? () => retryFromFailedStep(activeRun.id) 
+                  : undefined
+              }
             />
           )}
         </div>
