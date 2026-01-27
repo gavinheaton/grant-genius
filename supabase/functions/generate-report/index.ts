@@ -527,26 +527,28 @@ Use the ANZSIC hierarchy for classification.`;
   }
 }
 
-// Retry wrapper with exponential backoff + OpenAI fallback
+// Retry wrapper with exponential backoff + Gemini fallback
 async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
   
-  if (!LOVABLE_API_KEY) {
-    throw new Error("AI service not configured");
+  if (!OPENAI_API_KEY) {
+    // No OpenAI key - go straight to Gemini
+    console.log("No OpenAI key configured, using Lovable AI (Gemini)");
+    return await callLovableAI(prompt);
   }
 
   let lastError: Error | null = null;
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      return await callLovableAI(LOVABLE_API_KEY, prompt);
+      return await callOpenAI(OPENAI_API_KEY, prompt);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
       // Check if rate limited (429)
       if (errorMessage.includes("429")) {
         const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-        console.log(`Rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
+        console.log(`OpenAI rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
         await new Promise(r => setTimeout(r, delay));
         lastError = error instanceof Error ? error : new Error(errorMessage);
         continue;
@@ -557,53 +559,17 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
     }
   }
   
-  // All Lovable AI retries failed - try OpenAI fallback
-  console.log("Lovable AI retries exhausted, attempting OpenAI fallback");
-  return await callOpenAIFallback(prompt);
+  // All OpenAI retries failed - try Lovable AI (Gemini) fallback
+  console.log("OpenAI retries exhausted, attempting Lovable AI (Gemini) fallback");
+  return await callLovableAI(prompt);
 }
 
-async function callLovableAI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "system",
-          content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
-        },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("AI API error:", response.status, errorText);
-    throw new Error(`AI request failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || "No response generated";
-}
-
-async function callOpenAIFallback(prompt: string): Promise<string> {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
-  
-  if (!OPENAI_API_KEY) {
-    throw new Error("AI service temporarily unavailable. Please try again later.");
-  }
-
-  console.log("Using OpenAI fallback");
-  
+// Primary: OpenAI
+async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -622,6 +588,44 @@ async function callOpenAIFallback(prompt: string): Promise<string> {
     const errorText = await response.text();
     console.error("OpenAI API error:", response.status, errorText);
     throw new Error(`OpenAI request failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "No response generated";
+}
+
+// Fallback: Lovable AI (Gemini)
+async function callLovableAI(prompt: string): Promise<string> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("AI service temporarily unavailable. Please try again later.");
+  }
+
+  console.log("Using Lovable AI (Gemini) fallback");
+  
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        {
+          role: "system",
+          content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
+        },
+        { role: "user", content: prompt }
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("Lovable AI API error:", response.status, errorText);
+    throw new Error(`Lovable AI request failed: ${response.status}`);
   }
 
   const data = await response.json();
