@@ -20,8 +20,10 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText } from "lucide-react";
 import { format } from "date-fns";
+import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
+import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -37,6 +39,10 @@ export default function GrantEdit() {
   const [versionInputs, setVersionInputs] = useState("");
   const [versionRubric, setVersionRubric] = useState("");
   const [versionGuidelines, setVersionGuidelines] = useState("");
+  const [guidelinesPath, setGuidelinesPath] = useState<string | null>(null);
+  const [guidelinesRawText, setGuidelinesRawText] = useState<string | null>(null);
+  const [aiAnalysisStatus, setAiAnalysisStatus] = useState("pending");
+  const [aiSuggestions, setAiSuggestions] = useState<any>(null);
 
   const { data: grant, isLoading } = useQuery({
     queryKey: ["admin-grant", id],
@@ -53,7 +59,11 @@ export default function GrantEdit() {
             created_at,
             guidelines_json,
             required_inputs_json,
-            rubric_json
+            rubric_json,
+            guidelines_source_path,
+            guidelines_raw_text,
+            ai_analysis_status,
+            ai_suggestions_json
           )
         `)
         .eq("id", id)
@@ -83,6 +93,10 @@ export default function GrantEdit() {
     setVersionInputs(JSON.stringify(version.required_inputs_json || [], null, 2));
     setVersionRubric(JSON.stringify(version.rubric_json || {}, null, 2));
     setVersionGuidelines(JSON.stringify(version.guidelines_json || {}, null, 2));
+    setGuidelinesPath(version.guidelines_source_path || null);
+    setGuidelinesRawText(version.guidelines_raw_text || null);
+    setAiAnalysisStatus(version.ai_analysis_status || "pending");
+    setAiSuggestions(version.ai_suggestions_json || null);
   };
 
   const updateGrantMutation = useMutation({
@@ -245,6 +259,10 @@ export default function GrantEdit() {
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="versions">Versions</TabsTrigger>
+          <TabsTrigger value="guidelines">
+            <FileText className="h-4 w-4 mr-1" />
+            Guidelines
+          </TabsTrigger>
           <TabsTrigger value="inputs">Required Inputs</TabsTrigger>
           <TabsTrigger value="rubric">Rubric</TabsTrigger>
         </TabsList>
@@ -369,6 +387,68 @@ export default function GrantEdit() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="guidelines" className="mt-6">
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Upload Guidelines</CardTitle>
+                  <CardDescription>
+                    Upload the grant guidelines PDF to extract required inputs and rubric
+                    {selectedVersion && (
+                      <Badge className="ml-2" variant="outline">
+                        v{selectedVersion.version_number}
+                      </Badge>
+                    )}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {selectedVersionId && id ? (
+                    <GuidelinesUploader
+                      grantId={id}
+                      versionId={selectedVersionId}
+                      versionNumber={selectedVersion?.version_number || 1}
+                      currentPath={guidelinesPath}
+                      onUploadComplete={(path, rawText) => {
+                        setGuidelinesPath(path);
+                        setGuidelinesRawText(rawText);
+                        setAiAnalysisStatus("pending");
+                        queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+                      }}
+                    />
+                  ) : (
+                    <p className="text-muted-foreground text-center py-4">
+                      Select a version first
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div>
+              {selectedVersionId && (
+                <AIAnalysisPanel
+                  versionId={selectedVersionId}
+                  guidelinesText={guidelinesRawText}
+                  analysisStatus={aiAnalysisStatus}
+                  suggestions={aiSuggestions}
+                  onAnalysisComplete={() => {
+                    queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+                  }}
+                  onApplySuggestions={(inputs, rubric) => {
+                    setVersionInputs(JSON.stringify(inputs, null, 2));
+                    setVersionRubric(JSON.stringify(rubric, null, 2));
+                    toast({
+                      title: "Suggestions applied",
+                      description: "Switch to Required Inputs and Rubric tabs to review and save",
+                    });
+                  }}
+                />
+              )}
+            </div>
+          </div>
         </TabsContent>
 
         <TabsContent value="inputs" className="mt-6">
