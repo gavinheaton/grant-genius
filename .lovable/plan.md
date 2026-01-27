@@ -1,128 +1,142 @@
 
-# Add "Email Me When Ready" Feature
+# Add Report Viewing and Download Functionality
 
-## Overview
+## The Problem
 
-Add an "Email me the report when ready" button during report generation. When the report completes, the system will automatically send an email with the generated report (PDF) to the user's registered email address.
+Your generated report contains all the research data in `content_json`, but:
+- No "View Report" button exists to see the content
+- PDF/DOCX files aren't being generated, so download buttons don't appear
+- Users have no way to access their completed report
 
-## Current System Context
+## Solution Overview
 
-Based on my exploration:
-- **Email system**: The project uses Brevo for transactional emails (PRD confirms this). The `email_outbox` and `email_templates` tables exist but have no templates configured yet.
-- **Report completion**: The `createFinalReport()` function in `resume-report-run/index.ts` creates the final report and marks it complete at step 10.
-- **User email access**: Available via `profiles.email` table, linked to the authenticated user.
-- **PDF generation**: Currently placeholder (`pdf_path` is null) - actual PDF generation will need to be implemented separately.
+We'll implement a two-part solution:
 
-## What We'll Build
+1. **Immediate: "View Report" Button** - Let users view their report content in-app
+2. **PDF Generation** - Create downloadable PDF files from the report content
 
-### 1. Frontend: "Email Me When Ready" Button
+## What You'll See
 
-Add a checkbox/button to the `GenerationProgress` component that appears during generation:
+| Feature | Description |
+|---------|-------------|
+| "View Report" button | Opens a modal/page showing the full report content |
+| Report sections | Market segments, TAM/SAM/SOM, competitors, partners, etc. |
+| "Download PDF" button | Generates and downloads a formatted PDF |
 
-| Element | Behavior |
-|---------|----------|
-| Checkbox with mail icon | "Email me the report when ready" |
-| Toggle state persisted | Saved to `report_runs.email_on_complete` |
-| Confirmation when toggled | Toast: "We'll email you when your report is ready" |
-
-### 2. Database: Track Email Preference
-
-Add a column to track if user wants email notification:
-
-```sql
-ALTER TABLE report_runs ADD COLUMN email_on_complete boolean DEFAULT false;
-```
-
-### 3. Backend: Send Email on Completion
-
-When `createFinalReport()` is called:
-1. Check if `email_on_complete = true`
-2. Fetch user's email from `profiles` table
-3. Create entry in `email_outbox` with `template_key = 'REPORT_READY'`
-4. Call Brevo API to send the email with a link to download the report
-
-### 4. Email Template Setup
-
-Register the `REPORT_READY` template in `email_templates`:
-
-| Field | Value |
-|-------|-------|
-| template_key | REPORT_READY |
-| brevo_template_id | (User will configure in Brevo) |
-
-## Architecture Flow
+## Architecture
 
 ```text
-User clicks "Email me when ready"
+User clicks "View Report"
         │
         ▼
-Frontend: UPDATE report_runs SET email_on_complete = true
+Fetch report content_json from database
         │
         ▼
-... Report generation continues through steps 1-10 ...
+Render formatted report in modal/page
         │
         ▼
-Step 10 completes → createFinalReport() runs
+User clicks "Download PDF"
         │
         ▼
-Backend checks: email_on_complete === true?
+Edge function generates PDF (using html-to-pdf service)
         │
-        ├─ No → Done
+        ▼
+PDF stored in storage bucket → URL saved to pdf_path
         │
-        └─ Yes ──┐
-                 ▼
-        Fetch user email from profiles
-                 │
-                 ▼
-        Insert into email_outbox (REPORT_READY)
-                 │
-                 ▼
-        Call Brevo API to send email
-                 │
-                 ▼
-        Email sent with link to view/download report
+        ▼
+Browser downloads the PDF
 ```
 
 ## Files to Create/Modify
 
 | File | Action | Description |
 |------|--------|-------------|
-| `supabase/migrations/xxx.sql` | Create | Add `email_on_complete` column to `report_runs` |
-| `src/components/workspace/GenerationProgress.tsx` | Modify | Add email opt-in checkbox |
-| `src/hooks/useReportGeneration.ts` | Modify | Add function to toggle email preference |
-| `src/pages/ApplicationWorkspace.tsx` | Modify | Pass email toggle handler to progress component |
-| `supabase/functions/resume-report-run/index.ts` | Modify | Send email in `createFinalReport()` when enabled |
-| `supabase/functions/send-report-email/index.ts` | Create | New edge function to handle Brevo email sending |
+| `src/components/workspace/ReportsList.tsx` | Modify | Add "View Report" button for all reports (not just those with files) |
+| `src/components/workspace/ReportViewer.tsx` | Create | Modal/dialog component to display formatted report content |
+| `src/hooks/useReportGeneration.ts` | Modify | Fetch full report content including `content_json` |
+| `supabase/functions/generate-pdf/index.ts` | Create | Edge function to generate PDF from report content |
+| `supabase/migrations/xxx.sql` | Create | Create storage bucket for report files |
 
-## Technical Details
+## Implementation Details
 
-### Email Content
-The email will include:
-- Subject: "Your Grant Genius Report is Ready"
-- Body: Personalized greeting, link to view report in the app, brief summary
-- **Note**: Actual PDF attachment will require PDF generation to be implemented first. For MVP, email will contain a link to view the report in-app.
+### 1. Update ReportsList to Show View Button
 
-### Brevo Integration
-- Uses Brevo Transactional Email API (as per PRD)
-- Template variables: `{user_name}`, `{report_link}`, `{grant_name}`
-- Status tracking via `email_outbox` table
+The current code only shows buttons when `pdf_path` or `docx_path` exist. We'll add a "View Report" button that always appears:
 
-### Security
-- Email only sent to authenticated user's verified email
-- Report link requires authentication to access
-- RLS ensures users can only update their own runs
+```typescript
+// Always show View Report button
+<Button variant="default" size="sm" onClick={() => onViewReport(report.id)}>
+  <Eye className="h-4 w-4 mr-1" />
+  View Report
+</Button>
 
-## Dependencies
+// Only show PDF download when file exists
+{report.pdf_path && (
+  <Button variant="outline" size="sm" onClick={() => onDownload(report.id, "pdf")}>
+    <Download className="h-4 w-4 mr-1" />
+    PDF
+  </Button>
+)}
+```
 
-**Required before full implementation:**
-- Brevo API key needs to be configured as a secret (`BREVO_API_KEY`)
-- Brevo transactional email template needs to be created in Brevo dashboard
+### 2. Create ReportViewer Component
 
-## User Experience
+A dialog/modal that formats and displays the report sections:
 
-1. User starts report generation
-2. During generation, sees checkbox: "☐ Email me when my report is ready"
-3. User checks the box → Toast confirms: "We'll email you when your report is ready"
-4. User can close the browser/navigate away
-5. When report completes, email is sent automatically
-6. Email contains personalized message with link to view the report
+- **Executive Summary** (from research context)
+- **Market Segments** (3+ identified segments)
+- **Competitive Landscape** (existing products/competitors)
+- **TAM/SAM/SOM Analysis** (with tables and calculations)
+- **Australian Economic Impact**
+- **Potential Partners** (ANZSIC-mapped businesses)
+- **Citations & References**
+
+### 3. Fetch Full Report Data
+
+Update the `fetchReports` query to include `content_json`:
+
+```typescript
+const { data, error } = await supabase
+  .from("reports")
+  .select("id, version_number, created_at, pdf_path, docx_path, content_json")
+  .eq("application_id", applicationId)
+  .order("version_number", { ascending: false });
+```
+
+### 4. PDF Generation (Phase 2)
+
+Create an edge function that:
+1. Fetches report content from database
+2. Generates HTML from the content
+3. Uses a PDF service (like PDFShift or html-pdf-edge) to create PDF
+4. Stores PDF in Supabase storage bucket
+5. Updates report record with the file path
+
+### Storage Setup
+
+Create a private bucket for report files:
+
+```sql
+INSERT INTO storage.buckets (id, name, public)
+VALUES ('reports', 'reports', false);
+
+-- RLS: Users can only access their own report files
+CREATE POLICY "Users can access own reports"
+ON storage.objects FOR SELECT
+USING (bucket_id = 'reports' AND auth.uid()::text = (storage.foldername(name))[1]);
+```
+
+## Recommended Phased Approach
+
+**Phase 1 (Immediate):**
+- Add "View Report" button
+- Create ReportViewer component to display content_json
+- Users can view and copy their report content
+
+**Phase 2 (PDF Generation):**
+- Set up storage bucket for report files
+- Create PDF generation edge function
+- Update report with pdf_path after generation
+- Enable actual PDF downloads
+
+This gives you immediate value (users can see their reports) while we build out the PDF functionality.
