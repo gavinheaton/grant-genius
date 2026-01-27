@@ -1,79 +1,60 @@
 
 
-# Enable Coupon Codes in Stripe Checkout
+# Fix Stripe Webhook Signature Verification
 
-## Current State
+## Problem Identified
 
-The `create-checkout` edge function creates a Stripe Checkout session but doesn't enable the promotion code input field. Users can't apply coupon codes during checkout.
+The webhook logs show the exact error:
+
+```
+SubtleCryptoProvider cannot be used in a synchronous context.
+Use `await constructEventAsync(...)` instead of `constructEvent(...)`
+```
+
+The Stripe SDK in Deno environments doesn't support the synchronous `constructEvent()` method. It requires the async version `constructEventAsync()` instead. This is causing all webhook events to fail, which means:
+
+1. No orders are being created in the database
+2. No entitlements are being granted
+3. Users see "No credits" even after successful payment
 
 ## Solution
 
-Add `allow_promotion_codes: true` to the checkout session configuration. This will show a "Add promotion code" field on the Stripe Checkout page where users can enter any coupon codes you've created in your Stripe Dashboard.
+Change the signature verification from `constructEvent()` to `await constructEventAsync()`.
 
 ---
 
-## Changes Required
+## Technical Changes
 
-### File: `supabase/functions/create-checkout/index.ts`
+### File: `supabase/functions/stripe-webhook/index.ts`
 
-**Current (lines 60-77):**
+**Current (line 39):**
 ```typescript
-const session = await stripe.checkout.sessions.create({
-  customer: customerId,
-  customer_email: customerId ? undefined : user.email,
-  line_items: [
-    {
-      price: priceId,
-      quantity: 1,
-    },
-  ],
-  mode: "payment",
-  success_url: successUrl || `${origin}/dashboard?payment=success`,
-  cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
-  metadata: {
-    user_id: user.id,
-    product_key: "REPORT_ONE_OFF",
-  },
-});
+event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
 ```
 
 **Updated:**
 ```typescript
-const session = await stripe.checkout.sessions.create({
-  customer: customerId,
-  customer_email: customerId ? undefined : user.email,
-  line_items: [
-    {
-      price: priceId,
-      quantity: 1,
-    },
-  ],
-  mode: "payment",
-  allow_promotion_codes: true,  // <-- Add this line
-  success_url: successUrl || `${origin}/dashboard?payment=success`,
-  cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
-  metadata: {
-    user_id: user.id,
-    product_key: "REPORT_ONE_OFF",
-  },
-});
+event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret);
 ```
 
 ---
 
-## What This Enables
+## After Fix
 
-Once deployed, the Stripe Checkout page will show an "Add promotion code" link that users can click to enter any coupon codes you've created in your Stripe Dashboard.
-
-The coupon codes you've already set up in Stripe will work automatically - no additional configuration needed on the Stripe side.
+Once deployed, the webhook will:
+1. Successfully verify Stripe signatures
+2. Create order records in the `orders` table
+3. Create entitlement records in the `entitlements` table
+4. The Dashboard will show the correct credit count
 
 ---
 
-## Summary
+## Testing the Fix
 
-| File | Change |
-|------|--------|
-| `supabase/functions/create-checkout/index.ts` | Add `allow_promotion_codes: true` to checkout session |
+After deployment, you may need to:
+1. Go to your Stripe Dashboard → Developers → Webhooks
+2. Find the recent failed webhook events
+3. Click "Resend" on the `checkout.session.completed` event for your test purchase
 
-This is a one-line addition. After deployment, users will see the promotion code field during checkout.
+This will re-trigger the webhook with your existing payment, and the entitlement should be created.
 
