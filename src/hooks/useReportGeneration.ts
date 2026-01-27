@@ -142,6 +142,27 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
   }, [applicationId, toast, checkActiveRun]);
 
+  // Auto-resume from checkpoint when detected
+  const resumeFromCheckpoint = useCallback(async (runId: string) => {
+    try {
+      console.log("Resuming report generation from checkpoint...");
+      const { error } = await supabase.functions.invoke("resume-report-run", {
+        body: { reportRunId: runId },
+      });
+
+      if (error) {
+        console.error("Error resuming from checkpoint:", error);
+        toast({
+          title: "Resume failed",
+          description: "Failed to resume report generation. Please try again.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error("Error resuming from checkpoint:", error);
+    }
+  }, [toast]);
+
   // Poll for updates when generating
   useEffect(() => {
     if (!isGenerating || !applicationId) return;
@@ -153,6 +174,14 @@ export function useReportGeneration(applicationId: string | undefined) {
 
     return () => clearInterval(pollInterval);
   }, [isGenerating, applicationId, checkActiveRun, fetchReports]);
+
+  // Detect checkpoint status and auto-resume
+  useEffect(() => {
+    if (activeRun && activeRun.current_step === 5 && activeRun.status === "pending") {
+      // This is a checkpoint - automatically trigger phase 2
+      resumeFromCheckpoint(activeRun.id);
+    }
+  }, [activeRun, resumeFromCheckpoint]);
 
   // Initial fetch
   useEffect(() => {

@@ -219,18 +219,21 @@ export type Database = {
           entitlement_id: string
           id: string
           report_id: string | null
+          report_run_id: string | null
         }
         Insert: {
           consumed_at?: string
           entitlement_id: string
           id?: string
           report_id?: string | null
+          report_run_id?: string | null
         }
         Update: {
           consumed_at?: string
           entitlement_id?: string
           id?: string
           report_id?: string | null
+          report_run_id?: string | null
         }
         Relationships: [
           {
@@ -245,6 +248,13 @@ export type Database = {
             columns: ["report_id"]
             isOneToOne: false
             referencedRelation: "reports"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "entitlement_consumptions_report_run_id_fkey"
+            columns: ["report_run_id"]
+            isOneToOne: false
+            referencedRelation: "report_runs"
             referencedColumns: ["id"]
           },
         ]
@@ -577,6 +587,8 @@ export type Database = {
       report_runs: {
         Row: {
           application_id: string
+          checkpoint_citations_json: Json | null
+          checkpoint_data_json: Json | null
           completed_at: string | null
           created_at: string
           current_step: number
@@ -588,6 +600,8 @@ export type Database = {
         }
         Insert: {
           application_id: string
+          checkpoint_citations_json?: Json | null
+          checkpoint_data_json?: Json | null
           completed_at?: string | null
           created_at?: string
           current_step?: number
@@ -599,6 +613,8 @@ export type Database = {
         }
         Update: {
           application_id?: string
+          checkpoint_citations_json?: Json | null
+          checkpoint_data_json?: Json | null
           completed_at?: string | null
           created_at?: string
           current_step?: number
@@ -790,6 +806,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      decrement_entitlement: { Args: { ent_id: string }; Returns: undefined }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]

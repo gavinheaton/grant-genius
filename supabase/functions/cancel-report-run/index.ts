@@ -109,6 +109,28 @@ serve(async (req) => {
       .eq("report_run_id", reportRunId)
       .in("status", ["pending", "running"]);
 
+    // Refund the credit: find the consumption linked to this report run
+    const { data: consumption } = await supabaseAdmin
+      .from("entitlement_consumptions")
+      .select("id, entitlement_id")
+      .eq("report_run_id", reportRunId)
+      .maybeSingle();
+
+    if (consumption) {
+      // Decrement used_quantity using the safe function
+      await supabaseAdmin.rpc("decrement_entitlement", { 
+        ent_id: consumption.entitlement_id 
+      });
+      
+      // Delete the consumption record
+      await supabaseAdmin
+        .from("entitlement_consumptions")
+        .delete()
+        .eq("id", consumption.id);
+        
+      console.log(`Credit refunded for cancelled run ${reportRunId}`);
+    }
+
     console.log(`Report run ${reportRunId} cancelled by user ${userId}`);
 
     return new Response(
