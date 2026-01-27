@@ -602,6 +602,7 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Static render mode: disable network waiting and JS for fast, reliable conversion
     const pdfResponse = await fetch("https://api.pdfshift.io/v3/convert/pdf", {
       method: "POST",
       headers: {
@@ -614,16 +615,35 @@ Deno.serve(async (req) => {
         format: template.page_format,
         use_print: true,
         sandbox: true,
+        wait_for_network: false,      // Don't wait for network idle (static HTML)
+        disable_javascript: true,     // No JS needed, prevents hanging connections
+        ignore_long_polling: true,    // Ignore any long-poll requests
+        timeout: 20,                  // Hard stop page loading after 20s
       }),
     });
 
     if (!pdfResponse.ok) {
       const errorText = await pdfResponse.text();
+      // Enhanced logging for debugging
       console.error("PDFShift error:", errorText);
-      return new Response(JSON.stringify({ error: "PDF generation failed" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.error("Debug context:", JSON.stringify({
+        htmlByteLength: htmlContent.length,
+        hasLogo: !!logoUrl,
+        includeCover: template.include_cover_page,
+        includeToc: template.include_toc,
+        format: template.page_format,
+      }));
+      return new Response(
+        JSON.stringify({ 
+          error: "PDF generation failed", 
+          provider: "pdfshift",
+          providerStatus: pdfResponse.status,
+        }), 
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     const pdfBuffer = await pdfResponse.arrayBuffer();
