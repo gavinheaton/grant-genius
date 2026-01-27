@@ -592,6 +592,7 @@ export type Database = {
           completed_at: string | null
           created_at: string
           current_step: number
+          email_on_complete: boolean | null
           id: string
           report_template_version_id: string
           started_at: string | null
@@ -605,6 +606,7 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_step?: number
+          email_on_complete?: boolean | null
           id?: string
           report_template_version_id: string
           started_at?: string | null
@@ -618,6 +620,7 @@ export type Database = {
           completed_at?: string | null
           created_at?: string
           current_step?: number
+          email_on_complete?: boolean | null
           id?: string
           report_template_version_id?: string
           started_at?: string | null
