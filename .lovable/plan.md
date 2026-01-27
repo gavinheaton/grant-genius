@@ -1,202 +1,113 @@
 
 
-# Ultra-Resilient 10-Phase Architecture: 1 Step Per Edge Function
+# Add Restart Button for Failed Report Generation
 
-## Problem
+## Overview
 
-Even with the current Phase 1 running Steps 1-4, timeouts are still occurring. The Firecrawl call alone can take 60 seconds, and each AI call with potential retries can add another 30-60 seconds. Four steps in one invocation is too much.
+When a report generation fails, users currently see a red error message but have no way to retry without refreshing the page. This adds a clear "Try Again" button that allows users to restart the generation process immediately.
 
-## Solution: 10 Phases (1 Step Each)
+## What You'll See
 
-Each edge function invocation runs exactly **1 step**, then checkpoints and exits. The frontend auto-resumes until completion.
+When a report fails, users will now see:
+- The error message explaining what went wrong
+- A prominent "Try Again" button to restart generation
+- The button will consume another credit (since credits are refunded on failure, this is fair)
 
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    NEW 10-PHASE ARCHITECTURE                    │
-├─────────────────────────────────────────────────────────────────┤
-│ Phase 1:  Step 1 (generate-report)     → checkpoint at step 1   │
-│ Phase 2:  Step 2 (resume from 1)       → checkpoint at step 2   │
-│ Phase 3:  Step 3 (resume from 2)       → checkpoint at step 3   │
-│ Phase 4:  Step 4 (resume from 3)       → checkpoint at step 4   │
-│ Phase 5:  Step 5 (resume from 4)       → checkpoint at step 5   │
-│ Phase 6:  Step 6 (resume from 5)       → checkpoint at step 6   │
-│ Phase 7:  Step 7 (resume from 6)       → checkpoint at step 7   │
-│ Phase 8:  Step 8 (resume from 7)       → checkpoint at step 8   │
-│ Phase 9:  Step 9 (resume from 8)       → checkpoint at step 9   │
-│ Phase 10: Step 10 (resume from 9)      → COMPLETE               │
-└─────────────────────────────────────────────────────────────────┘
-```
+## Technical Changes
 
-Each phase: ~30-60 seconds max (plenty of headroom for retries)
+### 1. GenerationProgress Component
+
+Add an `onRestart` prop and display a restart button when status is `failed`:
+
+**New prop:**
+- `onRestart?: () => void` - callback when user clicks restart
+
+**UI Addition:**
+- Show a "Try Again" button with a refresh icon when `status === "failed"`
+- Include helpful text explaining that the user can retry
+
+### 2. ApplicationWorkspace Integration
+
+Pass the restart handler to `GenerationProgress`:
+
+- When `status === "failed"`, pass `onRestart` prop that calls `startGeneration()`
+- This reuses the existing generation flow, ensuring credits are checked before starting
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/generate-report/index.ts` | Run only Step 1, checkpoint immediately after |
-| `supabase/functions/resume-report-run/index.ts` | Accept any step 1-9 as checkpoint, run only the next step |
-| `src/hooks/useReportGeneration.ts` | Detect checkpoints at any step 1-9, trigger auto-resume |
+| `src/components/workspace/GenerationProgress.tsx` | Add `onRestart` prop, show "Try Again" button on failure |
+| `src/pages/ApplicationWorkspace.tsx` | Pass `onRestart` handler when status is `failed` |
 
-## Detailed Implementation
+## UI Preview
 
-### 1. generate-report/index.ts
-
-**Current:** Runs Steps 1-4, checkpoints at step 4
-**Change:** Run Step 1 only, checkpoint at step 1
-
-Remove Steps 2-4 from this function. After Step 1 completes:
-
-```typescript
-// Step 1: Extract context from article
-await executeStep(supabase, reportRunId, 1, async () => {
-  // ... existing Firecrawl + context extraction logic ...
-});
-
-// CHECKPOINT: Save progress after step 1
-await supabase.from("report_runs").update({
-  checkpoint_data_json: reportContent,
-  checkpoint_citations_json: citations,
-  current_step: 1,
-  status: "pending",
-}).eq("id", reportRunId);
-
-console.log(`Checkpoint saved at step 1`);
-return; // resume-report-run will continue from step 2
+```text
+┌─────────────────────────────────────────────────────┐
+│ ⚠️ Generating Report                                │
+├─────────────────────────────────────────────────────┤
+│ Generation failed                              0%   │
+│ ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
+│                                                     │
+│ AI service temporarily unavailable. Please retry.   │
+│                                                     │
+│ [🔄 Try Again]                                      │
+│                                                     │
+│ Your credit was refunded. You can try again now.   │
+└─────────────────────────────────────────────────────┘
 ```
 
-### 2. resume-report-run/index.ts
+## Implementation Details
 
-**Current:** Accepts checkpoints at 4, 5, 8; runs multiple steps per phase
-**Change:** Accept any step 1-9 as checkpoint; run exactly 1 step per invocation
+**GenerationProgress.tsx changes:**
 
-Update checkpoint validation:
 ```typescript
-// Accept any step from 1-9 as valid checkpoint
-const resumeFromStep = reportRun.current_step;
-if (resumeFromStep < 1 || resumeFromStep > 9 || reportRun.status !== "pending") {
-  return new Response(
-    JSON.stringify({ error: "Report run is not at checkpoint" }),
-    ...
-  );
+interface GenerationProgressProps {
+  // ... existing props
+  onRestart?: () => void;  // NEW
 }
+
+// In the component, add after the failed error message:
+{status === "failed" && (
+  <div className="space-y-3">
+    {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
+    {onRestart && (
+      <>
+        <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
+          <RefreshCw className="h-4 w-4" />
+          Try Again
+        </Button>
+        <p className="text-xs text-muted-foreground">
+          Your credit was refunded. You can try again now.
+        </p>
+      </>
+    )}
+  </div>
+)}
 ```
 
-Refactor `processReportPhase` to be step-based:
+**ApplicationWorkspace.tsx changes:**
 
 ```typescript
-async function processReportPhase(..., resumeFromStep: number) {
-  const nextStep = resumeFromStep + 1;
-  
-  // Execute exactly one step based on nextStep
-  switch (nextStep) {
-    case 2:
-      await executeStep(supabase, reportRunId, 2, async () => {
-        // Competitor Research prompt
-        const result = await callAIWithRetry(competitorPrompt, 2);
-        reportContent.competitorResearch = result;
-        return { competitors: result };
-      });
-      break;
-    case 3:
-      await executeStep(supabase, reportRunId, 3, async () => {
-        // Market Segments prompt
-        const result = await callAIWithRetry(marketPrompt, 3);
-        reportContent.marketSegments = result;
-        return { segments: result };
-      });
-      break;
-    case 4:
-      // ... Find Competitors
-      break;
-    case 5:
-      // ... Calculate TAM
-      break;
-    case 6:
-      // ... Calculate SAM
-      break;
-    case 7:
-      // ... Calculate SOM
-      break;
-    case 8:
-      // ... Economic Impact
-      break;
-    case 9:
-      // ... Competitor Table
-      break;
-    case 10:
-      // ... Partner Businesses
-      // After step 10: Create final report, mark complete
-      await createFinalReport(...);
-      return; // No checkpoint needed - we're done
-  }
-  
-  // Checkpoint after each step (except step 10)
-  if (nextStep < 10) {
-    await supabase.from("report_runs").update({
-      checkpoint_data_json: reportContent,
-      checkpoint_citations_json: citations,
-      current_step: nextStep,
-      status: "pending",
-    }).eq("id", reportRunId);
-    console.log(`Checkpoint saved at step ${nextStep}`);
-  }
-}
+<GenerationProgress
+  currentStep={activeRun.current_step}
+  totalSteps={activeRun.total_steps}
+  status={activeRun.status}
+  onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
+  onRestart={activeRun.status === "failed" ? handleGenerateReport : undefined}  // NEW
+/>
 ```
 
-### 3. src/hooks/useReportGeneration.ts
+## Additional Consideration
 
-**Current (line 182):** Only detects checkpoints at steps 5 and 8
+The `GenerationProgress` component should also be shown when `activeRun.status === "failed"`. Currently, the component only renders when `isGenerating` is true, but failed runs set `isGenerating` to false. We need to also check for failed runs in the display condition.
+
+**Fix in ApplicationWorkspace.tsx:**
+
 ```typescript
-if (activeRun.current_step === 5 || activeRun.current_step === 8) {
-  resumeFromCheckpoint(activeRun.id);
-}
+// Show progress for active runs OR recently failed runs
+{(isGenerating || activeRun?.status === "failed") && activeRun && (
+  <GenerationProgress ... />
+)}
 ```
-
-**Change:** Detect checkpoints at any step from 1-9
-```typescript
-// Auto-resume from any checkpoint (steps 1-9)
-if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
-  resumeFromCheckpoint(activeRun.id);
-}
-```
-
-## Step-by-Step Mapping
-
-| Checkpoint | Next Step | Description | Model |
-|------------|-----------|-------------|-------|
-| 0 → 1 | Step 1 | Extract research context (Firecrawl + AI) | gemini-2.5-flash-lite |
-| 1 → 2 | Step 2 | Competitor research | gemini-2.5-flash-lite |
-| 2 → 3 | Step 3 | Market segments | gemini-2.5-flash-lite |
-| 3 → 4 | Step 4 | Find competitors | gemini-3-flash-preview |
-| 4 → 5 | Step 5 | Calculate TAM | gemini-3-flash-preview |
-| 5 → 6 | Step 6 | Calculate SAM | gemini-3-flash-preview |
-| 6 → 7 | Step 7 | Calculate SOM | gemini-3-flash-preview |
-| 7 → 8 | Step 8 | Economic impact | gemini-2.5-flash-lite |
-| 8 → 9 | Step 9 | Competitor table | gemini-2.5-flash-lite |
-| 9 → 10 | Step 10 | Partner businesses → COMPLETE | gemini-2.5-flash-lite |
-
-## Technical Considerations
-
-1. **All step prompts remain identical** - we're just splitting execution, not changing the AI prompts
-
-2. **Checkpoint data accumulates** - each step adds to `reportContent`, preserved across phases
-
-3. **Citations persist** - the citations array is checkpointed and restored each phase
-
-4. **Frontend polling continues** - the 3-second poll interval detects each checkpoint and triggers resume
-
-5. **Model selection stays the same** - complex steps (4-7) use heavier model, simple steps use lighter model
-
-## Expected Outcome
-
-- Each edge function invocation: 30-60 seconds maximum
-- Total generation time: ~5-7 minutes (10 phases with polling gaps)
-- Massive reliability improvement - if any phase times out, all previous work is preserved
-- Self-healing - frontend automatically resumes from any checkpoint
-
-## Migration Notes
-
-- The stalled report run (ce9118b0) at step 4 will work with the new system once deployed
-- No database schema changes required
-- Existing checkpoint data format is compatible
 
