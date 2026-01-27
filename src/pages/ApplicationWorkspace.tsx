@@ -14,11 +14,14 @@ import {
   Download,
   Loader2,
   CheckCircle,
-  Sparkles
+  Sparkles,
+  CreditCard
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useEntitlements } from "@/hooks/useEntitlements";
+import { PurchaseModal } from "@/components/PurchaseModal";
 
 interface ApplicationInputs {
   publicArticleUrl: string;
@@ -48,12 +51,15 @@ export default function ApplicationWorkspace() {
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [application, setApplication] = useState<ApplicationData | null>(null);
+  const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [inputs, setInputs] = useState<ApplicationInputs>({
     publicArticleUrl: "",
     summary: "",
     trl: "",
     ipStatus: "",
   });
+  
+  const { availableReports, hasAvailableReport, isLoading: entitlementsLoading } = useEntitlements();
 
   useEffect(() => {
     const fetchApplication = async () => {
@@ -193,6 +199,17 @@ export default function ApplicationWorkspace() {
           </div>
           
           <div className="flex items-center gap-3">
+            {/* Report Credits Badge */}
+            {!entitlementsLoading && (
+              <Badge 
+                variant={hasAvailableReport ? "outline" : "secondary"}
+                className="cursor-pointer hover:bg-accent"
+                onClick={() => setPurchaseModalOpen(true)}
+              >
+                <CreditCard className="h-3 w-3 mr-1" />
+                {hasAvailableReport ? `${availableReports} credit${availableReports === 1 ? "" : "s"}` : "No credits"}
+              </Badge>
+            )}
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               {isSaving ? (
                 <>
@@ -318,13 +335,28 @@ export default function ApplicationWorkspace() {
                 <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-muted">
                   <Sparkles className="h-8 w-8 text-muted-foreground" />
                 </div>
-                <h3 className="text-lg font-semibold mb-2">Complete your inputs first</h3>
-                <p className="text-muted-foreground max-w-sm mx-auto mb-6">
-                  Fill in the required inputs to generate AI-powered sections for your application.
-                </p>
-                <Button variant="outline" onClick={() => setActiveTab("inputs")}>
-                  Go to Inputs
-                </Button>
+                {hasAvailableReport ? (
+                  <>
+                    <h3 className="text-lg font-semibold mb-2">Complete your inputs first</h3>
+                    <p className="text-muted-foreground max-w-sm mx-auto mb-6">
+                      Fill in the required inputs to generate AI-powered sections for your application.
+                    </p>
+                    <Button variant="outline" onClick={() => setActiveTab("inputs")}>
+                      Go to Inputs
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-lg font-semibold mb-2">Purchase a report credit</h3>
+                    <p className="text-muted-foreground max-w-sm mx-auto mb-6">
+                      You need a report credit to generate AI-powered sections. Your draft is saved and ready.
+                    </p>
+                    <Button onClick={() => setPurchaseModalOpen(true)}>
+                      <CreditCard className="h-4 w-4 mr-2" />
+                      Purchase Report ($99 AUD)
+                    </Button>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
@@ -378,6 +410,9 @@ export default function ApplicationWorkspace() {
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* Purchase Modal */}
+      <PurchaseModal open={purchaseModalOpen} onOpenChange={setPurchaseModalOpen} />
     </div>
   );
 }
