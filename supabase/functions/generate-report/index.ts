@@ -408,41 +408,21 @@ Note: If specific market data cannot be validated, mark as "Data not available -
       return { competitors: existingCompetitorsResult };
     });
 
-    // Step 5: Calculate TAM
-    await executeStep(supabase, reportRunId, 5, async () => {
-      const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
-
-Research: ${summary}
-Market Segments: ${reportContent.marketSegments}
-
-Using data from validated sources (OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
-1. Market size in USD/AUD
-2. Data source and year
-3. Growth rate if available
-4. Key assumptions
-
-IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
-
-      const tamResult = await callAIWithRetry(tamPrompt, 5);
-      reportContent.tam = tamResult;
-      return { tam: tamResult };
-    });
-
-    // CHECKPOINT: Save progress after step 5 and return
-    // This splits processing into phases to avoid edge function timeouts
+    // CHECKPOINT: Save progress BEFORE step 5 to prevent data loss on timeout
+    // Step 5 will be executed by resume-report-run
     await supabase
       .from("report_runs")
       .update({
         checkpoint_data_json: reportContent,
         checkpoint_citations_json: citations,
-        current_step: 5,
-        status: "pending", // Use pending to signal checkpoint - frontend will detect and resume
+        current_step: 4, // Indicate we completed step 4
+        status: "pending", // Signal checkpoint - frontend will detect and resume
       })
       .eq("id", reportRunId);
 
-    console.log(`Checkpoint saved for report run ${reportRunId} at step 5`);
+    console.log(`Checkpoint saved for report run ${reportRunId} at step 4`);
     
-    // Return early - the resume-report-run function will continue from here
+    // Return early - the resume-report-run function will continue from step 5
     return;
 
   } catch (error) {
