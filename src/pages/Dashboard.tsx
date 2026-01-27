@@ -15,7 +15,8 @@ import {
   Loader2,
   CreditCard,
   Sparkles,
-  Trash2
+  Trash2,
+  Shield
 } from "lucide-react";
 import {
   AlertDialog,
@@ -32,6 +33,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlements } from "@/hooks/useEntitlements";
 import { PurchaseModal } from "@/components/PurchaseModal";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 
 type ApplicationStatus = "draft" | "in_progress" | "ready" | "failed";
 
@@ -66,6 +68,7 @@ export default function Dashboard() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
+  const { isAdmin } = useAdminAuth();
 
   // Handle payment success redirect
   useEffect(() => {
@@ -205,6 +208,14 @@ export default function Dashboard() {
           </Link>
           
           <div className="flex items-center gap-4">
+            {isAdmin && (
+              <Button variant="ghost" size="sm" asChild>
+                <Link to="/admin">
+                  <Shield className="h-4 w-4 mr-2" />
+                  <span className="hidden sm:inline">Admin</span>
+                </Link>
+              </Button>
+            )}
             <span className="text-sm text-muted-foreground hidden sm:block">
               {user?.email}
             </span>
