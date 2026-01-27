@@ -1,235 +1,144 @@
 
 
-# Delete and Archive Grants Feature for Admin Console
+# Implement Payment Gate for Application Flow
 
-## Context
+## Problem Identified
 
-Based on my exploration, here's what I found:
+You're right - the payment flow is not connected to the application flow. Currently:
 
-### Current State
-- The `grants` table already has an `is_active` boolean column (used for soft-delete/archiving)
-- The GrantEdit page has a toggle for Active/Inactive status, but it's buried in the Details tab
-- The Grants list page shows Active/Inactive badges but has no quick actions for archiving/deleting
-- **Data exists**: AEA Ignite and ARC Linkage Grant have applications linked to them
+| Step | Current Behavior | Expected Behavior |
+|------|------------------|-------------------|
+| Login | Works via magic link | Same |
+| Create Application | Allowed without payment | **Should check entitlement** |
+| Work on Application | Allowed without payment | Can work on draft |
+| Generate Report | Not implemented | **Requires payment** |
+| Finalize/Download | Not implemented | **Requires paid entitlement** |
 
-### Database Constraints
-- `grant_versions` cascades on delete from `grants` (safe)
-- `applications` references `grant_versions` **without cascade** - this will BLOCK deletion if applications exist
-- This is intentional: we can't delete grants that researchers have used
-
-### Recommended Approach
-
-| Action | Use Case | Implementation |
-|--------|----------|----------------|
-| **Archive** (Soft Delete) | Grant is no longer active but has historical applications | Toggle `is_active` to false |
-| **Delete** (Hard Delete) | Grant was created by mistake, has no applications | DELETE from database (blocked by FK if apps exist) |
+The `useEntitlements` hook exists and works, but it's not used anywhere in the application flow.
 
 ---
 
-## Proposed Changes
+## Recommended Flow (Per Your PRD)
 
-### 1. Update Grants List Page (`src/pages/admin/Grants.tsx`)
-
-Add action buttons in the Actions column:
-- **Archive/Unarchive button** - Toggle `is_active` status
-- **Delete button** - Only enabled for grants with zero applications
-
-Add a confirmation dialog using AlertDialog for destructive actions.
+Based on your PRD's "Payment Gating" requirement, I recommend this flow:
 
 ```text
-Actions column will show:
-┌──────────────────────────────────────┐
-│  [Edit] [Archive/Activate] [Delete]  │
-└──────────────────────────────────────┘
+User Flow:
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Create Application (FREE)                                   │
+│     - Select grant                                              │
+│     - Fill in inputs (summary, URL)                             │
+│     - Draft saved automatically                                 │
+└────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  2. Generate Report (PAID)                                      │
+│     - Check entitlement                                         │
+│     - If no entitlement → Show purchase modal                   │
+│     - After payment → Consume 1 entitlement → Generate report   │
+└────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  3. Download Report (ENTITLED)                                  │
+│     - Already paid → Download PDF/DOCX                          │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Add Status Filter
-
-Add a filter dropdown to show:
-- All grants
-- Active only (default)
-- Archived only
-
-This helps admins find archived grants to reactivate if needed.
-
-### 3. UI Components to Add
-
-**Archive Confirmation Dialog:**
-```text
-┌─────────────────────────────────────┐
-│ Archive "AEA Ignite"?               │
-├─────────────────────────────────────┤
-│ This grant will be hidden from      │
-│ researchers but existing            │
-│ applications will remain accessible.│
-│                                     │
-│ [Cancel]          [Archive Grant]   │
-└─────────────────────────────────────┘
-```
-
-**Delete Confirmation Dialog:**
-```text
-┌─────────────────────────────────────┐
-│ Delete "Test Grant"?                │
-├─────────────────────────────────────┤
-│ This will permanently delete the    │
-│ grant and all its versions.         │
-│                                     │
-│ This action cannot be undone.       │
-│                                     │
-│ [Cancel]          [Delete Grant]    │
-└─────────────────────────────────────┘
-```
-
-**Delete Button Disabled State:**
-When a grant has applications, the delete button shows a tooltip:
-"Cannot delete - this grant has existing applications"
+This matches your PRD: *"Users can fill inputs for free, but generating the final report requires payment."*
 
 ---
 
-## Technical Implementation
+## Implementation Plan
 
-### File: `src/pages/admin/Grants.tsx`
+### 1. Add Entitlement Check to ApplicationWorkspace
 
-**New Imports:**
-- `AlertDialog` components from `@/components/ui/alert-dialog`
-- `DropdownMenu` for filter
-- `Archive`, `Trash2`, `ArchiveRestore` icons from lucide-react
-- `useMutation` from tanstack/react-query
+**File: `src/pages/ApplicationWorkspace.tsx`**
 
-**New State:**
-```typescript
-const [statusFilter, setStatusFilter] = useState<"all" | "active" | "archived">("active");
-const [grantToArchive, setGrantToArchive] = useState<Grant | null>(null);
-const [grantToDelete, setGrantToDelete] = useState<Grant | null>(null);
-```
+Add the `useEntitlements` hook and show entitlement status in the header:
+- Display "X reports remaining" badge
+- Show "Purchase Report" CTA if no entitlements
 
-**New Mutations:**
-```typescript
-// Archive/Unarchive mutation
-const toggleArchiveMutation = useMutation({
-  mutationFn: async (grant: Grant) => {
-    const { error } = await supabase
-      .from("grants")
-      .update({ is_active: !grant.is_active })
-      .eq("id", grant.id);
-    if (error) throw error;
-  },
-  onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ["admin-grants"] });
-    toast({ title: grant.is_active ? "Grant archived" : "Grant activated" });
-  }
-});
+### 2. Create Purchase Modal Component
 
-// Delete mutation
-const deleteGrantMutation = useMutation({
-  mutationFn: async (grantId: string) => {
-    const { error } = await supabase
-      .from("grants")
-      .delete()
-      .eq("id", grantId);
-    if (error) throw error;
-  },
-  onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ["admin-grants"] });
-    toast({ title: "Grant deleted" });
-  },
-  onError: (error) => {
-    // Handle FK constraint error gracefully
-    toast({
-      title: "Cannot delete grant",
-      description: "This grant has existing applications and cannot be deleted. Consider archiving instead.",
-      variant: "destructive"
-    });
-  }
-});
-```
+**New File: `src/components/PurchaseModal.tsx`**
 
-**Query Enhancement:**
-Add application count to the query to determine if delete is possible:
-```typescript
-const { data, error } = await supabase
-  .from("grants")
-  .select(`
-    *,
-    grant_versions (
-      id,
-      version_number,
-      is_published,
-      created_at,
-      applications:applications(count)
-    )
-  `)
-  .order("created_at", { ascending: false });
-```
+A modal that:
+- Shows when user clicks "Generate Report" without entitlement
+- Displays pricing ($99 AUD)
+- Mentions coupon code support (Stripe handles this automatically in Checkout)
+- Has "Purchase Now" button that triggers `usePurchase().purchaseReport()`
 
-**Filter Logic:**
-```typescript
-const filteredGrants = grants?.filter((grant) => {
-  const matchesSearch = 
-    grant.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    grant.description?.toLowerCase().includes(searchQuery.toLowerCase());
-  
-  const matchesStatus = 
-    statusFilter === "all" ||
-    (statusFilter === "active" && grant.is_active) ||
-    (statusFilter === "archived" && !grant.is_active);
-  
-  return matchesSearch && matchesStatus;
-});
-```
+### 3. Gate the "Sections" Tab Generation
 
-**Actions Column Update:**
-```tsx
-<TableCell>
-  <div className="flex items-center gap-1">
-    <Button variant="ghost" size="icon" onClick={() => navigate(`/admin/grants/${grant.id}`)}>
-      <Pencil className="h-4 w-4" />
-    </Button>
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setGrantToArchive(grant)}
-    >
-      {grant.is_active ? (
-        <Archive className="h-4 w-4" />
-      ) : (
-        <ArchiveRestore className="h-4 w-4" />
-      )}
-    </Button>
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setGrantToDelete(grant)}
-      disabled={hasApplications(grant)}
-      title={hasApplications(grant) ? "Cannot delete - has applications" : "Delete grant"}
-    >
-      <Trash2 className="h-4 w-4 text-destructive" />
-    </Button>
-  </div>
-</TableCell>
-```
+**File: `src/pages/ApplicationWorkspace.tsx`**
+
+When user clicks "Generate" button in Sections tab:
+- Check `hasAvailableReport` from `useEntitlements`
+- If false → Open PurchaseModal
+- If true → Proceed with generation (consume entitlement)
+
+### 4. Update Dashboard with Entitlement Status
+
+**File: `src/pages/Dashboard.tsx`**
+
+Show user's entitlement status:
+- "You have X report credits" or "No credits - Purchase to generate reports"
+- Quick "Buy Report" button
+
+### 5. Handle Payment Success Redirect
+
+**File: `src/pages/Dashboard.tsx`**
+
+The checkout already redirects to `/dashboard?payment=success`. Add handling to:
+- Show success toast
+- Refresh entitlements
+- Prompt user to continue with their application
 
 ---
 
-## Security Considerations
+## Technical Changes Summary
 
-- Archive/delete operations go through existing RLS policies (`is_admin()` check)
-- Deletions are blocked at the database level if applications exist (FK constraint)
-- All delete/archive actions are logged via the `log_audit()` trigger
-- No changes to RLS policies needed
+| File | Changes |
+|------|---------|
+| `src/pages/Dashboard.tsx` | Add entitlement display, handle `?payment=success` |
+| `src/pages/ApplicationWorkspace.tsx` | Add entitlement check, integrate purchase modal |
+| `src/components/PurchaseModal.tsx` | **New file** - Purchase CTA with Stripe checkout |
+| `src/hooks/useEntitlements.ts` | No changes needed - already works |
+| `src/hooks/usePurchase.ts` | No changes needed - already works |
+
+---
+
+## Coupon Codes
+
+You mentioned setting up coupon codes in Stripe - good news! Stripe Checkout automatically handles coupon codes. Users will see a "Add promotion code" field on the checkout page if you've enabled it in your Stripe Dashboard under Checkout settings.
+
+No code changes needed for coupon support.
+
+---
+
+## Database: Entitlement Consumption
+
+When a report is generated, we need to mark the entitlement as "used". This requires:
+
+1. **Increment `used_quantity`** on the entitlement
+2. **Create `entitlement_consumptions` record** linking entitlement → report
+
+This will be handled when implementing the actual report generation flow.
 
 ---
 
 ## Summary
 
-| Change | File |
-|--------|------|
-| Add status filter dropdown | `src/pages/admin/Grants.tsx` |
-| Add archive/delete action buttons | `src/pages/admin/Grants.tsx` |
-| Add confirmation dialogs | `src/pages/admin/Grants.tsx` |
-| Add mutations for archive/delete | `src/pages/admin/Grants.tsx` |
-| Update query to include app counts | `src/pages/admin/Grants.tsx` |
+The Stripe integration is working - the issue is that the **entitlement check is not wired into the UI**. This plan adds:
 
-No database migrations needed - the `is_active` column and delete cascade behavior already exist.
+1. Entitlement status display in Dashboard and Workspace
+2. Purchase modal that triggers Stripe Checkout
+3. Gate on "Generate Report" action
+4. Payment success handling
+
+After implementation, users will be able to:
+- Create drafts for free
+- See their report credits
+- Purchase via Stripe (with coupon support)
+- Generate reports only with valid entitlements
 
