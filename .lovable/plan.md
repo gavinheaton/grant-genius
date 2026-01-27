@@ -1,113 +1,160 @@
 
 
-# Add Restart Button for Failed Report Generation
+# Fix: Credit Consumption Timing and Failed Step Resume Logic
 
-## Overview
+## Problems Identified
 
-When a report generation fails, users currently see a red error message but have no way to retry without refreshing the page. This adds a clear "Try Again" button that allows users to restart the generation process immediately.
+### Problem 1: 400 Error on Resume
+When a step fails, the system sets `status: "failed"` but keeps `current_step` at an intermediate value (e.g., step 2). The frontend sees `current_step` in range 1-9 and tries to auto-resume, but `resume-report-run` rejects it with a 400 error because `status !== "pending"`.
 
-## What You'll See
+The issue: The auto-resume detection in the frontend only checks `current_step`, not `status`. It should NOT auto-resume failed runs.
 
-When a report fails, users will now see:
-- The error message explaining what went wrong
-- A prominent "Try Again" button to restart generation
-- The button will consume another credit (since credits are refunded on failure, this is fair)
+### Problem 2: Credits Consumed on Failure
+Credits are consumed at the START of generation (in `generate-report`), not at successful completion. When generation fails, the credit is NOT refunded automatically - refund logic only exists in the `cancel-report-run` function.
 
-## Technical Changes
+## Solution
 
-### 1. GenerationProgress Component
+### 1. Fix Frontend Auto-Resume Logic
 
-Add an `onRestart` prop and display a restart button when status is `failed`:
+The frontend should NOT attempt to auto-resume failed runs. Currently it only checks `current_step`:
 
-**New prop:**
-- `onRestart?: () => void` - callback when user clicks restart
+```typescript
+// CURRENT (broken)
+if (activeRun && activeRun.status === "pending") {
+  if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
+    resumeFromCheckpoint(activeRun.id);
+  }
+}
+```
 
-**UI Addition:**
-- Show a "Try Again" button with a refresh icon when `status === "failed"`
-- Include helpful text explaining that the user can retry
+This is actually already correct - it checks `status === "pending"`. But there's a race condition: the polling might see `pending` status briefly before the failure is detected.
 
-### 2. ApplicationWorkspace Integration
+### 2. Add Credit Refund on Failure
 
-Pass the restart handler to `GenerationProgress`:
+When a step fails in `resume-report-run`, refund the credit automatically (same logic as `cancel-report-run`).
 
-- When `status === "failed"`, pass `onRestart` prop that calls `startGeneration()`
-- This reuses the existing generation flow, ensuring credits are checked before starting
+### 3. Remove Auto-Resume Loops
+
+Add tracking to prevent infinite resume attempts when errors occur.
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/components/workspace/GenerationProgress.tsx` | Add `onRestart` prop, show "Try Again" button on failure |
-| `src/pages/ApplicationWorkspace.tsx` | Pass `onRestart` handler when status is `failed` |
-
-## UI Preview
-
-```text
-┌─────────────────────────────────────────────────────┐
-│ ⚠️ Generating Report                                │
-├─────────────────────────────────────────────────────┤
-│ Generation failed                              0%   │
-│ ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
-│                                                     │
-│ AI service temporarily unavailable. Please retry.   │
-│                                                     │
-│ [🔄 Try Again]                                      │
-│                                                     │
-│ Your credit was refunded. You can try again now.   │
-└─────────────────────────────────────────────────────┘
-```
+| `supabase/functions/resume-report-run/index.ts` | Add credit refund logic when step fails |
+| `src/hooks/useReportGeneration.ts` | Add resume attempt tracking to prevent loops, exclude failed status from auto-resume |
 
 ## Implementation Details
 
-**GenerationProgress.tsx changes:**
+### 1. resume-report-run/index.ts - Add Credit Refund on Failure
+
+In the `processSingleStep` catch block (around line 450), add refund logic:
 
 ```typescript
-interface GenerationProgressProps {
-  // ... existing props
-  onRestart?: () => void;  // NEW
+catch (error) {
+  console.error(`10-PHASE: Step ${nextStep} failed:`, error);
+  const errorMessage = error instanceof Error ? error.message : "Unknown error";
+  
+  // Mark as failed
+  await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
+  
+  // Refund credit on failure
+  await refundCredit(supabase, reportRunId);
 }
-
-// In the component, add after the failed error message:
-{status === "failed" && (
-  <div className="space-y-3">
-    {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
-    {onRestart && (
-      <>
-        <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
-          <RefreshCw className="h-4 w-4" />
-          Try Again
-        </Button>
-        <p className="text-xs text-muted-foreground">
-          Your credit was refunded. You can try again now.
-        </p>
-      </>
-    )}
-  </div>
-)}
 ```
 
-**ApplicationWorkspace.tsx changes:**
+Add a helper function:
 
 ```typescript
-<GenerationProgress
-  currentStep={activeRun.current_step}
-  totalSteps={activeRun.total_steps}
-  status={activeRun.status}
-  onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
-  onRestart={activeRun.status === "failed" ? handleGenerateReport : undefined}  // NEW
-/>
+async function refundCredit(supabase: any, reportRunId: string) {
+  try {
+    const { data: consumption } = await supabase
+      .from("entitlement_consumptions")
+      .select("id, entitlement_id")
+      .eq("report_run_id", reportRunId)
+      .maybeSingle();
+
+    if (consumption) {
+      // Decrement used_quantity
+      await supabase.rpc("decrement_entitlement", { 
+        ent_id: consumption.entitlement_id 
+      });
+      
+      // Delete the consumption record
+      await supabase
+        .from("entitlement_consumptions")
+        .delete()
+        .eq("id", consumption.id);
+        
+      console.log(`Credit refunded for failed run ${reportRunId}`);
+    }
+  } catch (e) {
+    console.error("Failed to refund credit:", e);
+  }
+}
 ```
 
-## Additional Consideration
+### 2. useReportGeneration.ts - Prevent Infinite Resume Loops
 
-The `GenerationProgress` component should also be shown when `activeRun.status === "failed"`. Currently, the component only renders when `isGenerating` is true, but failed runs set `isGenerating` to false. We need to also check for failed runs in the display condition.
-
-**Fix in ApplicationWorkspace.tsx:**
+Add a ref to track which runs we've already attempted to resume, preventing rapid-fire retries:
 
 ```typescript
-// Show progress for active runs OR recently failed runs
-{(isGenerating || activeRun?.status === "failed") && activeRun && (
-  <GenerationProgress ... />
-)}
+const resumeAttemptedRef = useRef<Set<string>>(new Set());
+
+// In the auto-resume effect:
+useEffect(() => {
+  if (activeRun && activeRun.status === "pending") {
+    const attemptKey = `${activeRun.id}-${activeRun.current_step}`;
+    
+    // Only resume if we haven't already attempted this specific checkpoint
+    if (!resumeAttemptedRef.current.has(attemptKey)) {
+      if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
+        resumeAttemptedRef.current.add(attemptKey);
+        resumeFromCheckpoint(activeRun.id);
+      }
+    }
+  }
+  
+  // Clear tracking when run completes or fails
+  if (activeRun && (activeRun.status === "completed" || activeRun.status === "failed")) {
+    resumeAttemptedRef.current.clear();
+  }
+}, [activeRun, resumeFromCheckpoint]);
+```
+
+### 3. Also Add Refund Logic to generate-report Failure Path
+
+In `generate-report/index.ts`, the `processStep1Only` function should also refund credits when Step 1 fails.
+
+## Expected Outcome
+
+After these changes:
+- Failed runs will NOT trigger infinite resume attempts (400 errors eliminated)
+- Credits are automatically refunded when ANY step fails
+- The "Try Again" button will work correctly because it explicitly resets status to "pending"
+- Users see accurate credit balance after failures
+
+## Flow Diagram
+
+```text
+Report Generation Start
+        │
+        ▼
+  Credit Consumed
+        │
+        ▼
+  Step 1 runs ───────► Failure? ──Yes──► Credit Refunded
+        │                                      │
+        ▼                                      ▼
+  Step 2-9 runs ─────► Failure? ──Yes──► Credit Refunded
+        │                                      │
+        ▼                                      ▼
+  Step 10 completes                    Status: "failed"
+        │                              User clicks "Try Again"
+        ▼                                      │
+  Report Created                               ▼
+  Credit stays consumed              Reset to "pending"
+                                     New credit consumed
+                                     Resume from checkpoint
 ```
 
