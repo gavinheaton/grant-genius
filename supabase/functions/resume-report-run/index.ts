@@ -110,15 +110,16 @@ serve(async (req) => {
       );
     }
 
-    // Check if at checkpoint (step 5, pending status)
-    if (reportRun.current_step !== 5 || reportRun.status !== "pending") {
+    // Check if at checkpoint (step 5 or step 8, pending status)
+    const resumeFromStep = reportRun.current_step;
+    if ((resumeFromStep !== 5 && resumeFromStep !== 8) || reportRun.status !== "pending") {
       return new Response(
         JSON.stringify({ error: "Report run is not at checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Mark as running for phase 2
+    // Mark as running for next phase
     await supabaseAdmin
       .from("report_runs")
       .update({ status: "running", started_at: new Date().toISOString() })
@@ -128,8 +129,8 @@ serve(async (req) => {
     const inputs = Array.isArray(appData) ? appData[0]?.inputs_json : appData?.inputs_json;
     const grantVersionId = Array.isArray(appData) ? appData[0]?.grant_version_id : appData?.grant_version_id;
 
-    // Start async processing for phase 2
-    processReportPhase2(
+    // Start async processing for the appropriate phase
+    processReportPhase(
       reportRunId,
       reportRun.application_id,
       grantVersionId,
@@ -137,13 +138,14 @@ serve(async (req) => {
       userId,
       inputs || {},
       reportRun.checkpoint_data_json || {},
-      reportRun.checkpoint_citations_json || []
-    ).catch((e) => console.error("Phase 2 processing error:", e));
+      reportRun.checkpoint_citations_json || [],
+      resumeFromStep // Pass which step we're resuming from
+    ).catch((e) => console.error(`Phase processing error (from step ${resumeFromStep}):`, e));
 
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: "Report generation resumed from checkpoint" 
+        message: `Report generation resumed from step ${resumeFromStep}` 
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -156,7 +158,10 @@ serve(async (req) => {
   }
 });
 
-async function processReportPhase2(
+// Circuit-breaker flag - scoped to function execution
+let useGeminiFallback = false;
+
+async function processReportPhase(
   reportRunId: string,
   applicationId: string,
   grantVersionId: string,
@@ -164,8 +169,12 @@ async function processReportPhase2(
   userId: string,
   inputs: Record<string, unknown>,
   checkpointData: Record<string, unknown>,
-  checkpointCitations: Array<{ url: string; title: string; accessed: string }>
+  checkpointCitations: Array<{ url: string; title: string; accessed: string }>,
+  resumeFromStep: number
 ) {
+  // Reset circuit breaker for each phase execution
+  useGeminiFallback = false;
+  
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -176,9 +185,12 @@ async function processReportPhase2(
   const citations = [...checkpointCitations];
 
   try {
-    // Step 6: Calculate SAM
-    await executeStep(supabase, reportRunId, 6, async () => {
-      const samPrompt = `Based on the TAM analysis:
+    if (resumeFromStep === 5) {
+      // Phase 2: Steps 6-8, then checkpoint
+      
+      // Step 6: Calculate SAM
+      await executeStep(supabase, reportRunId, 6, async () => {
+        const samPrompt = `Based on the TAM analysis:
 ${reportContent.tam}
 
 Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
@@ -189,14 +201,14 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-      const samResult = await callAIWithRetry(samPrompt);
-      reportContent.sam = samResult;
-      return { sam: samResult };
-    });
+        const samResult = await callAIWithRetry(samPrompt);
+        reportContent.sam = samResult;
+        return { sam: samResult };
+      });
 
-    // Step 7: Calculate SOM
-    await executeStep(supabase, reportRunId, 7, async () => {
-      const somPrompt = `Based on the SAM analysis:
+      // Step 7: Calculate SOM
+      await executeStep(supabase, reportRunId, 7, async () => {
+        const somPrompt = `Based on the SAM analysis:
 ${reportContent.sam}
 
 Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
@@ -208,14 +220,14 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-      const somResult = await callAIWithRetry(somPrompt);
-      reportContent.som = somResult;
-      return { som: somResult };
-    });
+        const somResult = await callAIWithRetry(somPrompt);
+        reportContent.som = somResult;
+        return { som: somResult };
+      });
 
-    // Step 8: Australian Economic Impact
-    await executeStep(supabase, reportRunId, 8, async () => {
-      const impactPrompt = `Based on the SOM projections:
+      // Step 8: Australian Economic Impact
+      await executeStep(supabase, reportRunId, 8, async () => {
+        const impactPrompt = `Based on the SOM projections:
 ${reportContent.som}
 
 Calculate the likely economic impact to the Australian economy from commercializing this research:
@@ -229,11 +241,28 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-      const impactResult = await callAIWithRetry(impactPrompt);
-      reportContent.economicImpact = impactResult;
-      return { impact: impactResult };
-    });
+        const impactResult = await callAIWithRetry(impactPrompt);
+        reportContent.economicImpact = impactResult;
+        return { impact: impactResult };
+      });
 
+      // CHECKPOINT: Save progress after step 8 and return
+      await supabase
+        .from("report_runs")
+        .update({
+          checkpoint_data_json: reportContent,
+          checkpoint_citations_json: citations,
+          current_step: 8,
+          status: "pending", // Signal checkpoint - frontend will detect and resume
+        })
+        .eq("id", reportRunId);
+
+      console.log(`Checkpoint saved for report run ${reportRunId} at step 8`);
+      return; // Frontend will trigger Phase 3
+    }
+
+    // Phase 3: Steps 9-10 (resumeFromStep === 8)
+    
     // Step 9: Competitor Comparison Table
     await executeStep(supabase, reportRunId, 9, async () => {
       const tablePrompt = `Create a competitor comparison table based on:
@@ -324,7 +353,7 @@ Use the ANZSIC hierarchy for classification.`;
     console.log(`Report run ${reportRunId} completed successfully`);
 
   } catch (error) {
-    console.error("Report generation error (phase 2):", error);
+    console.error(`Report generation error (phase from step ${resumeFromStep}):`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
   }
@@ -350,17 +379,20 @@ async function executeStep(
   }
 }
 
-// Retry wrapper with exponential backoff + Gemini fallback
+// Retry wrapper with exponential backoff + Gemini fallback + circuit breaker
 async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
   const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
   
-  if (!OPENAI_API_KEY) {
-    console.log("No OpenAI key configured, using Lovable AI (Gemini)");
+  // Circuit breaker tripped OR no OpenAI key - use Gemini directly
+  if (useGeminiFallback || !OPENAI_API_KEY) {
+    if (useGeminiFallback) {
+      console.log("Circuit breaker active - using Gemini directly");
+    } else {
+      console.log("No OpenAI key configured, using Lovable AI (Gemini)");
+    }
     return await callLovableAI(prompt);
   }
 
-  let lastError: Error | null = null;
-  
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await callOpenAI(OPENAI_API_KEY, prompt);
@@ -371,7 +403,6 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
         const delay = Math.pow(2, attempt) * 1000;
         console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
         await new Promise(r => setTimeout(r, delay));
-        lastError = error instanceof Error ? error : new Error(errorMessage);
         continue;
       }
       
@@ -379,7 +410,9 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
     }
   }
   
-  console.log("OpenAI retries exhausted, attempting Lovable AI (Gemini) fallback");
+  // All retries exhausted - trip the circuit breaker for remaining calls in this run
+  console.log("OpenAI rate limited - circuit breaker tripped, using Gemini for remaining calls");
+  useGeminiFallback = true;
   return await callLovableAI(prompt);
 }
 

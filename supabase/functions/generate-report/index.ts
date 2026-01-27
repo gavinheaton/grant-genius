@@ -241,6 +241,9 @@ serve(async (req) => {
   }
 });
 
+// Circuit-breaker flag - scoped to function execution
+let useGeminiFallback = false;
+
 async function processReportGeneration(
   reportRunId: string,
   applicationId: string,
@@ -249,6 +252,9 @@ async function processReportGeneration(
   userId: string,
   inputs: Record<string, unknown>
 ) {
+  // Reset circuit breaker for each report generation
+  useGeminiFallback = false;
+  
   const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 
   // Create admin client for writes
@@ -452,18 +458,20 @@ async function executeStep(
   }
 }
 
-// Retry wrapper with exponential backoff + Gemini fallback
+// Retry wrapper with exponential backoff + Gemini fallback + circuit breaker
 async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
   const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
   
-  if (!OPENAI_API_KEY) {
-    // No OpenAI key - go straight to Gemini
-    console.log("No OpenAI key configured, using Lovable AI (Gemini)");
+  // Circuit breaker tripped OR no OpenAI key - use Gemini directly
+  if (useGeminiFallback || !OPENAI_API_KEY) {
+    if (useGeminiFallback) {
+      console.log("Circuit breaker active - using Gemini directly");
+    } else {
+      console.log("No OpenAI key configured, using Lovable AI (Gemini)");
+    }
     return await callLovableAI(prompt);
   }
 
-  let lastError: Error | null = null;
-  
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await callOpenAI(OPENAI_API_KEY, prompt);
@@ -475,7 +483,6 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
         const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
         console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
         await new Promise(r => setTimeout(r, delay));
-        lastError = error instanceof Error ? error : new Error(errorMessage);
         continue;
       }
       
@@ -484,8 +491,9 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
     }
   }
   
-  // All OpenAI retries failed - try Lovable AI (Gemini) fallback
-  console.log("OpenAI retries exhausted, attempting Lovable AI (Gemini) fallback");
+  // All retries exhausted - trip the circuit breaker for remaining calls in this run
+  console.log("OpenAI rate limited - circuit breaker tripped, using Gemini for remaining calls");
+  useGeminiFallback = true;
   return await callLovableAI(prompt);
 }
 
