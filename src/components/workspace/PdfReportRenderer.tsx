@@ -8,18 +8,53 @@ interface ReportSection {
   content: string;
 }
 
+interface MarketSegment {
+  name: string;
+  description?: string;
+}
+
+interface Competitor {
+  name: string;
+  type?: string;
+  description?: string;
+}
+
+interface MarketSize {
+  value?: string;
+  methodology?: string;
+}
+
+interface EconomicImpact {
+  summary?: string;
+  [key: string]: any;
+}
+
+interface Partner {
+  name: string;
+  industry?: string;
+  reason?: string;
+}
+
+interface Citation {
+  title?: string;
+  url?: string;
+  source?: string;
+}
+
 interface ContentJson {
-  market_segments?: string;
-  competitive_landscape?: string;
-  tam_sam_som?: string;
-  economic_impact?: string;
-  potential_partners?: string;
-  industry_stakeholders?: string;
-  ip_landscape?: string;
-  regulatory_environment?: string;
-  success_metrics?: string;
-  executive_summary?: string;
-  [key: string]: string | undefined;
+  researchContext?: string;
+  marketSegments?: string | MarketSegment[];
+  competitorResearch?: string;
+  existingCompetitors?: string | Competitor[];
+  competitorTable?: string;
+  tam?: string | MarketSize;
+  sam?: string | MarketSize;
+  som?: string | MarketSize;
+  economicImpact?: string | EconomicImpact;
+  partners?: string | Partner[];
+  partnerBusinesses?: string;
+  citations?: string | Citation[];
+  [key: string]: any;
 }
 
 interface PdfReportRendererProps {
@@ -33,38 +68,77 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
     const content = report.content_json as ContentJson;
     const generatedDate = format(new Date(report.created_at), "MMMM d, yyyy");
 
-    // Build sections array from content
+    // Build sections array from content using correct field names
     const sections: ReportSection[] = [];
     
-    if (content.executive_summary) {
-      sections.push({ title: "Executive Summary", content: content.executive_summary });
+    // Research Context / Executive Summary
+    if (content.researchContext) {
+      sections.push({ title: "Research Context", content: String(content.researchContext) });
     }
-    if (content.market_segments) {
-      sections.push({ title: "Market Segments", content: content.market_segments });
+
+    // Market Segments
+    if (content.marketSegments) {
+      const marketContent = Array.isArray(content.marketSegments)
+        ? content.marketSegments.map((s: MarketSegment) => `**${s.name}**\n${s.description || ''}`).join('\n\n')
+        : String(content.marketSegments);
+      sections.push({ title: "Market Segments", content: marketContent });
     }
-    if (content.competitive_landscape) {
-      sections.push({ title: "Competitive Landscape", content: content.competitive_landscape });
+
+    // Competitive Landscape
+    const competitors = content.existingCompetitors || content.competitorResearch;
+    if (competitors) {
+      const compContent = Array.isArray(competitors)
+        ? (competitors as Competitor[]).map((c: Competitor) => `**${c.name}**${c.type ? ` (${c.type})` : ''}\n${c.description || ''}`).join('\n\n')
+        : String(competitors);
+      sections.push({ title: "Competitive Landscape", content: compContent });
     }
-    if (content.tam_sam_som) {
-      sections.push({ title: "TAM/SAM/SOM Analysis", content: content.tam_sam_som });
+
+    // Competitor Table (if separate)
+    if (content.competitorTable) {
+      sections.push({ title: "Competitor Comparison", content: String(content.competitorTable) });
     }
-    if (content.economic_impact) {
-      sections.push({ title: "Economic Impact", content: content.economic_impact });
+
+    // TAM/SAM/SOM - Combined into Market Size Analysis
+    if (content.tam || content.sam || content.som) {
+      let marketSizeContent = '';
+      if (content.tam) {
+        const tamValue = typeof content.tam === 'string' ? content.tam : (content.tam as MarketSize).value || 'N/A';
+        marketSizeContent += `**Total Addressable Market (TAM)**\n${tamValue}\n\n`;
+      }
+      if (content.sam) {
+        const samValue = typeof content.sam === 'string' ? content.sam : (content.sam as MarketSize).value || 'N/A';
+        marketSizeContent += `**Serviceable Addressable Market (SAM)**\n${samValue}\n\n`;
+      }
+      if (content.som) {
+        const somValue = typeof content.som === 'string' ? content.som : (content.som as MarketSize).value || 'N/A';
+        marketSizeContent += `**Serviceable Obtainable Market (SOM)**\n${somValue}`;
+      }
+      sections.push({ title: "Market Size Analysis", content: marketSizeContent });
     }
-    if (content.potential_partners) {
-      sections.push({ title: "Potential Partners", content: content.potential_partners });
+
+    // Economic Impact
+    if (content.economicImpact) {
+      const impactContent = typeof content.economicImpact === 'string'
+        ? content.economicImpact
+        : (content.economicImpact as EconomicImpact).summary || JSON.stringify(content.economicImpact, null, 2);
+      sections.push({ title: "Economic Impact", content: impactContent });
     }
-    if (content.industry_stakeholders) {
-      sections.push({ title: "Industry Stakeholders", content: content.industry_stakeholders });
+
+    // Partners
+    const partners = content.partners || content.partnerBusinesses;
+    if (partners) {
+      const partnerContent = Array.isArray(partners)
+        ? (partners as Partner[]).map((p: Partner) => `**${p.name}**${p.industry ? ` - ${p.industry}` : ''}\n${p.reason || ''}`).join('\n\n')
+        : String(partners);
+      sections.push({ title: "Potential Partners", content: partnerContent });
     }
-    if (content.ip_landscape) {
-      sections.push({ title: "IP Landscape", content: content.ip_landscape });
-    }
-    if (content.regulatory_environment) {
-      sections.push({ title: "Regulatory Environment", content: content.regulatory_environment });
-    }
-    if (content.success_metrics) {
-      sections.push({ title: "Success Metrics", content: content.success_metrics });
+
+    // Citations / References
+    if (content.citations) {
+      const citationsContent = Array.isArray(content.citations)
+        ? (content.citations as Citation[]).map((c: Citation, i: number) => `[${i + 1}] ${c.title || 'Untitled'}. ${c.url || c.source || ''}`).join('\n')
+        : String(content.citations);
+      sections.push({ title: "References", content: citationsContent });
     }
 
     const headingSizes = template.heading_sizes_json;
@@ -76,7 +150,7 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
           position: "absolute",
           left: "-9999px",
           top: 0,
-          width: "800px", // Fixed width for consistent rendering
+          width: "800px",
           backgroundColor: "#ffffff",
           fontFamily: template.font_family || "Arial, sans-serif",
           fontSize: `${headingSizes.body}px`,
@@ -275,14 +349,20 @@ function formatContent(content: string): string {
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     // Italic text
     .replace(/\*(.*?)\*/g, "<em>$1</em>")
-    // Headers (### Header)
-    .replace(/^### (.*?)$/gm, '<h4 style="font-weight: 600; margin: 20px 0 10px;">$1</h4>')
-    .replace(/^## (.*?)$/gm, '<h3 style="font-weight: 600; margin: 25px 0 15px; font-size: 1.1em;">$1</h3>')
+    // H3 headers
+    .replace(/^### (.*?)$/gm, '<h4 style="font-weight: 600; margin: 24px 0 12px; font-size: 1.1em;">$1</h4>')
+    // H2 headers
+    .replace(/^## (.*?)$/gm, '<h3 style="font-weight: 600; margin: 28px 0 14px; font-size: 1.2em;">$1</h3>')
     // Bullet points
-    .replace(/^- (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 8px;">$1</li>')
+    .replace(/^- (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 8px; list-style-type: disc;">$1</li>')
     // Numbered lists
-    .replace(/^\d+\. (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 8px;">$1</li>')
+    .replace(/^\d+\. (.*?)$/gm, '<li style="margin-left: 20px; margin-bottom: 8px; list-style-type: decimal;">$1</li>')
+    // Links [text](url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" style="color: #2563eb; text-decoration: underline;">$1</a>')
+    // Horizontal rules
+    .replace(/^---$/gm, '<hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;" />')
+    // Paragraphs
+    .replace(/\n\n/g, '</p><p style="margin-bottom: 16px;">')
     // Line breaks
-    .replace(/\n\n/g, "</p><p style='margin-bottom: 16px;'>")
     .replace(/\n/g, "<br />");
 }

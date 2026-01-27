@@ -39,8 +39,8 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
     setGeneratingPdf(report.id);
     setRenderingReport(report);
 
-    // Wait for the component to render
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for the component to render completely
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     try {
       if (!pdfRenderRef.current) {
