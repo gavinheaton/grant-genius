@@ -1,19 +1,14 @@
 
 
-# Fix CORS Error for Stripe Checkout
+# Enable Coupon Codes in Stripe Checkout
 
-## Problem
+## Current State
 
-The Supabase JavaScript client automatically sends an `x-supabase-client-platform` header with every request. The `create-checkout` edge function's CORS configuration doesn't include this header in the allowed list, causing the browser to block the request during the preflight check.
-
-**Error:**
-```
-Request header field x-supabase-client-platform is not allowed by Access-Control-Allow-Headers in preflight response
-```
+The `create-checkout` edge function creates a Stripe Checkout session but doesn't enable the promotion code input field. Users can't apply coupon codes during checkout.
 
 ## Solution
 
-Update the `corsHeaders` in the `create-checkout` edge function to include the `x-supabase-client-platform` header.
+Add `allow_promotion_codes: true` to the checkout session configuration. This will show a "Add promotion code" field on the Stripe Checkout page where users can enter any coupon codes you've created in your Stripe Dashboard.
 
 ---
 
@@ -21,29 +16,56 @@ Update the `corsHeaders` in the `create-checkout` edge function to include the `
 
 ### File: `supabase/functions/create-checkout/index.ts`
 
-**Current (line 5-8):**
+**Current (lines 60-77):**
 ```typescript
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+const session = await stripe.checkout.sessions.create({
+  customer: customerId,
+  customer_email: customerId ? undefined : user.email,
+  line_items: [
+    {
+      price: priceId,
+      quantity: 1,
+    },
+  ],
+  mode: "payment",
+  success_url: successUrl || `${origin}/dashboard?payment=success`,
+  cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
+  metadata: {
+    user_id: user.id,
+    product_key: "REPORT_ONE_OFF",
+  },
+});
 ```
 
 **Updated:**
 ```typescript
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
-};
+const session = await stripe.checkout.sessions.create({
+  customer: customerId,
+  customer_email: customerId ? undefined : user.email,
+  line_items: [
+    {
+      price: priceId,
+      quantity: 1,
+    },
+  ],
+  mode: "payment",
+  allow_promotion_codes: true,  // <-- Add this line
+  success_url: successUrl || `${origin}/dashboard?payment=success`,
+  cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
+  metadata: {
+    user_id: user.id,
+    product_key: "REPORT_ONE_OFF",
+  },
+});
 ```
 
 ---
 
-## Why This Happens
+## What This Enables
 
-The Supabase JS client (v2.93.1 in this project) automatically includes the `x-supabase-client-platform` header to identify the client platform (e.g., "js-browser"). This is a relatively recent addition to the client library.
+Once deployed, the Stripe Checkout page will show an "Add promotion code" link that users can click to enter any coupon codes you've created in your Stripe Dashboard.
 
-When the browser makes a preflight `OPTIONS` request, it checks if the server allows all the headers the client wants to send. Since `x-supabase-client-platform` wasn't in the allowed list, the browser blocked the actual request.
+The coupon codes you've already set up in Stripe will work automatically - no additional configuration needed on the Stripe side.
 
 ---
 
@@ -51,7 +73,7 @@ When the browser makes a preflight `OPTIONS` request, it checks if the server al
 
 | File | Change |
 |------|--------|
-| `supabase/functions/create-checkout/index.ts` | Add `x-supabase-client-platform` to allowed CORS headers |
+| `supabase/functions/create-checkout/index.ts` | Add `allow_promotion_codes: true` to checkout session |
 
-This is a one-line fix. After deployment, the checkout flow will work correctly from any origin including your custom domain `grantgenius.disruptorsco.com`.
+This is a one-line addition. After deployment, users will see the promotion code field during checkout.
 
