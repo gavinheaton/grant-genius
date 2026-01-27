@@ -6,6 +6,7 @@ import {
   ScrollText,
   LayoutDashboard,
   LogOut,
+  Printer,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -38,6 +39,10 @@ const mainItems = [
 const emailItems = [
   { title: "Templates", url: "/admin/emails", icon: Mail },
   { title: "Email Logs", url: "/admin/emails/logs", icon: ScrollText },
+];
+
+const reportItems = [
+  { title: "PDF Templates", url: "/admin/pdf-templates", icon: Printer },
 ];
 
 const systemItems = [
@@ -112,6 +117,28 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
           <SidebarGroupContent>
             <SidebarMenu>
               {emailItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton asChild isActive={isActive(item.url)}>
+                    <NavLink
+                      to={item.url}
+                      className="flex items-center gap-2"
+                      activeClassName="bg-accent text-accent-foreground"
+                    >
+                      <item.icon className="h-4 w-4" />
+                      {!collapsed && <span>{item.title}</span>}
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Reports</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {reportItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)}>
                     <NavLink

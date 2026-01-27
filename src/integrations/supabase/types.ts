@@ -474,6 +474,72 @@ export type Database = {
           },
         ]
       }
+      pdf_templates: {
+        Row: {
+          created_at: string
+          disclaimer_text: string | null
+          font_family: string
+          footer_text: string | null
+          header_text: string | null
+          heading_sizes_json: Json
+          id: string
+          include_cover_page: boolean
+          include_toc: boolean
+          is_default: boolean
+          logo_path: string | null
+          margins_json: Json
+          name: string
+          page_format: string
+          primary_color: string
+          secondary_color: string
+          section_page_breaks: boolean
+          updated_at: string
+          watermark_text: string | null
+        }
+        Insert: {
+          created_at?: string
+          disclaimer_text?: string | null
+          font_family?: string
+          footer_text?: string | null
+          header_text?: string | null
+          heading_sizes_json?: Json
+          id?: string
+          include_cover_page?: boolean
+          include_toc?: boolean
+          is_default?: boolean
+          logo_path?: string | null
+          margins_json?: Json
+          name?: string
+          page_format?: string
+          primary_color?: string
+          secondary_color?: string
+          section_page_breaks?: boolean
+          updated_at?: string
+          watermark_text?: string | null
+        }
+        Update: {
+          created_at?: string
+          disclaimer_text?: string | null
+          font_family?: string
+          footer_text?: string | null
+          header_text?: string | null
+          heading_sizes_json?: Json
+          id?: string
+          include_cover_page?: boolean
+          include_toc?: boolean
+          is_default?: boolean
+          logo_path?: string | null
+          margins_json?: Json
+          name?: string
+          page_format?: string
+          primary_color?: string
+          secondary_color?: string
+          section_page_breaks?: boolean
+          updated_at?: string
+          watermark_text?: string | null
+        }
+        Relationships: []
+      }
       products: {
         Row: {
           created_at: string
