@@ -207,10 +207,11 @@ serve(async (req) => {
       .update({ used_quantity: availableEntitlement.used_quantity + 1 })
       .eq("id", availableEntitlement.id);
 
-    // Create entitlement consumption record
+    // Create entitlement consumption record - linked to report run for refund tracking
     await supabaseAdmin.from("entitlement_consumptions").insert({
       entitlement_id: availableEntitlement.id,
       report_id: null, // Will be updated when report is created
+      report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
     // Start async processing - this runs after response is sent
@@ -406,157 +407,30 @@ IMPORTANT: Only use numbers from validated sources. If you cannot find validated
       return { tam: tamResult };
     });
 
-    // Step 6: Calculate SAM
-    await executeStep(supabase, reportRunId, 6, async () => {
-      const samPrompt = `Based on the TAM analysis:
-${reportContent.tam}
-
-Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
-1. Geographic limitations
-2. Customer segment focus
-3. Distribution capabilities
-4. Regulatory constraints
-
-Provide SAM for each market segment with clear methodology.`;
-
-      const samResult = await callAIWithRetry(samPrompt);
-      reportContent.sam = samResult;
-      return { sam: samResult };
-    });
-
-    // Step 7: Calculate SOM
-    await executeStep(supabase, reportRunId, 7, async () => {
-      const somPrompt = `Based on the SAM analysis:
-${reportContent.sam}
-
-Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
-1. First year targets
-2. 3-year projections
-3. 5-year projections
-4. Market penetration assumptions
-5. Competitive dynamics
-
-Be conservative and realistic in estimates.`;
-
-      const somResult = await callAIWithRetry(somPrompt);
-      reportContent.som = somResult;
-      return { som: somResult };
-    });
-
-    // Step 8: Australian Economic Impact
-    await executeStep(supabase, reportRunId, 8, async () => {
-      const impactPrompt = `Based on the SOM projections:
-${reportContent.som}
-
-Calculate the likely economic impact to the Australian economy from commercializing this research:
-1. Direct revenue in Australia
-2. Job creation potential
-3. Export opportunities
-4. IP licensing revenue
-5. Tax contribution estimates
-6. Industry development benefits
-7. Knowledge economy contribution
-
-Provide 5-year projections where possible.`;
-
-      const impactResult = await callAIWithRetry(impactPrompt);
-      reportContent.economicImpact = impactResult;
-      return { impact: impactResult };
-    });
-
-    // Step 9: Competitor Comparison Table
-    await executeStep(supabase, reportRunId, 9, async () => {
-      const tablePrompt = `Create a competitor comparison table based on:
-
-Our Products: ${reportContent.marketSegments}
-Existing Competitors: ${reportContent.existingCompetitors}
-
-Build a markdown table comparing:
-| Feature | Our Solution | Competitor 1 | Competitor 2 | Competitor 3 |
-|---------|--------------|--------------|--------------|--------------|
-| Feature Set | | | | |
-| User Experience | | | | |
-| Price Point | | | | |
-| Technology | | | | |
-| Market Focus | | | | |
-
-Fill in with specific comparisons.`;
-
-      const tableResult = await callAIWithRetry(tablePrompt);
-      reportContent.competitorTable = tableResult;
-      return { table: tableResult };
-    });
-
-    // Step 10: Partner Businesses
-    await executeStep(supabase, reportRunId, 10, async () => {
-      const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
-
-Research: ${summary}
-Market Segments: ${reportContent.marketSegments}
-
-1. Identify relevant ANZSIC codes
-2. For each code, list 3-5 Australian businesses operating in that classification
-3. Include company name, location, size, and potential partnership type
-4. Focus on businesses that could:
-   - Provide distribution
-   - Offer co-development
-   - License the technology
-   - Invest in the venture
-
-Use the ANZSIC hierarchy for classification.`;
-
-      const partnerResult = await callAIWithRetry(partnerPrompt);
-      reportContent.partnerBusinesses = partnerResult;
-      return { partners: partnerResult };
-    });
-
-    // Get next version number
-    const { data: existingReports } = await supabase
-      .from("reports")
-      .select("version_number")
-      .eq("application_id", applicationId)
-      .order("version_number", { ascending: false })
-      .limit(1);
-
-    const nextVersion = existingReports && existingReports.length > 0 
-      ? (existingReports[0] as { version_number: number }).version_number + 1 
-      : 1;
-
-    // Create the final report
-    await supabase.from("reports").insert({
-      application_id: applicationId,
-      user_id: userId,
-      grant_version_id: grantVersionId,
-      report_template_version_id: templateVersionId,
-      report_run_id: reportRunId,
-      version_number: nextVersion,
-      content_json: reportContent,
-      citations_json: citations,
-      inputs_snapshot_json: inputs,
-    });
-
-    // Update run as completed
+    // CHECKPOINT: Save progress after step 5 and return
+    // This splits processing into two phases to avoid edge function timeouts
     await supabase
       .from("report_runs")
       .update({
-        status: "completed",
-        current_step: 10,
-        completed_at: new Date().toISOString(),
+        checkpoint_data_json: reportContent,
+        checkpoint_citations_json: citations,
+        current_step: 5,
+        status: "pending", // Use pending to signal checkpoint - frontend will detect and resume
       })
       .eq("id", reportRunId);
 
-    // Update application status
-    await supabase
-      .from("applications")
-      .update({ status: "ready" })
-      .eq("id", applicationId);
+    console.log(`Checkpoint saved for report run ${reportRunId} at step 5`);
+    
+    // Return early - the resume-report-run function will continue from here
+    return;
 
   } catch (error) {
-    console.error("Report generation error:", error);
+    console.error("Report generation error (phase 1):", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
   }
 }
+// Phase 2 processing is now handled by resume-report-run edge function
 
 // Execute a step with proper error handling and recording
 // deno-lint-ignore no-explicit-any
