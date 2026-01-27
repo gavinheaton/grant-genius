@@ -1,95 +1,104 @@
 
 
-# Fix: TypeError in AIAnalysisPanel Component
+# Simplify Application Inputs for MVP
 
-## Problem Identified
+## Current State
 
-The `AIAnalysisPanel` component has a bug on **lines 60-65** where `useState` is incorrectly used as a side effect hook:
+The `ApplicationWorkspace.tsx` currently displays 5 input fields:
+| Field | Type | Required | Status |
+|-------|------|----------|--------|
+| Research Technical Description | textarea | Yes | **Remove** |
+| Public Article URL | url | Yes | Keep |
+| 100-Word Summary | textarea | Yes | Keep |
+| Technology Readiness Level | text | No | Keep (optional) |
+| IP Status | text | No | Keep (optional) |
 
-```typescript
-useState(() => {
-  if (suggestions) {
-    setSelectedInputs(new Set(suggestions.required_inputs.map((i) => i.key)));
-    setSelectedSections(new Set(suggestions.rubric.sections.map((s) => s.key)));
-  }
-});
-```
+## Proposed Changes
 
-### Why This Fails:
-1. **Wrong hook pattern**: `useState` initializer runs immediately during render, but calls `setSelectedInputs` and `setSelectedSections` which violates React rules
-2. **Missing null checks**: Even with the `if (suggestions)` guard, the code doesn't validate that `suggestions.required_inputs` and `suggestions.rubric.sections` are arrays before calling `.map()`
-3. **Database edge case**: The `ai_suggestions_json` column could contain malformed JSON like `{}` instead of the expected structure
+### 1. Remove Technical Description Field
 
----
+**File: `src/pages/ApplicationWorkspace.tsx`**
 
-## Solution
+- Remove `technicalDescription` from the `ApplicationInputs` interface (line 24)
+- Remove `technicalDescription` from the initial state object (line 53)
+- Remove `technicalDescription` from the fetched data mapping (line 102)
+- Remove the Technical Description form field section (lines 249-262)
+- Update autosave condition to only check `summary` and `publicArticleUrl` (line 153)
 
-Replace the incorrect `useState` usage with `useEffect` and add defensive null/array checks:
+### 2. Reorder Fields for Better UX
 
-### Changes to `src/components/admin/AIAnalysisPanel.tsx`
+Place fields in logical order:
+1. **Public Article URL** (first - provides context for the summary)
+2. **100-Word Summary** (second - main required input)
+3. **Optional fields** (TRL, IP Status - keep as-is at bottom)
 
-**Before (lines 59-65):**
-```typescript
-// Initialize selections when suggestions change
-useState(() => {
-  if (suggestions) {
-    setSelectedInputs(new Set(suggestions.required_inputs.map((i) => i.key)));
-    setSelectedSections(new Set(suggestions.rubric.sections.map((s) => s.key)));
-  }
-});
-```
+### 3. Database Default Update
 
-**After:**
-```typescript
-// Initialize selections when suggestions change
-useEffect(() => {
-  if (suggestions?.required_inputs && Array.isArray(suggestions.required_inputs)) {
-    setSelectedInputs(new Set(suggestions.required_inputs.map((i) => i.key)));
-  }
-  if (suggestions?.rubric?.sections && Array.isArray(suggestions.rubric.sections)) {
-    setSelectedSections(new Set(suggestions.rubric.sections.map((s) => s.key)));
-  }
-}, [suggestions]);
-```
+Update the default `required_inputs_json` for new grant versions to reflect the simplified schema. This ensures the Admin Console shows the correct defaults:
 
-### Additional Safety: Add guards in render section
-
-Also add safety checks when rendering the suggestions to prevent crashes if the data structure is unexpected:
-
-```typescript
-// Line 234: Add fallback for length
-{suggestions.required_inputs?.length ?? 0}
-
-// Line 244: Add optional chaining and fallback
-{(suggestions.required_inputs ?? []).map((input) => ...)}
-
-// Line 291: Add fallback for sections length  
-{suggestions.rubric?.sections?.length ?? 0}
-
-// Line 301: Add optional chaining and fallback
-{(suggestions.rubric?.sections ?? []).map((section) => ...)}
+```json
+[
+  {"key": "publicArticleUrl", "label": "Public Article URL", "type": "url", "required": true, "help_text": "Link to a published article or preprint describing your research"},
+  {"key": "summary", "label": "100-Word Summary", "type": "textarea", "required": true, "maxWords": 100, "help_text": "Concise summary of your research commercialisation potential"},
+  {"key": "trl", "label": "Technology Readiness Level (TRL)", "type": "text", "required": false},
+  {"key": "ipStatus", "label": "IP Status", "type": "text", "required": false}
+]
 ```
 
 ---
 
 ## Technical Details
 
-| Item | Change |
-|------|--------|
-| File | `src/components/admin/AIAnalysisPanel.tsx` |
-| Import | Add `useEffect` to the React import |
-| Line 60-65 | Replace `useState` with `useEffect` + dependency array |
-| Line 234, 244 | Add null coalescing for `required_inputs` |
-| Line 291, 301 | Add null coalescing for `rubric.sections` |
+### Interface Change
+
+```typescript
+// Before
+interface ApplicationInputs {
+  technicalDescription: string;
+  publicArticleUrl: string;
+  summary: string;
+  trl: string;
+  ipStatus: string;
+}
+
+// After
+interface ApplicationInputs {
+  publicArticleUrl: string;
+  summary: string;
+  trl: string;
+  ipStatus: string;
+}
+```
+
+### Autosave Condition Update
+
+```typescript
+// Before (line 153)
+if (inputs.technicalDescription || inputs.summary || inputs.publicArticleUrl) {
+
+// After
+if (inputs.summary || inputs.publicArticleUrl) {
+```
+
+### Form Field Order (After Change)
+
+1. Public Article URL input (with helper text)
+2. 100-Word Summary textarea (with word counter)
+3. Optional fields grid (TRL + IP Status)
 
 ---
 
-## Root Cause Summary
+## Backward Compatibility
 
-The error `Cannot read properties of undefined (reading 'map')` occurs because:
-1. The component uses `useState` incorrectly as a side effect
-2. When `suggestions` exists but has an unexpected shape (missing `required_inputs` or `rubric.sections`), the `.map()` call fails
-3. The database column `ai_suggestions_json` defaults to `'{}'::jsonb` which is an empty object, not the expected structure
+Existing applications that have `technicalDescription` data stored in `inputs_json` will continue to work - the field simply won't be displayed in the UI. The data remains in the database for historical reference.
 
-This fix ensures the component handles all edge cases gracefully.
+---
+
+## Summary of File Changes
+
+| File | Change |
+|------|--------|
+| `src/pages/ApplicationWorkspace.tsx` | Remove technicalDescription from interface, state, fetch mapping, autosave check, and form UI |
+
+No database migration needed - this is a UI-only change that simplifies what's displayed to researchers.
 
