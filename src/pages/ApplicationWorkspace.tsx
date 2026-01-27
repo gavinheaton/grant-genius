@@ -65,6 +65,7 @@ export default function ApplicationWorkspace() {
     startGeneration, 
     downloadReport,
     cancelRun,
+    retryFromFailedStep,
   } = useReportGeneration(id);
 
   useEffect(() => {
@@ -297,7 +298,7 @@ export default function ApplicationWorkspace() {
               totalSteps={activeRun.total_steps}
               status={activeRun.status}
               onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
-              onRestart={activeRun.status === "failed" ? handleGenerateReport : undefined}
+              onRestart={activeRun.status === "failed" ? () => retryFromFailedStep(activeRun.id) : undefined}
             />
           )}
         </div>
