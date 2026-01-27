@@ -12,11 +12,15 @@ import {
   CheckCircle, 
   AlertCircle,
   LogOut,
-  Loader2
+  Loader2,
+  CreditCard,
+  Sparkles
 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useEntitlements } from "@/hooks/useEntitlements";
+import { PurchaseModal } from "@/components/PurchaseModal";
 
 type ApplicationStatus = "draft" | "in_progress" | "ready" | "failed";
 
@@ -44,8 +48,25 @@ export default function Dashboard() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<{ email?: string } | null>(null);
+  const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
+  const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
+
+  // Handle payment success redirect
+  useEffect(() => {
+    const paymentStatus = searchParams.get("payment");
+    if (paymentStatus === "success") {
+      toast({
+        title: "Payment successful!",
+        description: "Your report credit has been added. You can now generate reports.",
+      });
+      refetchEntitlements();
+      // Clean up the URL
+      setSearchParams({});
+    }
+  }, [searchParams, setSearchParams, toast, refetchEntitlements]);
 
   useEffect(() => {
     const checkAuthAndFetch = async () => {
@@ -153,6 +174,36 @@ export default function Dashboard() {
 
       {/* Main content */}
       <main className="flex-1 container py-8">
+        {/* Entitlement Status Card */}
+        <Card className="mb-6 shadow-card">
+          <CardContent className="flex flex-col sm:flex-row items-center justify-between gap-4 py-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10">
+                <Sparkles className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="font-medium">Report Credits</p>
+                <p className="text-sm text-muted-foreground">
+                  {entitlementsLoading ? (
+                    "Loading..."
+                  ) : hasAvailableReport ? (
+                    `You have ${availableReports} report ${availableReports === 1 ? "credit" : "credits"} remaining`
+                  ) : (
+                    "No credits — purchase to generate reports"
+                  )}
+                </p>
+              </div>
+            </div>
+            <Button
+              variant={hasAvailableReport ? "outline" : "default"}
+              onClick={() => setPurchaseModalOpen(true)}
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              {hasAvailableReport ? "Buy More Credits" : "Purchase Report"}
+            </Button>
+          </CardContent>
+        </Card>
+
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">My Applications</h1>
@@ -234,6 +285,9 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Purchase Modal */}
+      <PurchaseModal open={purchaseModalOpen} onOpenChange={setPurchaseModalOpen} />
     </div>
   );
 }
