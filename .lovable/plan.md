@@ -1,160 +1,158 @@
 
 
-# Fix: Credit Consumption Timing and Failed Step Resume Logic
+# Add Delete Draft Functionality to Dashboard
 
-## Problems Identified
+## Overview
 
-### Problem 1: 400 Error on Resume
-When a step fails, the system sets `status: "failed"` but keeps `current_step` at an intermediate value (e.g., step 2). The frontend sees `current_step` in range 1-9 and tries to auto-resume, but `resume-report-run` rejects it with a 400 error because `status !== "pending"`.
+Allow users to delete draft applications directly from the dashboard. This provides a clean way to remove incomplete or unwanted applications without cluttering the application list.
 
-The issue: The auto-resume detection in the frontend only checks `current_step`, not `status`. It should NOT auto-resume failed runs.
+## What You'll See
 
-### Problem 2: Credits Consumed on Failure
-Credits are consumed at the START of generation (in `generate-report`), not at successful completion. When generation fails, the credit is NOT refunded automatically - refund logic only exists in the `cancel-report-run` function.
+When you hover over or interact with a draft application card on the dashboard:
+- A delete button (trash icon) will appear in the card
+- Clicking it opens a confirmation dialog to prevent accidental deletions
+- Only draft applications can be deleted (applications with reports or in-progress cannot be deleted)
+- After deletion, the application is removed from the list without a page refresh
 
-## Solution
+## Technical Changes
 
-### 1. Fix Frontend Auto-Resume Logic
+### 1. Dashboard Component Updates
 
-The frontend should NOT attempt to auto-resume failed runs. Currently it only checks `current_step`:
+Add delete functionality with confirmation:
 
-```typescript
-// CURRENT (broken)
-if (activeRun && activeRun.status === "pending") {
-  if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
-    resumeFromCheckpoint(activeRun.id);
-  }
-}
+**New state:**
+- `deleteModalOpen` - controls the confirmation dialog visibility
+- `applicationToDelete` - stores the application being deleted
+
+**New function:**
+- `handleDeleteDraft(applicationId)` - triggers the confirmation dialog
+- `confirmDelete()` - executes the deletion after user confirms
+
+**UI Changes:**
+- Add a trash icon button to each draft application card
+- Button only appears for applications with `status === "draft"`
+- Styled subtly to not interfere with the main card action
+
+### 2. Confirmation Dialog
+
+Using the existing AlertDialog component:
+
+```text
++----------------------------------+
+| Delete Draft Application?        |
++----------------------------------+
+| This will permanently delete     |
+| "[Grant Name]" draft. This       |
+| action cannot be undone.         |
+|                                  |
+| [Cancel]    [Delete Application] |
++----------------------------------+
 ```
 
-This is actually already correct - it checks `status === "pending"`. But there's a race condition: the polling might see `pending` status briefly before the failure is detected.
+### 3. Delete Function Implementation
 
-### 2. Add Credit Refund on Failure
+```typescript
+const confirmDelete = async () => {
+  if (!applicationToDelete) return;
+  
+  const { error } = await supabase
+    .from("applications")
+    .delete()
+    .eq("id", applicationToDelete.id);
 
-When a step fails in `resume-report-run`, refund the credit automatically (same logic as `cancel-report-run`).
-
-### 3. Remove Auto-Resume Loops
-
-Add tracking to prevent infinite resume attempts when errors occur.
+  if (error) {
+    toast({
+      title: "Error deleting application",
+      description: "Please try again.",
+      variant: "destructive",
+    });
+  } else {
+    // Remove from local state
+    setApplications(prev => prev.filter(a => a.id !== applicationToDelete.id));
+    toast({
+      title: "Application deleted",
+      description: "The draft has been removed.",
+    });
+  }
+  
+  setDeleteModalOpen(false);
+  setApplicationToDelete(null);
+};
+```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/resume-report-run/index.ts` | Add credit refund logic when step fails |
-| `src/hooks/useReportGeneration.ts` | Add resume attempt tracking to prevent loops, exclude failed status from auto-resume |
+| `src/pages/Dashboard.tsx` | Add delete button, confirmation dialog, and delete logic |
+
+## Database Considerations
+
+The `applications` table already has the necessary RLS policy:
+- **Policy:** "Users can delete own applications"
+- **Expression:** `auth.uid() = user_id`
+
+No database changes are required since users can already delete their own applications via RLS.
+
+## Safety Features
+
+1. **Draft-only deletion** - The delete button only appears on draft applications, preventing accidental deletion of applications with completed reports
+2. **Confirmation dialog** - Requires explicit user confirmation before deletion
+3. **Error handling** - Graceful error messages if deletion fails
+4. **Optimistic UI** - Immediate removal from the list for responsive feel
 
 ## Implementation Details
 
-### 1. resume-report-run/index.ts - Add Credit Refund on Failure
+**Card modification:**
 
-In the `processSingleStep` catch block (around line 450), add refund logic:
-
-```typescript
-catch (error) {
-  console.error(`10-PHASE: Step ${nextStep} failed:`, error);
-  const errorMessage = error instanceof Error ? error.message : "Unknown error";
-  
-  // Mark as failed
-  await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
-  
-  // Refund credit on failure
-  await refundCredit(supabase, reportRunId);
-}
+```tsx
+{/* In the application card header */}
+<div className="flex items-start justify-between">
+  <CardTitle className="text-lg">{app.grant_version?.grant?.name}</CardTitle>
+  <div className="flex items-center gap-2">
+    {app.status === "draft" && (
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-muted-foreground hover:text-destructive"
+        onClick={(e) => {
+          e.preventDefault();
+          handleDeleteDraft(app);
+        }}
+      >
+        <Trash2 className="h-4 w-4" />
+      </Button>
+    )}
+    <Badge variant={config.variant}>
+      <StatusIcon className="h-3 w-3" />
+      {config.label}
+    </Badge>
+  </div>
+</div>
 ```
 
-Add a helper function:
+**Confirmation dialog:**
 
-```typescript
-async function refundCredit(supabase: any, reportRunId: string) {
-  try {
-    const { data: consumption } = await supabase
-      .from("entitlement_consumptions")
-      .select("id, entitlement_id")
-      .eq("report_run_id", reportRunId)
-      .maybeSingle();
-
-    if (consumption) {
-      // Decrement used_quantity
-      await supabase.rpc("decrement_entitlement", { 
-        ent_id: consumption.entitlement_id 
-      });
-      
-      // Delete the consumption record
-      await supabase
-        .from("entitlement_consumptions")
-        .delete()
-        .eq("id", consumption.id);
-        
-      console.log(`Credit refunded for failed run ${reportRunId}`);
-    }
-  } catch (e) {
-    console.error("Failed to refund credit:", e);
-  }
-}
-```
-
-### 2. useReportGeneration.ts - Prevent Infinite Resume Loops
-
-Add a ref to track which runs we've already attempted to resume, preventing rapid-fire retries:
-
-```typescript
-const resumeAttemptedRef = useRef<Set<string>>(new Set());
-
-// In the auto-resume effect:
-useEffect(() => {
-  if (activeRun && activeRun.status === "pending") {
-    const attemptKey = `${activeRun.id}-${activeRun.current_step}`;
-    
-    // Only resume if we haven't already attempted this specific checkpoint
-    if (!resumeAttemptedRef.current.has(attemptKey)) {
-      if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
-        resumeAttemptedRef.current.add(attemptKey);
-        resumeFromCheckpoint(activeRun.id);
-      }
-    }
-  }
-  
-  // Clear tracking when run completes or fails
-  if (activeRun && (activeRun.status === "completed" || activeRun.status === "failed")) {
-    resumeAttemptedRef.current.clear();
-  }
-}, [activeRun, resumeFromCheckpoint]);
-```
-
-### 3. Also Add Refund Logic to generate-report Failure Path
-
-In `generate-report/index.ts`, the `processStep1Only` function should also refund credits when Step 1 fails.
-
-## Expected Outcome
-
-After these changes:
-- Failed runs will NOT trigger infinite resume attempts (400 errors eliminated)
-- Credits are automatically refunded when ANY step fails
-- The "Try Again" button will work correctly because it explicitly resets status to "pending"
-- Users see accurate credit balance after failures
-
-## Flow Diagram
-
-```text
-Report Generation Start
-        │
-        ▼
-  Credit Consumed
-        │
-        ▼
-  Step 1 runs ───────► Failure? ──Yes──► Credit Refunded
-        │                                      │
-        ▼                                      ▼
-  Step 2-9 runs ─────► Failure? ──Yes──► Credit Refunded
-        │                                      │
-        ▼                                      ▼
-  Step 10 completes                    Status: "failed"
-        │                              User clicks "Try Again"
-        ▼                                      │
-  Report Created                               ▼
-  Credit stays consumed              Reset to "pending"
-                                     New credit consumed
-                                     Resume from checkpoint
+```tsx
+<AlertDialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
+  <AlertDialogContent>
+    <AlertDialogHeader>
+      <AlertDialogTitle>Delete Draft Application?</AlertDialogTitle>
+      <AlertDialogDescription>
+        This will permanently delete the "{applicationToDelete?.grant_version?.grant?.name}" 
+        draft. This action cannot be undone.
+      </AlertDialogDescription>
+    </AlertDialogHeader>
+    <AlertDialogFooter>
+      <AlertDialogCancel>Cancel</AlertDialogCancel>
+      <AlertDialogAction 
+        onClick={confirmDelete}
+        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+      >
+        Delete Application
+      </AlertDialogAction>
+    </AlertDialogFooter>
+  </AlertDialogContent>
+</AlertDialog>
 ```
 
