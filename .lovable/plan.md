@@ -1,144 +1,57 @@
 
 
-# Implement Payment Gate for Application Flow
+# Fix CORS Error for Stripe Checkout
 
-## Problem Identified
+## Problem
 
-You're right - the payment flow is not connected to the application flow. Currently:
+The Supabase JavaScript client automatically sends an `x-supabase-client-platform` header with every request. The `create-checkout` edge function's CORS configuration doesn't include this header in the allowed list, causing the browser to block the request during the preflight check.
 
-| Step | Current Behavior | Expected Behavior |
-|------|------------------|-------------------|
-| Login | Works via magic link | Same |
-| Create Application | Allowed without payment | **Should check entitlement** |
-| Work on Application | Allowed without payment | Can work on draft |
-| Generate Report | Not implemented | **Requires payment** |
-| Finalize/Download | Not implemented | **Requires paid entitlement** |
-
-The `useEntitlements` hook exists and works, but it's not used anywhere in the application flow.
-
----
-
-## Recommended Flow (Per Your PRD)
-
-Based on your PRD's "Payment Gating" requirement, I recommend this flow:
-
-```text
-User Flow:
-┌─────────────────────────────────────────────────────────────────┐
-│  1. Create Application (FREE)                                   │
-│     - Select grant                                              │
-│     - Fill in inputs (summary, URL)                             │
-│     - Draft saved automatically                                 │
-└────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  2. Generate Report (PAID)                                      │
-│     - Check entitlement                                         │
-│     - If no entitlement → Show purchase modal                   │
-│     - After payment → Consume 1 entitlement → Generate report   │
-└────────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  3. Download Report (ENTITLED)                                  │
-│     - Already paid → Download PDF/DOCX                          │
-└─────────────────────────────────────────────────────────────────┘
+**Error:**
+```
+Request header field x-supabase-client-platform is not allowed by Access-Control-Allow-Headers in preflight response
 ```
 
-This matches your PRD: *"Users can fill inputs for free, but generating the final report requires payment."*
+## Solution
+
+Update the `corsHeaders` in the `create-checkout` edge function to include the `x-supabase-client-platform` header.
 
 ---
 
-## Implementation Plan
+## Changes Required
 
-### 1. Add Entitlement Check to ApplicationWorkspace
+### File: `supabase/functions/create-checkout/index.ts`
 
-**File: `src/pages/ApplicationWorkspace.tsx`**
+**Current (line 5-8):**
+```typescript
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+```
 
-Add the `useEntitlements` hook and show entitlement status in the header:
-- Display "X reports remaining" badge
-- Show "Purchase Report" CTA if no entitlements
-
-### 2. Create Purchase Modal Component
-
-**New File: `src/components/PurchaseModal.tsx`**
-
-A modal that:
-- Shows when user clicks "Generate Report" without entitlement
-- Displays pricing ($99 AUD)
-- Mentions coupon code support (Stripe handles this automatically in Checkout)
-- Has "Purchase Now" button that triggers `usePurchase().purchaseReport()`
-
-### 3. Gate the "Sections" Tab Generation
-
-**File: `src/pages/ApplicationWorkspace.tsx`**
-
-When user clicks "Generate" button in Sections tab:
-- Check `hasAvailableReport` from `useEntitlements`
-- If false → Open PurchaseModal
-- If true → Proceed with generation (consume entitlement)
-
-### 4. Update Dashboard with Entitlement Status
-
-**File: `src/pages/Dashboard.tsx`**
-
-Show user's entitlement status:
-- "You have X report credits" or "No credits - Purchase to generate reports"
-- Quick "Buy Report" button
-
-### 5. Handle Payment Success Redirect
-
-**File: `src/pages/Dashboard.tsx`**
-
-The checkout already redirects to `/dashboard?payment=success`. Add handling to:
-- Show success toast
-- Refresh entitlements
-- Prompt user to continue with their application
+**Updated:**
+```typescript
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
+};
+```
 
 ---
 
-## Technical Changes Summary
+## Why This Happens
 
-| File | Changes |
-|------|---------|
-| `src/pages/Dashboard.tsx` | Add entitlement display, handle `?payment=success` |
-| `src/pages/ApplicationWorkspace.tsx` | Add entitlement check, integrate purchase modal |
-| `src/components/PurchaseModal.tsx` | **New file** - Purchase CTA with Stripe checkout |
-| `src/hooks/useEntitlements.ts` | No changes needed - already works |
-| `src/hooks/usePurchase.ts` | No changes needed - already works |
+The Supabase JS client (v2.93.1 in this project) automatically includes the `x-supabase-client-platform` header to identify the client platform (e.g., "js-browser"). This is a relatively recent addition to the client library.
 
----
-
-## Coupon Codes
-
-You mentioned setting up coupon codes in Stripe - good news! Stripe Checkout automatically handles coupon codes. Users will see a "Add promotion code" field on the checkout page if you've enabled it in your Stripe Dashboard under Checkout settings.
-
-No code changes needed for coupon support.
-
----
-
-## Database: Entitlement Consumption
-
-When a report is generated, we need to mark the entitlement as "used". This requires:
-
-1. **Increment `used_quantity`** on the entitlement
-2. **Create `entitlement_consumptions` record** linking entitlement → report
-
-This will be handled when implementing the actual report generation flow.
+When the browser makes a preflight `OPTIONS` request, it checks if the server allows all the headers the client wants to send. Since `x-supabase-client-platform` wasn't in the allowed list, the browser blocked the actual request.
 
 ---
 
 ## Summary
 
-The Stripe integration is working - the issue is that the **entitlement check is not wired into the UI**. This plan adds:
+| File | Change |
+|------|--------|
+| `supabase/functions/create-checkout/index.ts` | Add `x-supabase-client-platform` to allowed CORS headers |
 
-1. Entitlement status display in Dashboard and Workspace
-2. Purchase modal that triggers Stripe Checkout
-3. Gate on "Generate Report" action
-4. Payment success handling
-
-After implementation, users will be able to:
-- Create drafts for free
-- See their report credits
-- Purchase via Stripe (with coupon support)
-- Generate reports only with valid entitlements
+This is a one-line fix. After deployment, the checkout flow will work correctly from any origin including your custom domain `grantgenius.disruptorsco.com`.
 
