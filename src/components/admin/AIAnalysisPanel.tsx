@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Sparkles, Loader2, CheckCircle, XCircle, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -57,12 +57,14 @@ export function AIAnalysisPanel({
   const { toast } = useToast();
 
   // Initialize selections when suggestions change
-  useState(() => {
-    if (suggestions) {
+  useEffect(() => {
+    if (suggestions?.required_inputs && Array.isArray(suggestions.required_inputs)) {
       setSelectedInputs(new Set(suggestions.required_inputs.map((i) => i.key)));
+    }
+    if (suggestions?.rubric?.sections && Array.isArray(suggestions.rubric.sections)) {
       setSelectedSections(new Set(suggestions.rubric.sections.map((s) => s.key)));
     }
-  });
+  }, [suggestions]);
 
   const handleAnalyze = async () => {
     if (!guidelinesText) {
@@ -231,7 +233,7 @@ export function AIAnalysisPanel({
               <CardTitle className="text-lg">
                 Suggested Required Inputs
                 <Badge variant="secondary" className="ml-2">
-                  {selectedInputs.size} / {suggestions.required_inputs.length}
+                  {selectedInputs.size} / {suggestions.required_inputs?.length ?? 0}
                 </Badge>
               </CardTitle>
               <CardDescription>
@@ -241,7 +243,7 @@ export function AIAnalysisPanel({
             <CardContent>
               <ScrollArea className="h-[300px] pr-4">
                 <div className="space-y-4">
-                  {suggestions.required_inputs.map((input) => (
+                  {(suggestions.required_inputs ?? []).map((input) => (
                     <div
                       key={input.key}
                       className="flex items-start gap-3 p-3 rounded-lg border bg-card"
@@ -288,7 +290,7 @@ export function AIAnalysisPanel({
               <CardTitle className="text-lg">
                 Suggested Rubric Sections
                 <Badge variant="secondary" className="ml-2">
-                  {selectedSections.size} / {suggestions.rubric.sections.length}
+                  {selectedSections.size} / {suggestions.rubric?.sections?.length ?? 0}
                 </Badge>
               </CardTitle>
               <CardDescription>
@@ -298,7 +300,7 @@ export function AIAnalysisPanel({
             <CardContent>
               <ScrollArea className="h-[300px] pr-4">
                 <div className="space-y-4">
-                  {suggestions.rubric.sections.map((section) => (
+                  {(suggestions.rubric?.sections ?? []).map((section) => (
                     <div
                       key={section.key}
                       className="flex items-start gap-3 p-3 rounded-lg border bg-card"
