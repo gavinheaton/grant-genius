@@ -1,4 +1,4 @@
-import { useLocation } from "react-router-dom";
+import { useLocation, Link } from "react-router-dom";
 import {
   FileText,
   Users,
@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LogOut,
   Printer,
+  Home,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -179,7 +180,17 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="border-t border-border p-4">
+      <SidebarFooter className="border-t border-border p-4 space-y-2">
+        <Button
+          variant="ghost"
+          className="w-full justify-start gap-2"
+          asChild
+        >
+          <Link to="/dashboard">
+            <Home className="h-4 w-4" />
+            {!collapsed && <span>Grant Genius</span>}
+          </Link>
+        </Button>
         <Button
           variant="ghost"
           className="w-full justify-start gap-2"
