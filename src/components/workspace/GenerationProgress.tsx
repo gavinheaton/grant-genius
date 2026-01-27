@@ -50,7 +50,7 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
               {status === "running" && `Step ${currentStep}/${totalSteps}: ${currentStepName}`}
               {status === "completed" && "Report generation complete!"}
               {status === "failed" && "Generation failed"}
-              {status === "pending" && "Starting generation..."}
+              {status === "pending" && (currentStep === 0 ? "Starting generation..." : `Preparing step ${currentStep + 1}...`)}
               {status === "stalled" && `Stalled at step ${currentStep}/${totalSteps}`}
             </span>
             <span className="font-medium">{Math.round(progressPercent)}%</span>
