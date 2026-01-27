@@ -11,9 +11,9 @@ export function Header() {
             <GraduationCap className="h-5 w-5 text-primary-foreground" />
           </div>
           <span className="font-semibold text-lg hidden sm:inline-block">
-            Grant Commercialisation Assistant
+            Grant Genius
           </span>
-          <span className="font-semibold text-lg sm:hidden">GCA</span>
+          <span className="font-semibold text-lg sm:hidden">GG</span>
         </Link>
         
         <nav className="flex items-center gap-6">
