@@ -1,59 +1,65 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FileText, Download, Loader2, Eye } from "lucide-react";
 import { format } from "date-fns";
 import { ReportViewer } from "./ReportViewer";
+import { PdfReportRenderer } from "./PdfReportRenderer";
 import { type Report } from "@/hooks/useReportGeneration";
-import { supabase } from "@/integrations/supabase/client";
+import { useDefaultPdfTemplate } from "@/hooks/usePdfTemplates";
+import { generatePdfFromElement, downloadPdf } from "@/lib/generatePdfClient";
 import { toast } from "@/hooks/use-toast";
 
 interface ReportsListProps {
   reports: Report[];
   isLoading: boolean;
   onDownload: (reportId: string, format: "pdf" | "docx") => void;
+  grantName?: string;
 }
 
-export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps) {
+export function ReportsList({ reports, isLoading, onDownload, grantName = "Research Report" }: ReportsListProps) {
   const [viewingReport, setViewingReport] = useState<Report | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState<string | null>(null);
+  const [renderingReport, setRenderingReport] = useState<Report | null>(null);
+  const pdfRenderRef = useRef<HTMLDivElement>(null);
+  
+  const { data: template } = useDefaultPdfTemplate();
 
-  const handleGeneratePdf = async (reportId: string) => {
-    setGeneratingPdf(reportId);
+  const handleGeneratePdf = useCallback(async (report: Report) => {
+    if (!template) {
+      toast({
+        title: "Template not loaded",
+        description: "Please wait for the PDF template to load and try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setGeneratingPdf(report.id);
+    setRenderingReport(report);
+
+    // Wait for the component to render
+    await new Promise(resolve => setTimeout(resolve, 100));
+
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        toast({
-          title: "Not authenticated",
-          description: "Please log in to download reports",
-          variant: "destructive",
-        });
-        return;
+      if (!pdfRenderRef.current) {
+        throw new Error("PDF renderer not available");
       }
 
-      const response = await supabase.functions.invoke("generate-pdf", {
-        body: { reportId },
+      const blob = await generatePdfFromElement(pdfRenderRef.current, {
+        template,
+        grantName,
+        reportTitle: `Report v${report.version_number}`,
+        generatedDate: format(new Date(report.created_at), "yyyy-MM-dd"),
       });
 
-      if (response.error) {
-        throw new Error(response.error.message || "PDF generation failed");
-      }
-
-      const { downloadUrl, fileName } = response.data;
-      
-      // Open download in new tab
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = fileName;
-      link.target = "_blank";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      const filename = `${grantName.replace(/\s+/g, "_")}_Report_v${report.version_number}.pdf`;
+      downloadPdf(blob, filename);
 
       toast({
         title: "PDF Generated",
-        description: "Your report is downloading...",
+        description: "Your report has been downloaded.",
       });
     } catch (error: any) {
       console.error("PDF generation error:", error);
@@ -64,8 +70,9 @@ export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps
       });
     } finally {
       setGeneratingPdf(null);
+      setRenderingReport(null);
     }
-  };
+  }, [template, grantName]);
 
   if (isLoading) {
     return (
@@ -121,8 +128,8 @@ export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => handleGeneratePdf(report.id)}
-                    disabled={generatingPdf === report.id}
+                    onClick={() => handleGeneratePdf(report)}
+                    disabled={generatingPdf === report.id || !template}
                   >
                     {generatingPdf === report.id ? (
                       <Loader2 className="h-4 w-4 mr-1 animate-spin" />
@@ -155,6 +162,16 @@ export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps
         isOpen={!!viewingReport}
         onClose={() => setViewingReport(null)}
       />
+
+      {/* Hidden PDF Renderer */}
+      {renderingReport && template && (
+        <PdfReportRenderer
+          ref={pdfRenderRef}
+          report={renderingReport}
+          template={template}
+          grantName={grantName}
+        />
+      )}
     </>
   );
 }
