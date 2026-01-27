@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 const plans = [
   {
     name: "Single Report",
-    price: "$149",
+    price: "$99",
     description: "Perfect for a single grant application",
     features: [
       "1 Complete Application Report",
