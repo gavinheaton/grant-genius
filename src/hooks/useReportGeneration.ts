@@ -163,6 +163,49 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
   }, [toast]);
 
+  // Retry from failed step - resets status to pending and resumes
+  const retryFromFailedStep = useCallback(async (runId: string) => {
+    try {
+      console.log("Retrying from failed step...");
+      setIsGenerating(true);
+
+      // Reset the run status to pending so resume-report-run can pick it up
+      const { error: updateError } = await supabase
+        .from("report_runs")
+        .update({ status: "pending" })
+        .eq("id", runId);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      // Now call resume to continue from the checkpoint
+      const { error } = await supabase.functions.invoke("resume-report-run", {
+        body: { reportRunId: runId },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      toast({
+        title: "Resuming generation",
+        description: "Continuing from the last successful step.",
+      });
+
+      // Start polling for updates
+      checkActiveRun();
+    } catch (error) {
+      console.error("Error retrying from failed step:", error);
+      setIsGenerating(false);
+      toast({
+        title: "Retry failed",
+        description: "Failed to resume report generation. Please try again.",
+        variant: "destructive",
+      });
+    }
+  }, [toast, checkActiveRun]);
+
   // Poll for updates when generating
   useEffect(() => {
     if (!isGenerating || !applicationId) return;
@@ -248,6 +291,7 @@ export function useReportGeneration(applicationId: string | undefined) {
     startGeneration,
     downloadReport,
     cancelRun,
+    retryFromFailedStep,
     refetch: fetchReports,
   };
 }
