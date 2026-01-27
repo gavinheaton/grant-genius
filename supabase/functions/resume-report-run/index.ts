@@ -131,9 +131,9 @@ serve(async (req) => {
       );
     }
 
-    // Check if at checkpoint (step 5 or step 8, pending status)
+    // Check if at checkpoint (step 4, 5, or step 8, pending status)
     const resumeFromStep = reportRun.current_step;
-    if ((resumeFromStep !== 5 && resumeFromStep !== 8) || reportRun.status !== "pending") {
+    if (![4, 5, 8].includes(resumeFromStep) || reportRun.status !== "pending") {
       return new Response(
         JSON.stringify({ error: "Report run is not at checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -200,7 +200,32 @@ async function processReportPhase(
   const citations = [...checkpointCitations];
 
   try {
-    if (resumeFromStep === 5) {
+    // Handle resuming from step 4 (Phase 2a: Step 5 first)
+    if (resumeFromStep === 4) {
+      // Step 5: Calculate TAM (moved from generate-report)
+      await executeStep(supabase, reportRunId, 5, async () => {
+        const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
+
+Research: ${summary}
+Market Segments: ${reportContent.marketSegments}
+
+Using data from validated sources (OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
+1. Market size in USD/AUD
+2. Data source and year
+3. Growth rate if available
+4. Key assumptions
+
+IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
+
+        const tamResult = await callAIWithRetry(tamPrompt, 5);
+        reportContent.tam = tamResult;
+        return { tam: tamResult };
+      });
+      
+      // Fall through to continue with steps 6-8
+    }
+
+    if (resumeFromStep === 4 || resumeFromStep === 5) {
       // Phase 2: Steps 6-8, then checkpoint
       
       // Step 6: Calculate SAM
