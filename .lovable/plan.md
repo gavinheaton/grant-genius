@@ -1,150 +1,143 @@
 
 
-# Collapsible Research Details During Report Generation
+# Switch to OpenAI Primary with Gemini Fallback
 
 ## Overview
 
-When report generation starts, the "Research Details" card will automatically collapse to a compact summary, keeping the generation progress and reports list prominently visible. Users can expand it anytime to review their inputs.
+Invert the AI provider priority so OpenAI (`gpt-4o-mini`) is tried first, with Gemini via Lovable AI as the fallback if OpenAI fails or is rate-limited.
 
 ---
 
-## Behavior
+## Current Flow
 
-| State | Research Details Card |
-|-------|----------------------|
-| **Before generation** | Fully expanded (editable form) |
-| **During generation** | Auto-collapsed to summary strip |
-| **After generation** | Stays collapsed, expandable on click |
-
----
-
-## Visual Design
-
-**Collapsed State (during/after generation):**
 ```text
-+--------------------------------------------------+
-| Research Details                    [v] Expand   |
-| Article: https://doi.org/10.1234... | 87 words   |
-+--------------------------------------------------+
+Request → Lovable AI (Gemini) → [retry 3x on 429] → OpenAI fallback
 ```
 
-**Expanded State:**
-- Full form with URL input, summary textarea, TRL, IP Status
-- Collapse button in header
+## New Flow
+
+```text
+Request → OpenAI (gpt-4o-mini) → [retry 3x on 429] → Lovable AI (Gemini) fallback
+```
 
 ---
 
 ## Implementation
 
-### 1. Update ReportInputs Component
+### Update `callAIWithRetry` function
 
-Wrap the card content in a `Collapsible` component with:
-- `isCollapsed` prop to control open/closed state
-- `onToggle` callback for user interaction
-- Collapsed view showing a compact summary (truncated URL + word count)
-- Smooth animation using existing `animate-accordion-down/up`
+Swap the primary and fallback providers:
 
-**Changes to `src/components/workspace/ReportInputs.tsx`:**
 ```typescript
-// Add new props
-interface ReportInputsProps {
-  inputs: ApplicationInputs;
-  onInputChange: (field: keyof ApplicationInputs, value: string) => void;
-  disabled?: boolean;
-  isCollapsed?: boolean;      // NEW
-  onToggleCollapse?: () => void;  // NEW
+async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+  
+  if (!OPENAI_API_KEY) {
+    // No OpenAI key - go straight to Gemini
+    console.log("No OpenAI key configured, using Lovable AI");
+    return await callLovableAI(prompt);
+  }
+
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await callOpenAI(OPENAI_API_KEY, prompt);  // Primary
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      if (errorMessage.includes("429")) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.log(`Rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, delay));
+        lastError = error instanceof Error ? error : new Error(errorMessage);
+        continue;
+      }
+      
+      throw error;
+    }
+  }
+  
+  // OpenAI retries exhausted - try Lovable AI fallback
+  console.log("OpenAI retries exhausted, attempting Lovable AI fallback");
+  return await callLovableAI(prompt);  // Fallback
 }
-
-// Wrap CardContent in Collapsible
-<Collapsible open={!isCollapsed} onOpenChange={() => onToggleCollapse?.()}>
-  <CardHeader>
-    <div className="flex items-center justify-between">
-      <CardTitle>Research Details</CardTitle>
-      <CollapsibleTrigger asChild>
-        <Button variant="ghost" size="sm">
-          {isCollapsed ? <ChevronDown /> : <ChevronUp />}
-        </Button>
-      </CollapsibleTrigger>
-    </div>
-    {/* Collapsed summary shown when collapsed */}
-    {isCollapsed && (
-      <div className="text-sm text-muted-foreground truncate">
-        {inputs.publicArticleUrl || "No URL"} • {wordCount} words
-      </div>
-    )}
-  </CardHeader>
-  <CollapsibleContent>
-    <CardContent>
-      {/* existing form fields */}
-    </CardContent>
-  </CollapsibleContent>
-</Collapsible>
 ```
 
-### 2. Update ApplicationWorkspace
+### Rename and refactor AI functions
 
-Add state to track collapsed status and auto-collapse when generation starts:
+| Current Function | New Function | Role |
+|------------------|--------------|------|
+| `callLovableAI(apiKey, prompt)` | `callLovableAI(prompt)` | Fallback (gets key internally) |
+| `callOpenAIFallback(prompt)` | `callOpenAI(apiKey, prompt)` | Primary |
 
-**Changes to `src/pages/ApplicationWorkspace.tsx`:**
+**`callOpenAI` (Primary):**
 ```typescript
-// Add state
-const [inputsCollapsed, setInputsCollapsed] = useState(false);
-
-// Auto-collapse when generation starts
-useEffect(() => {
-  if (isGenerating) {
-    setInputsCollapsed(true);
-  }
-}, [isGenerating]);
-
-// Pass props to ReportInputs
-<ReportInputs 
-  inputs={inputs} 
-  onInputChange={handleInputChange}
-  disabled={isGenerating}
-  isCollapsed={inputsCollapsed}
-  onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
-/>
+async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a research commercialization expert..." },
+        { role: "user", content: prompt }
+      ],
+    }),
+  });
+  // ... error handling
+}
 ```
 
-### 3. Auto-scroll to Progress Card
-
-When generation starts, smoothly scroll the progress card into view:
-
+**`callLovableAI` (Fallback):**
 ```typescript
-// Add ref
-const progressRef = useRef<HTMLDivElement>(null);
-
-// Scroll when generation starts
-useEffect(() => {
-  if (isGenerating && progressRef.current) {
-    progressRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+async function callLovableAI(prompt: string): Promise<string> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("AI service temporarily unavailable.");
   }
-}, [isGenerating]);
-
-// Add ref to progress section
-<div ref={progressRef}>
-  {isGenerating && activeRun && (
-    <GenerationProgress ... />
-  )}
-</div>
+  
+  console.log("Using Lovable AI (Gemini) fallback");
+  
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-3-flash-preview",
+      messages: [
+        { role: "system", content: "You are a research commercialization expert..." },
+        { role: "user", content: prompt }
+      ],
+    }),
+  });
+  // ... error handling
+}
 ```
 
 ---
 
 ## Files to Modify
 
-1. `src/components/workspace/ReportInputs.tsx` - Add collapsible wrapper and summary view
-2. `src/pages/ApplicationWorkspace.tsx` - Add collapse state, auto-collapse logic, and scroll behavior
+1. `supabase/functions/generate-report/index.ts`
+   - Refactor `callAIWithRetry` to use OpenAI first
+   - Rename `callOpenAIFallback` → `callOpenAI` (primary)
+   - Refactor `callLovableAI` to get its own API key (fallback)
+   - Update logging to reflect new priority
 
 ---
 
-## User Experience
+## Benefits
 
-1. User fills in Research Details and clicks "Generate Report"
-2. The Research Details card smoothly collapses to a single-line summary
-3. The page scrolls down to show the progress indicator prominently
-4. User watches the 10-step progress in real-time
-5. User can click "Expand" anytime to review their inputs
-6. When complete, the Reports List appears below the progress
+| Aspect | Result |
+|--------|--------|
+| **Reliability** | OpenAI has proven more stable for this workload |
+| **Fallback** | Gemini still available if OpenAI is rate-limited |
+| **Graceful degradation** | If OpenAI key missing, uses Gemini directly |
 
