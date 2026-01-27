@@ -80,12 +80,20 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
             <p className="text-sm text-warning">
               Generation appears to have stalled. This can happen due to high demand or network issues.
             </p>
-            {onCancel && (
-              <Button variant="outline" size="sm" onClick={onCancel} className="gap-2">
-                <XCircle className="h-4 w-4" />
-                Cancel & Retry
-              </Button>
-            )}
+            <div className="flex gap-2">
+              {onRestart && (
+                <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Try Again
+                </Button>
+              )}
+              {onCancel && (
+                <Button variant="outline" size="sm" onClick={onCancel} className="gap-2">
+                  <XCircle className="h-4 w-4" />
+                  Cancel & Start Over
+                </Button>
+              )}
+            </div>
           </div>
         )}
 
