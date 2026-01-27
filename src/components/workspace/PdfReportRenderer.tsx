@@ -2,6 +2,7 @@ import { forwardRef } from "react";
 import { type Report } from "@/hooks/useReportGeneration";
 import { type PdfTemplate } from "@/hooks/usePdfTemplates";
 import { format } from "date-fns";
+import { parseMarkdownTablesForPdf } from "@/lib/markdownUtils";
 
 interface ReportSection {
   title: string;
@@ -275,10 +276,9 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
             <div
               style={{
                 fontSize: `${headingSizes.body}px`,
-                whiteSpace: "pre-wrap",
                 lineHeight: 1.8,
               }}
-              dangerouslySetInnerHTML={{ __html: formatContent(section.content) }}
+              dangerouslySetInnerHTML={{ __html: formatContent(section.content, template.primary_color) }}
             />
           </div>
         ))}
@@ -341,10 +341,14 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
 PdfReportRenderer.displayName = "PdfReportRenderer";
 
 // Helper function to format markdown-like content to HTML
-function formatContent(content: string): string {
+function formatContent(content: string, primaryColor: string = '#2563eb'): string {
   if (!content) return "";
   
-  return content
+  // First, parse markdown tables
+  let result = parseMarkdownTablesForPdf(content, primaryColor);
+  
+  // Then apply other markdown formatting
+  return result
     // Bold text
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     // Italic text

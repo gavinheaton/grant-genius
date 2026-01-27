@@ -20,6 +20,7 @@ import {
 import { Copy, Check, TrendingUp, Users, Building2, Globe, DollarSign, Handshake } from "lucide-react";
 import { format } from "date-fns";
 import { type Report } from "@/hooks/useReportGeneration";
+import { parseMarkdownTables } from "@/lib/markdownUtils";
 
 // Flexible types to handle both string and structured data
 interface MarketSegment {
@@ -93,8 +94,22 @@ interface ReportViewerProps {
   onClose: () => void;
 }
 
-// Helper component for rendering text content
+// Helper component for rendering text content with markdown table support
 function TextContent({ content, className = "" }: { content: string; className?: string }) {
+  // Parse markdown tables into HTML
+  const parsedContent = parseMarkdownTables(content);
+  
+  // Check if content contains parsed tables (has <table tag)
+  const hasTable = parsedContent.includes('<table');
+  
+  if (hasTable) {
+    return (
+      <div className={`prose prose-sm max-w-none text-muted-foreground bg-muted/30 rounded-lg p-4 ${className}`}>
+        <div dangerouslySetInnerHTML={{ __html: parsedContent }} />
+      </div>
+    );
+  }
+  
   return (
     <div className={`prose prose-sm max-w-none text-muted-foreground bg-muted/30 rounded-lg p-4 ${className}`}>
       <div className="whitespace-pre-wrap">{content}</div>
