@@ -6,12 +6,8 @@ import { FileText, Download, Loader2, Eye } from "lucide-react";
 import { format } from "date-fns";
 import { ReportViewer } from "./ReportViewer";
 import { type Report } from "@/hooks/useReportGeneration";
-
-interface ReportsListProps {
-  reports: Report[];
-  isLoading: boolean;
-  onDownload: (reportId: string, format: "pdf" | "docx") => void;
-}
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 
 interface ReportsListProps {
   reports: Report[];
@@ -21,6 +17,55 @@ interface ReportsListProps {
 
 export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps) {
   const [viewingReport, setViewingReport] = useState<Report | null>(null);
+  const [generatingPdf, setGeneratingPdf] = useState<string | null>(null);
+
+  const handleGeneratePdf = async (reportId: string) => {
+    setGeneratingPdf(reportId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        toast({
+          title: "Not authenticated",
+          description: "Please log in to download reports",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const response = await supabase.functions.invoke("generate-pdf", {
+        body: { reportId },
+      });
+
+      if (response.error) {
+        throw new Error(response.error.message || "PDF generation failed");
+      }
+
+      const { downloadUrl, fileName } = response.data;
+      
+      // Open download in new tab
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = fileName;
+      link.target = "_blank";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      toast({
+        title: "PDF Generated",
+        description: "Your report is downloading...",
+      });
+    } catch (error: any) {
+      console.error("PDF generation error:", error);
+      toast({
+        title: "PDF Generation Failed",
+        description: error.message || "Failed to generate PDF. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingPdf(null);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -62,7 +107,7 @@ export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {/* Always show View Report button */}
+                  {/* View Report button */}
                   <Button
                     variant="default"
                     size="sm"
@@ -71,16 +116,22 @@ export function ReportsList({ reports, isLoading, onDownload }: ReportsListProps
                     <Eye className="h-4 w-4 mr-1" />
                     View Report
                   </Button>
-                  {report.pdf_path && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onDownload(report.id, "pdf")}
-                    >
+                  
+                  {/* Generate/Download PDF button */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleGeneratePdf(report.id)}
+                    disabled={generatingPdf === report.id}
+                  >
+                    {generatingPdf === report.id ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
                       <Download className="h-4 w-4 mr-1" />
-                      PDF
-                    </Button>
-                  )}
+                    )}
+                    PDF
+                  </Button>
+                  
                   {report.docx_path && (
                     <Button
                       variant="outline"
