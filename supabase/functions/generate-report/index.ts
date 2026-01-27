@@ -19,6 +19,31 @@ const RESEARCH_STEPS = [
   { name: "partner_businesses", description: "Finding Australian partner businesses" },
 ];
 
+// Timeout wrapper for fetch calls
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number = 30000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -241,41 +266,45 @@ async function processReportGeneration(
 
   try {
     // Step 1: Extract context from article
-    await updateStep(supabase, reportRunId, 1, "running");
-    
-    let articleContent = "";
-    if (FIRECRAWL_API_KEY) {
-      try {
-        const scrapeResponse = await fetch("https://api.firecrawl.dev/v1/scrape", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            url: publicArticleUrl,
-            formats: ["markdown"],
-            onlyMainContent: true,
-          }),
-        });
+    await executeStep(supabase, reportRunId, 1, async () => {
+      let articleContent = "";
+      if (FIRECRAWL_API_KEY) {
+        try {
+          const scrapeResponse = await fetchWithTimeout(
+            "https://api.firecrawl.dev/v1/scrape",
+            {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                url: publicArticleUrl,
+                formats: ["markdown"],
+                onlyMainContent: true,
+              }),
+            },
+            60000 // 60s timeout for Firecrawl
+          );
 
-        if (scrapeResponse.ok) {
-          const scrapeData = await scrapeResponse.json();
-          articleContent = scrapeData.data?.markdown || scrapeData.markdown || "";
-          if (scrapeData.data?.metadata?.title) {
-            citations.push({
-              url: publicArticleUrl,
-              title: scrapeData.data.metadata.title,
-              accessed: new Date().toISOString().split("T")[0],
-            });
+          if (scrapeResponse.ok) {
+            const scrapeData = await scrapeResponse.json();
+            articleContent = scrapeData.data?.markdown || scrapeData.markdown || "";
+            if (scrapeData.data?.metadata?.title) {
+              citations.push({
+                url: publicArticleUrl,
+                title: scrapeData.data.metadata.title,
+                accessed: new Date().toISOString().split("T")[0],
+              });
+            }
           }
+        } catch (e) {
+          console.error("Firecrawl scrape error:", e);
+          // Continue without scraped content
         }
-      } catch (e) {
-        console.error("Firecrawl scrape error:", e);
       }
-    }
 
-    const contextPrompt = `You are analyzing research for commercialization potential.
+      const contextPrompt = `You are analyzing research for commercialization potential.
 
 Research Summary: ${summary}
 Article URL: ${publicArticleUrl}
@@ -291,14 +320,14 @@ Extract and summarize:
 
 Provide a structured analysis.`;
 
-    const contextResult = await callAIWithRetry(contextPrompt);
-    reportContent.researchContext = contextResult;
-    await updateStep(supabase, reportRunId, 1, "completed", { context: contextResult });
+      const contextResult = await callAIWithRetry(contextPrompt);
+      reportContent.researchContext = contextResult;
+      return { context: contextResult };
+    });
 
     // Step 2: Competitor Research
-    await updateStep(supabase, reportRunId, 2, "running");
-    
-    const competitorPrompt = `Based on this research:
+    await executeStep(supabase, reportRunId, 2, async () => {
+      const competitorPrompt = `Based on this research:
 ${summary}
 
 Search for and identify competing or similar research projects from other researchers worldwide. Include:
@@ -309,14 +338,14 @@ Search for and identify competing or similar research projects from other resear
 
 Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
 
-    const competitorResult = await callAIWithRetry(competitorPrompt);
-    reportContent.competitorResearch = competitorResult;
-    await updateStep(supabase, reportRunId, 2, "completed", { competitors: competitorResult });
+      const competitorResult = await callAIWithRetry(competitorPrompt);
+      reportContent.competitorResearch = competitorResult;
+      return { competitors: competitorResult };
+    });
 
     // Step 3: Market Segments
-    await updateStep(supabase, reportRunId, 3, "running");
-    
-    const marketPrompt = `Based on this research innovation:
+    await executeStep(supabase, reportRunId, 3, async () => {
+      const marketPrompt = `Based on this research innovation:
 ${summary}
 
 Identify at least 3 different market segments where this research could be commercialized as a product or service. At least one must be in Australia.
@@ -330,18 +359,18 @@ For each segment provide:
 
 Be specific and practical.`;
 
-    const marketResult = await callAIWithRetry(marketPrompt);
-    reportContent.marketSegments = marketResult;
-    await updateStep(supabase, reportRunId, 3, "completed", { segments: marketResult });
+      const marketResult = await callAIWithRetry(marketPrompt);
+      reportContent.marketSegments = marketResult;
+      return { segments: marketResult };
+    });
 
     // Step 4: Find Competitors
-    await updateStep(supabase, reportRunId, 4, "running");
-    
-    const existingCompetitorsPrompt = `Based on the market segments identified for this research:
+    await executeStep(supabase, reportRunId, 4, async () => {
+      const existingCompetitorsPrompt = `Based on the market segments identified for this research:
 ${summary}
 
 Market Segments:
-${marketResult}
+${reportContent.marketSegments}
 
 Find companies that may already have products or services in these markets. For each competitor:
 1. Company name
@@ -352,17 +381,17 @@ Find companies that may already have products or services in these markets. For 
 
 Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
 
-    const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt);
-    reportContent.existingCompetitors = existingCompetitorsResult;
-    await updateStep(supabase, reportRunId, 4, "completed", { competitors: existingCompetitorsResult });
+      const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt);
+      reportContent.existingCompetitors = existingCompetitorsResult;
+      return { competitors: existingCompetitorsResult };
+    });
 
     // Step 5: Calculate TAM
-    await updateStep(supabase, reportRunId, 5, "running");
-    
-    const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
+    await executeStep(supabase, reportRunId, 5, async () => {
+      const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
 
 Research: ${summary}
-Market Segments: ${marketResult}
+Market Segments: ${reportContent.marketSegments}
 
 Using data from validated sources (OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
 1. Market size in USD/AUD
@@ -372,15 +401,15 @@ Using data from validated sources (OECD, World Bank, ABS, industry reports), est
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
 
-    const tamResult = await callAIWithRetry(tamPrompt);
-    reportContent.tam = tamResult;
-    await updateStep(supabase, reportRunId, 5, "completed", { tam: tamResult });
+      const tamResult = await callAIWithRetry(tamPrompt);
+      reportContent.tam = tamResult;
+      return { tam: tamResult };
+    });
 
     // Step 6: Calculate SAM
-    await updateStep(supabase, reportRunId, 6, "running");
-    
-    const samPrompt = `Based on the TAM analysis:
-${tamResult}
+    await executeStep(supabase, reportRunId, 6, async () => {
+      const samPrompt = `Based on the TAM analysis:
+${reportContent.tam}
 
 Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
 1. Geographic limitations
@@ -390,15 +419,15 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-    const samResult = await callAIWithRetry(samPrompt);
-    reportContent.sam = samResult;
-    await updateStep(supabase, reportRunId, 6, "completed", { sam: samResult });
+      const samResult = await callAIWithRetry(samPrompt);
+      reportContent.sam = samResult;
+      return { sam: samResult };
+    });
 
     // Step 7: Calculate SOM
-    await updateStep(supabase, reportRunId, 7, "running");
-    
-    const somPrompt = `Based on the SAM analysis:
-${samResult}
+    await executeStep(supabase, reportRunId, 7, async () => {
+      const somPrompt = `Based on the SAM analysis:
+${reportContent.sam}
 
 Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
 1. First year targets
@@ -409,15 +438,15 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-    const somResult = await callAIWithRetry(somPrompt);
-    reportContent.som = somResult;
-    await updateStep(supabase, reportRunId, 7, "completed", { som: somResult });
+      const somResult = await callAIWithRetry(somPrompt);
+      reportContent.som = somResult;
+      return { som: somResult };
+    });
 
     // Step 8: Australian Economic Impact
-    await updateStep(supabase, reportRunId, 8, "running");
-    
-    const impactPrompt = `Based on the SOM projections:
-${somResult}
+    await executeStep(supabase, reportRunId, 8, async () => {
+      const impactPrompt = `Based on the SOM projections:
+${reportContent.som}
 
 Calculate the likely economic impact to the Australian economy from commercializing this research:
 1. Direct revenue in Australia
@@ -430,17 +459,17 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-    const impactResult = await callAIWithRetry(impactPrompt);
-    reportContent.economicImpact = impactResult;
-    await updateStep(supabase, reportRunId, 8, "completed", { impact: impactResult });
+      const impactResult = await callAIWithRetry(impactPrompt);
+      reportContent.economicImpact = impactResult;
+      return { impact: impactResult };
+    });
 
     // Step 9: Competitor Comparison Table
-    await updateStep(supabase, reportRunId, 9, "running");
-    
-    const tablePrompt = `Create a competitor comparison table based on:
+    await executeStep(supabase, reportRunId, 9, async () => {
+      const tablePrompt = `Create a competitor comparison table based on:
 
-Our Products: ${marketResult}
-Existing Competitors: ${existingCompetitorsResult}
+Our Products: ${reportContent.marketSegments}
+Existing Competitors: ${reportContent.existingCompetitors}
 
 Build a markdown table comparing:
 | Feature | Our Solution | Competitor 1 | Competitor 2 | Competitor 3 |
@@ -453,17 +482,17 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`;
 
-    const tableResult = await callAIWithRetry(tablePrompt);
-    reportContent.competitorTable = tableResult;
-    await updateStep(supabase, reportRunId, 9, "completed", { table: tableResult });
+      const tableResult = await callAIWithRetry(tablePrompt);
+      reportContent.competitorTable = tableResult;
+      return { table: tableResult };
+    });
 
     // Step 10: Partner Businesses
-    await updateStep(supabase, reportRunId, 10, "running");
-    
-    const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
+    await executeStep(supabase, reportRunId, 10, async () => {
+      const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
 
 Research: ${summary}
-Market Segments: ${marketResult}
+Market Segments: ${reportContent.marketSegments}
 
 1. Identify relevant ANZSIC codes
 2. For each code, list 3-5 Australian businesses operating in that classification
@@ -476,9 +505,10 @@ Market Segments: ${marketResult}
 
 Use the ANZSIC hierarchy for classification.`;
 
-    const partnerResult = await callAIWithRetry(partnerPrompt);
-    reportContent.partnerBusinesses = partnerResult;
-    await updateStep(supabase, reportRunId, 10, "completed", { partners: partnerResult });
+      const partnerResult = await callAIWithRetry(partnerPrompt);
+      reportContent.partnerBusinesses = partnerResult;
+      return { partners: partnerResult };
+    });
 
     // Get next version number
     const { data: existingReports } = await supabase
@@ -523,7 +553,28 @@ Use the ANZSIC hierarchy for classification.`;
 
   } catch (error) {
     console.error("Report generation error:", error);
-    await updateRunStatus(supabase, reportRunId, "failed");
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
+  }
+}
+
+// Execute a step with proper error handling and recording
+// deno-lint-ignore no-explicit-any
+async function executeStep(
+  supabase: any,
+  reportRunId: string,
+  stepNumber: number,
+  stepFn: () => Promise<Record<string, unknown>>
+): Promise<void> {
+  try {
+    await updateStep(supabase, reportRunId, stepNumber, "running");
+    const outputs = await stepFn();
+    await updateStep(supabase, reportRunId, stepNumber, "completed", outputs);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error(`Step ${stepNumber} failed:`, errorMessage);
+    await updateStep(supabase, reportRunId, stepNumber, "failed", undefined, errorMessage);
+    throw error; // Re-throw to trigger overall failure
   }
 }
 
@@ -545,10 +596,10 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
-      // Check if rate limited (429)
-      if (errorMessage.includes("429")) {
+      // Check if rate limited (429) or timeout
+      if (errorMessage.includes("429") || errorMessage.includes("timed out")) {
         const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-        console.log(`OpenAI rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
+        console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
         await new Promise(r => setTimeout(r, delay));
         lastError = error instanceof Error ? error : new Error(errorMessage);
         continue;
@@ -564,25 +615,29 @@ async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<
   return await callLovableAI(prompt);
 }
 
-// Primary: OpenAI
+// Primary: OpenAI with timeout
 async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const response = await fetchWithTimeout(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
+          },
+          { role: "user", content: prompt }
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
-        },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
+    30000 // 30s timeout for AI calls
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -594,7 +649,7 @@ async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
   return data.choices?.[0]?.message?.content || "No response generated";
 }
 
-// Fallback: Lovable AI (Gemini)
+// Fallback: Lovable AI (Gemini) with timeout
 async function callLovableAI(prompt: string): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
@@ -604,23 +659,27 @@ async function callLovableAI(prompt: string): Promise<string> {
 
   console.log("Using Lovable AI (Gemini) fallback");
   
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${LOVABLE_API_KEY}`,
-      "Content-Type": "application/json",
+  const response = await fetchWithTimeout(
+    "https://ai.gateway.lovable.dev/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-3-flash-preview",
+        messages: [
+          {
+            role: "system",
+            content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
+          },
+          { role: "user", content: prompt }
+        ],
+      }),
     },
-    body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        {
-          role: "system",
-          content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
-        },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
+    30000 // 30s timeout for AI calls
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -638,7 +697,8 @@ async function updateStep(
   reportRunId: string,
   stepNumber: number,
   status: string,
-  outputs?: Record<string, unknown>
+  outputs?: Record<string, unknown>,
+  errorMessage?: string
 ) {
   const updates: Record<string, unknown> = { status };
   
@@ -650,6 +710,10 @@ async function updateStep(
   
   if (outputs) {
     updates.outputs_json = outputs;
+  }
+
+  if (errorMessage) {
+    updates.error_message = errorMessage;
   }
 
   await supabase
@@ -671,13 +735,38 @@ async function updateStep(
 async function updateRunStatus(
   supabase: any,
   reportRunId: string,
-  status: string
+  status: string,
+  errorMessage?: string
 ) {
+  const updates: Record<string, unknown> = {
+    status,
+    completed_at: new Date().toISOString(),
+  };
+
+  // Store error message in the current step if there is one
+  if (errorMessage) {
+    // Get current step to update with error
+    const { data: run } = await supabase
+      .from("report_runs")
+      .select("current_step")
+      .eq("id", reportRunId)
+      .single();
+    
+    if (run?.current_step) {
+      await supabase
+        .from("report_run_steps")
+        .update({ 
+          status: "failed",
+          error_message: errorMessage,
+          completed_at: new Date().toISOString()
+        })
+        .eq("report_run_id", reportRunId)
+        .eq("step_number", run.current_step);
+    }
+  }
+
   await supabase
     .from("report_runs")
-    .update({
-      status,
-      completed_at: new Date().toISOString(),
-    })
+    .update(updates)
     .eq("id", reportRunId);
 }

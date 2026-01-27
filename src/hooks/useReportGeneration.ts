@@ -4,10 +4,11 @@ import { useToast } from "@/hooks/use-toast";
 
 interface ReportRun {
   id: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "stalled";
   current_step: number;
   total_steps: number;
   created_at: string;
+  started_at: string | null;
 }
 
 interface Report {
@@ -17,6 +18,9 @@ interface Report {
   pdf_path: string | null;
   docx_path: string | null;
 }
+
+// 5 minutes stale threshold
+const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
 export function useReportGeneration(applicationId: string | undefined) {
   const { toast } = useToast();
@@ -43,13 +47,13 @@ export function useReportGeneration(applicationId: string | undefined) {
     setIsLoadingReports(false);
   }, [applicationId]);
 
-  // Check for active report runs
+  // Check for active report runs with stale detection
   const checkActiveRun = useCallback(async () => {
     if (!applicationId) return;
 
     const { data, error } = await supabase
       .from("report_runs")
-      .select("id, status, current_step, total_steps, created_at")
+      .select("id, status, current_step, total_steps, created_at, started_at")
       .eq("application_id", applicationId)
       .in("status", ["pending", "running"])
       .order("created_at", { ascending: false })
@@ -62,7 +66,20 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
 
     if (data) {
-      setActiveRun(data as ReportRun);
+      // Check if the run is stale (older than threshold)
+      const startedAt = new Date(data.started_at || data.created_at);
+      const now = new Date();
+      const isStale = now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS;
+
+      if (isStale) {
+        // Mark as stalled for UI
+        setActiveRun({
+          ...data,
+          status: "stalled" as const,
+        } as ReportRun);
+      } else {
+        setActiveRun(data as ReportRun);
+      }
       setIsGenerating(true);
     } else {
       setActiveRun(null);
@@ -165,6 +182,33 @@ export function useReportGeneration(applicationId: string | undefined) {
     });
   }, [reports, toast]);
 
+  // Cancel a stalled/stuck report run
+  const cancelRun = useCallback(async (runId: string) => {
+    try {
+      const { error } = await supabase.functions.invoke("cancel-report-run", {
+        body: { reportRunId: runId },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setActiveRun(null);
+      setIsGenerating(false);
+      toast({
+        title: "Generation cancelled",
+        description: "You can try again when ready.",
+      });
+    } catch (error) {
+      console.error("Error cancelling run:", error);
+      toast({
+        title: "Failed to cancel",
+        description: "Please try again or contact support.",
+        variant: "destructive",
+      });
+    }
+  }, [toast]);
+
   return {
     isGenerating,
     activeRun,
@@ -172,6 +216,7 @@ export function useReportGeneration(applicationId: string | undefined) {
     isLoadingReports,
     startGeneration,
     downloadReport,
+    cancelRun,
     refetch: fetchReports,
   };
 }
