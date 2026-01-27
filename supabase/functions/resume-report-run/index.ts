@@ -10,8 +10,12 @@ const corsHeaders = {
 // Model selection based on step complexity
 // Lighter model for simple steps, heavier for complex analysis
 function getModelForStep(stepNumber: number): string {
-  // Steps 6-7: Complex market analysis - use heavier model
+  // Steps 1-3: Context extraction, basic search - use lighter model
+  // Steps 4-7: Complex market analysis - use heavier model
   // Steps 8-10: Summary and formatting - use lighter model
+  if (stepNumber <= 3) {
+    return "google/gemini-2.5-flash-lite";
+  }
   if (stepNumber <= 7) {
     return "google/gemini-3-flash-preview";
   }
@@ -131,11 +135,11 @@ serve(async (req) => {
       );
     }
 
-    // Check if at checkpoint (step 4, 5, or step 8, pending status)
+    // 10-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-9
     const resumeFromStep = reportRun.current_step;
-    if (![4, 5, 8].includes(resumeFromStep) || reportRun.status !== "pending") {
+    if (resumeFromStep < 1 || resumeFromStep > 9 || reportRun.status !== "pending") {
       return new Response(
-        JSON.stringify({ error: "Report run is not at checkpoint" }),
+        JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -150,8 +154,8 @@ serve(async (req) => {
     const inputs = Array.isArray(appData) ? appData[0]?.inputs_json : appData?.inputs_json;
     const grantVersionId = Array.isArray(appData) ? appData[0]?.grant_version_id : appData?.grant_version_id;
 
-    // Start async processing for the appropriate phase
-    processReportPhase(
+    // Start async processing for the next single step
+    processSingleStep(
       reportRunId,
       reportRun.application_id,
       grantVersionId,
@@ -160,13 +164,13 @@ serve(async (req) => {
       inputs || {},
       reportRun.checkpoint_data_json || {},
       reportRun.checkpoint_citations_json || [],
-      resumeFromStep // Pass which step we're resuming from
-    ).catch((e) => console.error(`Phase processing error (from step ${resumeFromStep}):`, e));
+      resumeFromStep
+    ).catch((e) => console.error(`Step processing error (from step ${resumeFromStep}):`, e));
 
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: `Report generation resumed from step ${resumeFromStep}` 
+        message: `Report generation resumed from step ${resumeFromStep}, running step ${resumeFromStep + 1}` 
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -179,7 +183,12 @@ serve(async (req) => {
   }
 });
 
-async function processReportPhase(
+/**
+ * 10-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
+ * This function is called for steps 2-10.
+ * Step 10 completes the report instead of checkpointing.
+ */
+async function processSingleStep(
   reportRunId: string,
   applicationId: string,
   grantVersionId: string,
@@ -198,13 +207,84 @@ async function processReportPhase(
   const summary = inputs.summary as string || "";
   const reportContent: Record<string, unknown> = { ...checkpointData };
   const citations = [...checkpointCitations];
+  
+  const nextStep = resumeFromStep + 1;
+  console.log(`10-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
 
   try {
-    // Handle resuming from step 4 (Phase 2a: Step 5 first)
-    if (resumeFromStep === 4) {
-      // Step 5: Calculate TAM (moved from generate-report)
-      await executeStep(supabase, reportRunId, 5, async () => {
-        const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
+    // Execute exactly one step based on nextStep
+    switch (nextStep) {
+      case 2:
+        // Step 2: Competitor Research
+        await executeStep(supabase, reportRunId, 2, async () => {
+          const competitorPrompt = `Based on this research:
+${summary}
+
+Search for and identify competing or similar research projects from other researchers worldwide. Include:
+1. Names of competing research groups/universities
+2. Brief description of their work
+3. Key differences from our research
+4. Publication dates and status
+
+Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
+
+          const competitorResult = await callAIWithRetry(competitorPrompt, 2);
+          reportContent.competitorResearch = competitorResult;
+          return { competitors: competitorResult };
+        });
+        break;
+
+      case 3:
+        // Step 3: Market Segments
+        await executeStep(supabase, reportRunId, 3, async () => {
+          const marketPrompt = `Based on this research innovation:
+${summary}
+
+Identify at least 3 different market segments where this research could be commercialized as a product or service. At least one must be in Australia.
+
+For each segment provide:
+1. Segment name
+2. Target customers
+3. Product/service concept
+4. Geographic focus (include at least one Australian market)
+5. Estimated market size category (small/medium/large)
+
+Be specific and practical.`;
+
+          const marketResult = await callAIWithRetry(marketPrompt, 3);
+          reportContent.marketSegments = marketResult;
+          return { segments: marketResult };
+        });
+        break;
+
+      case 4:
+        // Step 4: Find Competitors
+        await executeStep(supabase, reportRunId, 4, async () => {
+          const existingCompetitorsPrompt = `Based on the market segments identified for this research:
+${summary}
+
+Market Segments:
+${reportContent.marketSegments}
+
+Find companies that may already have products or services in these markets. For each competitor:
+1. Company name
+2. Product/service name
+3. Estimated market share or revenue if available
+4. Geographic presence
+5. How they compare to the proposed research
+
+Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
+
+          const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4);
+          reportContent.existingCompetitors = existingCompetitorsResult;
+          return { competitors: existingCompetitorsResult };
+        });
+        break;
+
+      case 5:
+        // Step 5: Calculate TAM
+        await executeStep(supabase, reportRunId, 5, async () => {
+          const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
 
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
@@ -217,20 +297,16 @@ Using data from validated sources (OECD, World Bank, ABS, industry reports), est
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
 
-        const tamResult = await callAIWithRetry(tamPrompt, 5);
-        reportContent.tam = tamResult;
-        return { tam: tamResult };
-      });
-      
-      // Fall through to continue with steps 6-8
-    }
+          const tamResult = await callAIWithRetry(tamPrompt, 5);
+          reportContent.tam = tamResult;
+          return { tam: tamResult };
+        });
+        break;
 
-    if (resumeFromStep === 4 || resumeFromStep === 5) {
-      // Phase 2: Steps 6-8, then checkpoint
-      
-      // Step 6: Calculate SAM
-      await executeStep(supabase, reportRunId, 6, async () => {
-        const samPrompt = `Based on the TAM analysis:
+      case 6:
+        // Step 6: Calculate SAM
+        await executeStep(supabase, reportRunId, 6, async () => {
+          const samPrompt = `Based on the TAM analysis:
 ${reportContent.tam}
 
 Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
@@ -241,14 +317,16 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-        const samResult = await callAIWithRetry(samPrompt, 6);
-        reportContent.sam = samResult;
-        return { sam: samResult };
-      });
+          const samResult = await callAIWithRetry(samPrompt, 6);
+          reportContent.sam = samResult;
+          return { sam: samResult };
+        });
+        break;
 
-      // Step 7: Calculate SOM
-      await executeStep(supabase, reportRunId, 7, async () => {
-        const somPrompt = `Based on the SAM analysis:
+      case 7:
+        // Step 7: Calculate SOM
+        await executeStep(supabase, reportRunId, 7, async () => {
+          const somPrompt = `Based on the SAM analysis:
 ${reportContent.sam}
 
 Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
@@ -260,14 +338,16 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-        const somResult = await callAIWithRetry(somPrompt, 7);
-        reportContent.som = somResult;
-        return { som: somResult };
-      });
+          const somResult = await callAIWithRetry(somPrompt, 7);
+          reportContent.som = somResult;
+          return { som: somResult };
+        });
+        break;
 
-      // Step 8: Australian Economic Impact
-      await executeStep(supabase, reportRunId, 8, async () => {
-        const impactPrompt = `Based on the SOM projections:
+      case 8:
+        // Step 8: Australian Economic Impact
+        await executeStep(supabase, reportRunId, 8, async () => {
+          const impactPrompt = `Based on the SOM projections:
 ${reportContent.som}
 
 Calculate the likely economic impact to the Australian economy from commercializing this research:
@@ -281,31 +361,16 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-        const impactResult = await callAIWithRetry(impactPrompt, 8);
-        reportContent.economicImpact = impactResult;
-        return { impact: impactResult };
-      });
+          const impactResult = await callAIWithRetry(impactPrompt, 8);
+          reportContent.economicImpact = impactResult;
+          return { impact: impactResult };
+        });
+        break;
 
-      // CHECKPOINT: Save progress after step 8 and return
-      await supabase
-        .from("report_runs")
-        .update({
-          checkpoint_data_json: reportContent,
-          checkpoint_citations_json: citations,
-          current_step: 8,
-          status: "pending", // Signal checkpoint - frontend will detect and resume
-        })
-        .eq("id", reportRunId);
-
-      console.log(`Checkpoint saved for report run ${reportRunId} at step 8`);
-      return; // Frontend will trigger Phase 3
-    }
-
-    // Phase 3: Steps 9-10 (resumeFromStep === 8)
-    
-    // Step 9: Competitor Comparison Table
-    await executeStep(supabase, reportRunId, 9, async () => {
-      const tablePrompt = `Create a competitor comparison table based on:
+      case 9:
+        // Step 9: Competitor Comparison Table
+        await executeStep(supabase, reportRunId, 9, async () => {
+          const tablePrompt = `Create a competitor comparison table based on:
 
 Our Products: ${reportContent.marketSegments}
 Existing Competitors: ${reportContent.existingCompetitors}
@@ -321,14 +386,16 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`;
 
-      const tableResult = await callAIWithRetry(tablePrompt, 9);
-      reportContent.competitorTable = tableResult;
-      return { table: tableResult };
-    });
+          const tableResult = await callAIWithRetry(tablePrompt, 9);
+          reportContent.competitorTable = tableResult;
+          return { table: tableResult };
+        });
+        break;
 
-    // Step 10: Partner Businesses
-    await executeStep(supabase, reportRunId, 10, async () => {
-      const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
+      case 10:
+        // Step 10: Partner Businesses - FINAL STEP
+        await executeStep(supabase, reportRunId, 10, async () => {
+          const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
 
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
@@ -344,59 +411,104 @@ Market Segments: ${reportContent.marketSegments}
 
 Use the ANZSIC hierarchy for classification.`;
 
-      const partnerResult = await callAIWithRetry(partnerPrompt, 10);
-      reportContent.partnerBusinesses = partnerResult;
-      return { partners: partnerResult };
-    });
+          const partnerResult = await callAIWithRetry(partnerPrompt, 10);
+          reportContent.partnerBusinesses = partnerResult;
+          return { partners: partnerResult };
+        });
 
-    // Get next version number
-    const { data: existingReports } = await supabase
-      .from("reports")
-      .select("version_number")
-      .eq("application_id", applicationId)
-      .order("version_number", { ascending: false })
-      .limit(1);
+        // FINAL STEP: Create the report and mark as complete
+        await createFinalReport(
+          supabase,
+          reportRunId,
+          applicationId,
+          grantVersionId,
+          templateVersionId,
+          userId,
+          inputs,
+          reportContent,
+          citations
+        );
+        
+        console.log(`10-PHASE: Report run ${reportRunId} completed successfully`);
+        return; // No checkpoint needed - we're done
+    }
 
-    const nextVersion = existingReports && existingReports.length > 0 
-      ? (existingReports[0] as { version_number: number }).version_number + 1 
-      : 1;
-
-    // Create the final report
-    await supabase.from("reports").insert({
-      application_id: applicationId,
-      user_id: userId,
-      grant_version_id: grantVersionId,
-      report_template_version_id: templateVersionId,
-      report_run_id: reportRunId,
-      version_number: nextVersion,
-      content_json: reportContent,
-      citations_json: citations,
-      inputs_snapshot_json: inputs,
-    });
-
-    // Update run as completed
+    // For steps 2-9: Save checkpoint and exit
+    // Frontend will detect pending status and call resume-report-run again
     await supabase
       .from("report_runs")
       .update({
-        status: "completed",
-        current_step: 10,
-        completed_at: new Date().toISOString(),
+        checkpoint_data_json: reportContent,
+        checkpoint_citations_json: citations,
+        current_step: nextStep,
+        status: "pending",
       })
       .eq("id", reportRunId);
 
-    // Update application status
-    await supabase
-      .from("applications")
-      .update({ status: "ready" })
-      .eq("id", applicationId);
-
-    console.log(`Report run ${reportRunId} completed successfully`);
+    console.log(`10-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
 
   } catch (error) {
-    console.error(`Report generation error (phase from step ${resumeFromStep}):`, error);
+    console.error(`10-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
   }
+}
+
+/**
+ * Create the final report after Step 10 completes
+ */
+// deno-lint-ignore no-explicit-any
+async function createFinalReport(
+  supabase: any,
+  reportRunId: string,
+  applicationId: string,
+  grantVersionId: string,
+  templateVersionId: string,
+  userId: string,
+  inputs: Record<string, unknown>,
+  reportContent: Record<string, unknown>,
+  citations: Array<{ url: string; title: string; accessed: string }>
+) {
+  // Get next version number
+  const { data: existingReports } = await supabase
+    .from("reports")
+    .select("version_number")
+    .eq("application_id", applicationId)
+    .order("version_number", { ascending: false })
+    .limit(1);
+
+  const nextVersion = existingReports && existingReports.length > 0 
+    ? (existingReports[0] as { version_number: number }).version_number + 1 
+    : 1;
+
+  // Create the final report
+  await supabase.from("reports").insert({
+    application_id: applicationId,
+    user_id: userId,
+    grant_version_id: grantVersionId,
+    report_template_version_id: templateVersionId,
+    report_run_id: reportRunId,
+    version_number: nextVersion,
+    content_json: reportContent,
+    citations_json: citations,
+    inputs_snapshot_json: inputs,
+  });
+
+  // Update run as completed
+  await supabase
+    .from("report_runs")
+    .update({
+      status: "completed",
+      current_step: 10,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", reportRunId);
+
+  // Update application status
+  await supabase
+    .from("applications")
+    .update({ status: "ready" })
+    .eq("id", applicationId);
 }
 
 // Execute a step with proper error handling, recording, and inter-step throttling

@@ -175,11 +175,11 @@ export function useReportGeneration(applicationId: string | undefined) {
     return () => clearInterval(pollInterval);
   }, [isGenerating, applicationId, checkActiveRun, fetchReports]);
 
-  // Detect checkpoint status and auto-resume (step 5 OR step 8)
+  // 10-PHASE ARCHITECTURE: Detect checkpoint at any step 1-9 and auto-resume
   useEffect(() => {
     if (activeRun && activeRun.status === "pending") {
-      // Checkpoint at step 5 (Phase 2) or step 8 (Phase 3) - trigger resume
-      if (activeRun.current_step === 5 || activeRun.current_step === 8) {
+      // Checkpoint at any step 1-9 triggers auto-resume for next step
+      if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
         resumeFromCheckpoint(activeRun.id);
       }
     }
