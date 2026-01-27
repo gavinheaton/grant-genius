@@ -39,6 +39,21 @@ interface ReportContent {
   citations?: any[];
 }
 
+function getFontStack(fontFamily: string): string {
+  const fontStacks: Record<string, string> = {
+    "Inter": "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    "Roboto": "Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    "Open Sans": "'Open Sans', -apple-system, BlinkMacSystemFont, sans-serif",
+    "Lato": "Lato, -apple-system, BlinkMacSystemFont, sans-serif",
+    "Montserrat": "Montserrat, -apple-system, BlinkMacSystemFont, sans-serif",
+    "Source Sans Pro": "'Source Sans Pro', -apple-system, sans-serif",
+    "Nunito": "Nunito, -apple-system, BlinkMacSystemFont, sans-serif",
+    "Merriweather": "Merriweather, Georgia, 'Times New Roman', serif",
+    "Playfair Display": "'Playfair Display', Georgia, serif",
+  };
+  return fontStacks[fontFamily] || `'${fontFamily}', sans-serif`;
+}
+
 function buildHtml(
   report: any,
   template: PdfTemplate,
@@ -53,10 +68,7 @@ function buildHtml(
     day: "numeric",
   });
 
-  const fontUrl = `https://fonts.googleapis.com/css2?family=${template.font_family.replace(
-    / /g,
-    "+"
-  )}:wght@400;500;600;700&display=swap`;
+  const fontStack = getFontStack(template.font_family);
 
   // Build sections array for TOC
   const sections: { title: string; content: string }[] = [];
@@ -256,7 +268,6 @@ function buildHtml(
 <html>
 <head>
   <meta charset="UTF-8">
-  <link href="${fontUrl}" rel="stylesheet">
   <style>
     * {
       margin: 0;
@@ -265,7 +276,7 @@ function buildHtml(
     }
     
     body {
-      font-family: '${template.font_family}', sans-serif;
+      font-family: ${fontStack};
       font-size: ${template.heading_sizes_json.body}px;
       line-height: 1.6;
       color: #1f2937;
@@ -602,6 +613,7 @@ Deno.serve(async (req) => {
         landscape: false,
         format: template.page_format,
         use_print: true,
+        sandbox: true,
       }),
     });
 
