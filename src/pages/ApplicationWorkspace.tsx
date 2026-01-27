@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { 
@@ -47,12 +47,14 @@ export default function ApplicationWorkspace() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [application, setApplication] = useState<ApplicationData | null>(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [inputsCollapsed, setInputsCollapsed] = useState(false);
   const [inputs, setInputs] = useState<ApplicationInputs>({
     publicArticleUrl: "",
     summary: "",
     trl: "",
     ipStatus: "",
   });
+  const progressRef = useRef<HTMLDivElement>(null);
   
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
   const { 
@@ -163,6 +165,17 @@ export default function ApplicationWorkspace() {
     return () => clearTimeout(timer);
   }, [inputs, saveInputs, application]);
 
+  // Auto-collapse inputs and scroll to progress when generation starts
+  useEffect(() => {
+    if (isGenerating) {
+      setInputsCollapsed(true);
+      // Small delay to allow collapse animation before scrolling
+      setTimeout(() => {
+        progressRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    }
+  }, [isGenerating]);
+
   const handleInputChange = (field: keyof ApplicationInputs, value: string) => {
     setInputs((prev) => ({ ...prev, [field]: value }));
   };
@@ -250,6 +263,8 @@ export default function ApplicationWorkspace() {
           inputs={inputs} 
           onInputChange={handleInputChange}
           disabled={isGenerating}
+          isCollapsed={inputsCollapsed}
+          onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
         />
 
         {/* Generate Report Button */}
@@ -274,13 +289,15 @@ export default function ApplicationWorkspace() {
         </div>
 
         {/* Progress Indicator */}
-        {isGenerating && activeRun && (
-          <GenerationProgress
-            currentStep={activeRun.current_step}
-            totalSteps={activeRun.total_steps}
-            status={activeRun.status}
-          />
-        )}
+        <div ref={progressRef}>
+          {isGenerating && activeRun && (
+            <GenerationProgress
+              currentStep={activeRun.current_step}
+              totalSteps={activeRun.total_steps}
+              status={activeRun.status}
+            />
+          )}
+        </div>
 
         {/* Reports List */}
         <ReportsList
