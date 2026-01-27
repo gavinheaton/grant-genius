@@ -451,6 +451,40 @@ Use the ANZSIC hierarchy for classification.`;
     console.error(`10-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
+    
+    // Refund credit on failure
+    await refundCredit(supabase, reportRunId);
+  }
+}
+
+/**
+ * Refund the credit consumed by a failed report run
+ */
+// deno-lint-ignore no-explicit-any
+async function refundCredit(supabase: any, reportRunId: string) {
+  try {
+    const { data: consumption } = await supabase
+      .from("entitlement_consumptions")
+      .select("id, entitlement_id")
+      .eq("report_run_id", reportRunId)
+      .maybeSingle();
+
+    if (consumption) {
+      // Decrement used_quantity using the RPC function
+      await supabase.rpc("decrement_entitlement", { 
+        ent_id: consumption.entitlement_id 
+      });
+      
+      // Delete the consumption record
+      await supabase
+        .from("entitlement_consumptions")
+        .delete()
+        .eq("id", consumption.id);
+        
+      console.log(`Credit refunded for failed run ${reportRunId}`);
+    }
+  } catch (e) {
+    console.error("Failed to refund credit:", e);
   }
 }
 

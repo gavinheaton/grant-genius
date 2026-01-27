@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
@@ -218,13 +218,27 @@ export function useReportGeneration(applicationId: string | undefined) {
     return () => clearInterval(pollInterval);
   }, [isGenerating, applicationId, checkActiveRun, fetchReports]);
 
+  // Track resume attempts to prevent infinite loops
+  const resumeAttemptedRef = useRef<Set<string>>(new Set());
+
   // 10-PHASE ARCHITECTURE: Detect checkpoint at any step 1-9 and auto-resume
   useEffect(() => {
     if (activeRun && activeRun.status === "pending") {
-      // Checkpoint at any step 1-9 triggers auto-resume for next step
-      if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
-        resumeFromCheckpoint(activeRun.id);
+      // Create a unique key for this checkpoint attempt
+      const attemptKey = `${activeRun.id}-${activeRun.current_step}`;
+      
+      // Only resume if we haven't already attempted this specific checkpoint
+      if (!resumeAttemptedRef.current.has(attemptKey)) {
+        if (activeRun.current_step >= 1 && activeRun.current_step <= 9) {
+          resumeAttemptedRef.current.add(attemptKey);
+          resumeFromCheckpoint(activeRun.id);
+        }
       }
+    }
+    
+    // Clear tracking when run completes or fails
+    if (activeRun && (activeRun.status === "completed" || activeRun.status === "failed")) {
+      resumeAttemptedRef.current.clear();
     }
   }, [activeRun, resumeFromCheckpoint]);
 
