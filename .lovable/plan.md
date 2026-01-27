@@ -1,135 +1,96 @@
 
 
-# Multi-Phase Checkpoint and Circuit-Break Implementation
+# Fix Rate Limiting Issues: Multi-Pronged Approach
 
-## Overview
+## Root Cause Analysis
 
-Two improvements to further reduce rate limits and timeouts:
-1. Add a second checkpoint after Step 8, splitting the current Phase 2 into two smaller phases
-2. Implement a circuit-breaker that switches to Gemini for the remainder of a run after OpenAI returns a 429
+Looking at the data, the latest report run (`fb0c0c23...`) has been stuck at Step 1 "running" status since 11:48 AM - over 2 hours ago. This indicates the AI call is either:
+1. Timing out silently
+2. Rate limited and the retry logic isn't handling it properly
+3. The edge function completed but the status wasn't updated
 
----
+The current retry logic uses 1s, 2s, 4s delays (7 seconds total) which is too aggressive. If the rate limit window is 60+ seconds, these retries will all fail.
 
-## Current Flow
-
-```text
-Phase 1 (generate-report)     →  Checkpoint at Step 5
-     Steps 1-5
-         ↓
-Phase 2 (resume-report-run)   →  Steps 6-10 (currently all in one call)
-```
-
-## New Flow
-
-```text
-Phase 1 (generate-report)         →  Checkpoint at Step 5
-     Steps 1-5
-         ↓
-Phase 2 (resume-report-run)       →  Checkpoint at Step 8
-     Steps 6-8
-         ↓
-Phase 3 (resume-report-run)       →  Completion
-     Steps 9-10
-```
+Switching between OpenAI and Gemini won't help because **both providers have rate limits** and the fundamental issue is:
+- **Too many requests too quickly** (5 steps back-to-back in Phase 1)
+- **Backoff delays too short** to let rate limits reset
+- **No delays between successful steps** to spread out the load
 
 ---
 
-## Implementation Details
+## Proposed Solution: Four Changes
 
-### 1. Checkpoint After Step 8
+### 1. Add Delays Between Steps (Throttling)
 
-**What changes:**
-- After completing Step 8 (Economic Impact), save checkpoint data and set status to `pending` with `current_step: 8`
-- Frontend detects Step 8 checkpoint and calls `resume-report-run` again
-- `resume-report-run` will detect Step 8 and execute only Steps 9–10
-
-**File: `supabase/functions/resume-report-run/index.ts`**
-
-Update the checkpoint logic:
-- After Step 8 completes, save checkpoint data and return early
-- Add conditional logic to detect whether resuming from Step 5 or Step 8:
-  - If `current_step === 5`: Execute Steps 6–8, then save checkpoint at Step 8
-  - If `current_step === 8`: Execute Steps 9–10, then complete the report
+Add a 3-second pause between each successful step to spread requests over time:
 
 ```typescript
-// After Step 8 completes:
-if (resumeFromStep === 5) {
-  // Save checkpoint at step 8
-  await supabase.from("report_runs").update({
-    checkpoint_data_json: reportContent,
-    checkpoint_citations_json: citations,
-    current_step: 8,
-    status: "pending",
-  }).eq("id", reportRunId);
+async function executeStep(...) {
+  // ... existing logic ...
+  await updateStep(supabase, reportRunId, stepNumber, "completed", outputs);
   
-  console.log(`Checkpoint saved at step 8 for run ${reportRunId}`);
-  return; // Frontend will detect and resume
+  // Throttle: wait 3 seconds before next step
+  console.log(`Step ${stepNumber} complete, waiting 3s before next step`);
+  await new Promise(r => setTimeout(r, 3000));
 }
 ```
 
-**File: `src/hooks/useReportGeneration.ts`**
+**Why this helps**: Instead of 5 AI calls in ~30 seconds, they're spread over ~45-60 seconds, staying under rate limits.
 
-Update the checkpoint detection:
+### 2. Increase Backoff Delays
+
+Change from 1s/2s/4s to 5s/15s/30s for rate limit retries:
 
 ```typescript
-// Detect checkpoint status and auto-resume
-useEffect(() => {
-  if (activeRun && activeRun.status === "pending") {
-    // Checkpoint at step 5 OR step 8 - trigger resume
-    if (activeRun.current_step === 5 || activeRun.current_step === 8) {
-      resumeFromCheckpoint(activeRun.id);
-    }
-  }
-}, [activeRun, resumeFromCheckpoint]);
+// Current: Math.pow(2, attempt) * 1000 → 1s, 2s, 4s
+// New: delays that actually give time for rate limits to reset
+const delays = [5000, 15000, 30000]; // 5s, 15s, 30s
+const delay = delays[attempt] || 30000;
 ```
 
-### 2. Circuit-Breaker for OpenAI 429
+**Why this helps**: Rate limit windows are typically 60 seconds. A 30-second delay on the third retry gives the window time to reset.
 
-**Problem:** The current retry logic retries OpenAI 3 times per step, but if OpenAI is rate-limited, every subsequent step will also fail/retry, wasting time.
+### 3. Simplify to Gemini-Only (Remove OpenAI Complexity)
 
-**Solution:** Track a "circuit-breaker" flag that, once OpenAI returns a 429, switches to Gemini for all remaining AI calls in that run.
-
-**Implementation approach:**
-
-Create a closure or module-level flag within each edge function execution:
+Remove the OpenAI fallback complexity since it's causing issues, and use Lovable AI (Gemini) directly with better error handling:
 
 ```typescript
-// At the start of processing:
-let useGeminiFallback = false;
-
 async function callAIWithRetry(prompt: string): Promise<string> {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+  const delays = [0, 5000, 15000, 30000]; // Initial, then 5s, 15s, 30s
   
-  // If circuit-breaker tripped OR no OpenAI key, use Gemini directly
-  if (useGeminiFallback || !OPENAI_API_KEY) {
-    return await callLovableAI(prompt);
-  }
-
-  // Try OpenAI with retries
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      console.log(`Retry ${attempt}/3, waiting ${delays[attempt] / 1000}s...`);
+      await new Promise(r => setTimeout(r, delays[attempt]));
+    }
+    
     try {
-      return await callOpenAI(OPENAI_API_KEY, prompt);
+      return await callLovableAI(prompt);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const msg = error instanceof Error ? error.message : String(error);
       
-      if (errorMessage.includes("429") || errorMessage.includes("timed out")) {
-        const delay = Math.pow(2, attempt) * 1000;
-        console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms`);
-        await new Promise(r => setTimeout(r, delay));
-        continue;
+      if (msg.includes("429")) {
+        console.log(`Rate limited on attempt ${attempt + 1}`);
+        continue; // Will wait via delays array on next iteration
       }
-      throw error;
+      
+      throw error; // Other errors fail immediately
     }
   }
   
-  // All retries exhausted - trip the circuit breaker
-  console.log("OpenAI rate limited - circuit breaker tripped, using Gemini for remaining calls");
-  useGeminiFallback = true;
-  return await callLovableAI(prompt);
+  throw new Error("AI service rate limited. Please try again in a few minutes.");
 }
 ```
 
-This flag persists for the duration of that function execution, so all subsequent steps in that phase will use Gemini without attempting OpenAI.
+### 4. Use Lighter Model for Simple Steps
+
+Use `gemini-2.5-flash-lite` (faster, lower cost) for simpler steps, and `gemini-3-flash-preview` for complex analysis:
+
+| Steps | Model | Reason |
+|-------|-------|--------|
+| 1, 2, 3 | gemini-2.5-flash-lite | Context extraction, basic search |
+| 4, 5, 6, 7 | gemini-3-flash-preview | Complex market analysis |
+| 8, 9, 10 | gemini-2.5-flash-lite | Impact summary, table formatting |
 
 ---
 
@@ -137,72 +98,29 @@ This flag persists for the duration of that function execution, so all subsequen
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/resume-report-run/index.ts` | Add checkpoint after Step 8, detect resume point (5 vs 8), add circuit-breaker flag |
-| `supabase/functions/generate-report/index.ts` | Add circuit-breaker flag for Phase 1 consistency |
-| `src/hooks/useReportGeneration.ts` | Update checkpoint detection to include Step 8 |
-| `src/components/workspace/GenerationProgress.tsx` | Optional: show phase labels in progress UI |
+| `supabase/functions/generate-report/index.ts` | Add throttling between steps, increase backoff, switch to Gemini-only, use lighter models for simple steps |
+| `supabase/functions/resume-report-run/index.ts` | Same changes for consistency |
 
 ---
 
-## Flow Diagram
-
-```text
-User clicks "Generate Report"
-         ↓
-┌─────────────────────────┐
-│  generate-report        │
-│  Steps 1-5              │
-│  Save checkpoint (5)    │
-└─────────────────────────┘
-         ↓
-Frontend detects step=5, status=pending
-         ↓
-┌─────────────────────────┐
-│  resume-report-run      │
-│  Steps 6-8              │
-│  Save checkpoint (8)    │
-└─────────────────────────┘
-         ↓
-Frontend detects step=8, status=pending
-         ↓
-┌─────────────────────────┐
-│  resume-report-run      │
-│  Steps 9-10             │
-│  Complete report        │
-└─────────────────────────┘
-         ↓
-Report ready!
-```
-
----
-
-## Circuit-Breaker Behavior
-
-```text
-Step 6: Try OpenAI → 429 → Retry 1 → 429 → Retry 2 → 429
-        → Trip circuit breaker → Use Gemini
-Step 7: Circuit breaker tripped → Use Gemini directly (no OpenAI attempts)
-Step 8: Circuit breaker tripped → Use Gemini directly
-...and so on
-```
-
----
-
-## Benefits
+## Expected Improvement
 
 | Before | After |
 |--------|-------|
-| Phase 2 runs 5 steps in one call | Phase 2a (3 steps) + Phase 3 (2 steps) |
-| ~5+ min risk per phase | ~2-3 min per phase |
-| OpenAI retries every step even if rate limited | One rate limit trips circuit breaker for entire run |
-| Wasted time on repeated 429 retries | Immediate fallback to Gemini after first failure |
+| 5 calls in ~30s | 5 calls over ~75s (with 3s delays) |
+| 1s, 2s, 4s backoff | 5s, 15s, 30s backoff |
+| OpenAI → Gemini fallback complexity | Simple Gemini-only with better retries |
+| Same model for all steps | Lighter model for simple steps |
 
 ---
 
-## Technical Notes
+## Phase Timing Estimate
 
-- The circuit-breaker flag is scoped to each function execution (not persistent across runs)
-- Each edge function call gets a fresh circuit-breaker state
-- The flag is set when retries are exhausted, not on the first 429 (to allow transient recovery)
-- Frontend polling interval (3s) will detect checkpoint changes quickly
+With 3-second inter-step delays:
+
+- **Phase 1** (Steps 1-5): ~5 AI calls + 12s delays = ~1-2 min
+- **Phase 2** (Steps 6-8): ~3 AI calls + 6s delays = ~45s-1 min
+- **Phase 3** (Steps 9-10): ~2 AI calls + 3s delays = ~30s-45s
+
+Total: ~3-4 minutes (spread out to avoid rate limits)
 
