@@ -175,11 +175,13 @@ export function useReportGeneration(applicationId: string | undefined) {
     return () => clearInterval(pollInterval);
   }, [isGenerating, applicationId, checkActiveRun, fetchReports]);
 
-  // Detect checkpoint status and auto-resume
+  // Detect checkpoint status and auto-resume (step 5 OR step 8)
   useEffect(() => {
-    if (activeRun && activeRun.current_step === 5 && activeRun.status === "pending") {
-      // This is a checkpoint - automatically trigger phase 2
-      resumeFromCheckpoint(activeRun.id);
+    if (activeRun && activeRun.status === "pending") {
+      // Checkpoint at step 5 (Phase 2) or step 8 (Phase 3) - trigger resume
+      if (activeRun.current_step === 5 || activeRun.current_step === 8) {
+        resumeFromCheckpoint(activeRun.id);
+      }
     }
   }, [activeRun, resumeFromCheckpoint]);
 
