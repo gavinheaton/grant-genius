@@ -1,7 +1,9 @@
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail } from "lucide-react";
 
 const RESEARCH_STEPS = [
   "Extracting research context from article",
@@ -23,13 +25,26 @@ interface GenerationProgressProps {
   errorMessage?: string;
   onCancel?: () => void;
   onRestart?: () => void;
+  emailOnComplete?: boolean;
+  onToggleEmailOnComplete?: (enabled: boolean) => void;
 }
 
-export function GenerationProgress({ currentStep, totalSteps, status, errorMessage, onCancel, onRestart }: GenerationProgressProps) {
+export function GenerationProgress({ 
+  currentStep, 
+  totalSteps, 
+  status, 
+  errorMessage, 
+  onCancel, 
+  onRestart,
+  emailOnComplete = false,
+  onToggleEmailOnComplete,
+}: GenerationProgressProps) {
   const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
     ? RESEARCH_STEPS[currentStep - 1] 
     : "Initializing...";
+
+  const isInProgress = status === "running" || status === "pending";
 
   return (
     <Card className="shadow-card border-primary/20">
@@ -97,10 +112,30 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
           </div>
         )}
 
-        {status === "running" && (
-          <p className="text-xs text-muted-foreground">
-            Grant Genius takes a few minutes to process. We'll be back soon with your report.
-          </p>
+        {isInProgress && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Grant Genius takes a few minutes to process. We'll be back soon with your report.
+            </p>
+            
+            {/* Email notification option */}
+            {onToggleEmailOnComplete && (
+              <div className="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border">
+                <Checkbox 
+                  id="email-on-complete" 
+                  checked={emailOnComplete}
+                  onCheckedChange={(checked) => onToggleEmailOnComplete(checked === true)}
+                />
+                <Label 
+                  htmlFor="email-on-complete" 
+                  className="flex items-center gap-2 text-sm cursor-pointer"
+                >
+                  <Mail className="h-4 w-4 text-muted-foreground" />
+                  Email me when my report is ready
+                </Label>
+              </div>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>

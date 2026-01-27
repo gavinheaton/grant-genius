@@ -9,6 +9,7 @@ interface ReportRun {
   total_steps: number;
   created_at: string;
   started_at: string | null;
+  email_on_complete: boolean;
 }
 
 interface Report {
@@ -53,7 +54,7 @@ export function useReportGeneration(applicationId: string | undefined) {
 
     const { data, error } = await supabase
       .from("report_runs")
-      .select("id, status, current_step, total_steps, created_at, started_at")
+      .select("id, status, current_step, total_steps, created_at, started_at, email_on_complete")
       .eq("application_id", applicationId)
       .in("status", ["pending", "running"])
       .order("created_at", { ascending: false })
@@ -76,9 +77,13 @@ export function useReportGeneration(applicationId: string | undefined) {
         setActiveRun({
           ...data,
           status: "stalled" as const,
+          email_on_complete: data.email_on_complete ?? false,
         } as ReportRun);
       } else {
-        setActiveRun(data as ReportRun);
+        setActiveRun({
+          ...data,
+          email_on_complete: data.email_on_complete ?? false,
+        } as ReportRun);
       }
       setIsGenerating(true);
     } else {
@@ -297,6 +302,33 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
   }, [toast]);
 
+  // Toggle email on complete preference
+  const toggleEmailOnComplete = useCallback(async (enabled: boolean) => {
+    if (!activeRun) return;
+
+    const { error } = await supabase
+      .from("report_runs")
+      .update({ email_on_complete: enabled })
+      .eq("id", activeRun.id);
+
+    if (error) {
+      console.error("Error toggling email preference:", error);
+      toast({
+        title: "Failed to update preference",
+        description: "Please try again.",
+        variant: "destructive",
+      });
+    } else {
+      setActiveRun((prev) => prev ? { ...prev, email_on_complete: enabled } : null);
+      toast({
+        title: enabled ? "Email notifications enabled" : "Email notifications disabled",
+        description: enabled 
+          ? "We'll email you when your report is ready." 
+          : "You won't receive an email notification.",
+      });
+    }
+  }, [activeRun, toast]);
+
   return {
     isGenerating,
     activeRun,
@@ -306,6 +338,7 @@ export function useReportGeneration(applicationId: string | undefined) {
     downloadReport,
     cancelRun,
     retryFromFailedStep,
+    toggleEmailOnComplete,
     refetch: fetchReports,
   };
 }

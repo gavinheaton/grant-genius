@@ -112,6 +112,7 @@ serve(async (req) => {
         checkpoint_citations_json,
         application_id,
         report_template_version_id,
+        email_on_complete,
         application:applications!inner(user_id, inputs_json, grant_version_id)
       `)
       .eq("id", reportRunId)
@@ -164,7 +165,8 @@ serve(async (req) => {
       inputs || {},
       reportRun.checkpoint_data_json || {},
       reportRun.checkpoint_citations_json || [],
-      resumeFromStep
+      resumeFromStep,
+      reportRun.email_on_complete ?? false
     ).catch((e) => console.error(`Step processing error (from step ${resumeFromStep}):`, e));
 
     return new Response(
@@ -197,7 +199,8 @@ async function processSingleStep(
   inputs: Record<string, unknown>,
   checkpointData: Record<string, unknown>,
   checkpointCitations: Array<{ url: string; title: string; accessed: string }>,
-  resumeFromStep: number
+  resumeFromStep: number,
+  emailOnComplete: boolean
 ) {
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
@@ -426,7 +429,8 @@ Use the ANZSIC hierarchy for classification.`;
           userId,
           inputs,
           reportContent,
-          citations
+          citations,
+          emailOnComplete
         );
         
         console.log(`10-PHASE: Report run ${reportRunId} completed successfully`);
@@ -488,9 +492,6 @@ async function refundCredit(supabase: any, reportRunId: string) {
   }
 }
 
-/**
- * Create the final report after Step 10 completes
- */
 // deno-lint-ignore no-explicit-any
 async function createFinalReport(
   supabase: any,
@@ -501,7 +502,8 @@ async function createFinalReport(
   userId: string,
   inputs: Record<string, unknown>,
   reportContent: Record<string, unknown>,
-  citations: Array<{ url: string; title: string; accessed: string }>
+  citations: Array<{ url: string; title: string; accessed: string }>,
+  emailOnComplete: boolean
 ) {
   // Get next version number
   const { data: existingReports } = await supabase
@@ -516,7 +518,7 @@ async function createFinalReport(
     : 1;
 
   // Create the final report
-  await supabase.from("reports").insert({
+  const { data: newReport } = await supabase.from("reports").insert({
     application_id: applicationId,
     user_id: userId,
     grant_version_id: grantVersionId,
@@ -526,7 +528,7 @@ async function createFinalReport(
     content_json: reportContent,
     citations_json: citations,
     inputs_snapshot_json: inputs,
-  });
+  }).select("id").single();
 
   // Update run as completed
   await supabase
@@ -543,6 +545,32 @@ async function createFinalReport(
     .from("applications")
     .update({ status: "ready" })
     .eq("id", applicationId);
+
+  // Send email notification if enabled
+  if (emailOnComplete && newReport?.id) {
+    try {
+      const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+      const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+      
+      await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({
+          reportRunId,
+          reportId: newReport.id,
+          applicationId,
+          userId,
+        }),
+      });
+      console.log(`Email notification triggered for report ${newReport.id}`);
+    } catch (emailError) {
+      // Don't fail the report creation if email fails
+      console.error("Failed to send email notification:", emailError);
+    }
+  }
 }
 
 // Execute a step with proper error handling, recording, and inter-step throttling

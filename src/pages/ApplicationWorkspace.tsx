@@ -66,6 +66,7 @@ export default function ApplicationWorkspace() {
     downloadReport,
     cancelRun,
     retryFromFailedStep,
+    toggleEmailOnComplete,
   } = useReportGeneration(id);
 
   useEffect(() => {
@@ -303,6 +304,8 @@ export default function ApplicationWorkspace() {
                   ? () => retryFromFailedStep(activeRun.id) 
                   : undefined
               }
+              emailOnComplete={activeRun.email_on_complete}
+              onToggleEmailOnComplete={toggleEmailOnComplete}
             />
           )}
         </div>
