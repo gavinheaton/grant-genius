@@ -1,148 +1,150 @@
 
 
-# Implement Fallback AI System with OpenAI API Key
+# Collapsible Research Details During Report Generation
 
 ## Overview
 
-Add a robust AI fallback system to the report generation pipeline that:
-1. Tries Lovable AI (Gemini) first
-2. Falls back to your private OpenAI API if rate limited (429)
-3. Includes retry logic with exponential backoff
-4. Provides clear error messages to users
+When report generation starts, the "Research Details" card will automatically collapse to a compact summary, keeping the generation progress and reports list prominently visible. Users can expand it anytime to review their inputs.
 
 ---
 
-## Implementation Steps
+## Behavior
 
-### Step 1: Add OpenAI API Key Secret
-
-Use the secrets tool to request your OpenAI API key. This will be stored securely and accessible only to backend functions.
-
-**Secret Name:** `OPENAI_API_KEY`
+| State | Research Details Card |
+|-------|----------------------|
+| **Before generation** | Fully expanded (editable form) |
+| **During generation** | Auto-collapsed to summary strip |
+| **After generation** | Stays collapsed, expandable on click |
 
 ---
 
-### Step 2: Update generate-report Edge Function
+## Visual Design
 
-Modify `supabase/functions/generate-report/index.ts` to implement:
+**Collapsed State (during/after generation):**
+```text
++--------------------------------------------------+
+| Research Details                    [v] Expand   |
+| Article: https://doi.org/10.1234... | 87 words   |
++--------------------------------------------------+
+```
 
-**A) Retry Logic with Exponential Backoff**
+**Expanded State:**
+- Full form with URL input, summary textarea, TRL, IP Status
+- Collapse button in header
+
+---
+
+## Implementation
+
+### 1. Update ReportInputs Component
+
+Wrap the card content in a `Collapsible` component with:
+- `isCollapsed` prop to control open/closed state
+- `onToggle` callback for user interaction
+- Collapsed view showing a compact summary (truncated URL + word count)
+- Smooth animation using existing `animate-accordion-down/up`
+
+**Changes to `src/components/workspace/ReportInputs.tsx`:**
 ```typescript
-async function callAIWithRetry(
-  prompt: string,
-  maxRetries: number = 3
-): Promise<string> {
-  let lastError: Error | null = null;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // Try Lovable AI first
-      return await callLovableAI(prompt);
-    } catch (error) {
-      if (error.message.includes("429")) {
-        // Rate limited - wait with exponential backoff
-        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
-        await new Promise(r => setTimeout(r, delay));
-        lastError = error;
-        continue;
-      }
-      throw error; // Non-rate-limit error
-    }
+// Add new props
+interface ReportInputsProps {
+  inputs: ApplicationInputs;
+  onInputChange: (field: keyof ApplicationInputs, value: string) => void;
+  disabled?: boolean;
+  isCollapsed?: boolean;      // NEW
+  onToggleCollapse?: () => void;  // NEW
+}
+
+// Wrap CardContent in Collapsible
+<Collapsible open={!isCollapsed} onOpenChange={() => onToggleCollapse?.()}>
+  <CardHeader>
+    <div className="flex items-center justify-between">
+      <CardTitle>Research Details</CardTitle>
+      <CollapsibleTrigger asChild>
+        <Button variant="ghost" size="sm">
+          {isCollapsed ? <ChevronDown /> : <ChevronUp />}
+        </Button>
+      </CollapsibleTrigger>
+    </div>
+    {/* Collapsed summary shown when collapsed */}
+    {isCollapsed && (
+      <div className="text-sm text-muted-foreground truncate">
+        {inputs.publicArticleUrl || "No URL"} • {wordCount} words
+      </div>
+    )}
+  </CardHeader>
+  <CollapsibleContent>
+    <CardContent>
+      {/* existing form fields */}
+    </CardContent>
+  </CollapsibleContent>
+</Collapsible>
+```
+
+### 2. Update ApplicationWorkspace
+
+Add state to track collapsed status and auto-collapse when generation starts:
+
+**Changes to `src/pages/ApplicationWorkspace.tsx`:**
+```typescript
+// Add state
+const [inputsCollapsed, setInputsCollapsed] = useState(false);
+
+// Auto-collapse when generation starts
+useEffect(() => {
+  if (isGenerating) {
+    setInputsCollapsed(true);
   }
-  
-  // All retries failed - try OpenAI fallback
-  return await callOpenAIFallback(prompt);
-}
+}, [isGenerating]);
+
+// Pass props to ReportInputs
+<ReportInputs 
+  inputs={inputs} 
+  onInputChange={handleInputChange}
+  disabled={isGenerating}
+  isCollapsed={inputsCollapsed}
+  onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
+/>
 ```
 
-**B) OpenAI Fallback Function**
+### 3. Auto-scroll to Progress Card
+
+When generation starts, smoothly scroll the progress card into view:
+
 ```typescript
-async function callOpenAIFallback(prompt: string): Promise<string> {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
-  
-  if (!OPENAI_API_KEY) {
-    throw new Error("AI service temporarily unavailable. Please try again later.");
+// Add ref
+const progressRef = useRef<HTMLDivElement>(null);
+
+// Scroll when generation starts
+useEffect(() => {
+  if (isGenerating && progressRef.current) {
+    progressRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini", // Cost-effective, fast model
-      messages: [
-        {
-          role: "system",
-          content: "You are a research commercialization expert..."
-        },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
-  
-  // Handle response...
-}
+}, [isGenerating]);
+
+// Add ref to progress section
+<div ref={progressRef}>
+  {isGenerating && activeRun && (
+    <GenerationProgress ... />
+  )}
+</div>
 ```
-
-**C) Update All Step Calls**
-
-Replace each `callLovableAI()` call in the 10-step pipeline with `callAIWithRetry()`:
-```typescript
-// Before
-const contextResult = await callLovableAI(LOVABLE_API_KEY, contextPrompt);
-
-// After  
-const contextResult = await callAIWithRetry(contextPrompt);
-```
-
----
-
-### Step 3: Add User-Facing Error Handling
-
-Update the frontend to show clear error messages when generation fails:
-
-**In `useReportGeneration.ts`:**
-```typescript
-if (error.message.includes("rate limit") || error.message.includes("429")) {
-  toast({
-    title: "High demand",
-    description: "The AI service is busy. Please wait a minute and try again.",
-    variant: "destructive",
-  });
-}
-```
-
----
-
-## Technical Details
-
-| Component | Change |
-|-----------|--------|
-| `OPENAI_API_KEY` secret | New secret for fallback |
-| `callAIWithRetry()` | New function with 3 retries + backoff |
-| `callOpenAIFallback()` | New function using OpenAI API |
-| Step pipeline | Use retry wrapper for all 10 steps |
-| Error messages | User-friendly rate limit messaging |
-
-**Model Selection:**
-- Primary: `google/gemini-3-flash-preview` (Lovable AI)
-- Fallback: `gpt-4o-mini` (OpenAI) - fast, cost-effective
 
 ---
 
 ## Files to Modify
 
-1. `supabase/functions/generate-report/index.ts` - Add retry logic and OpenAI fallback
-2. `src/hooks/useReportGeneration.ts` - Improve error messaging
+1. `src/components/workspace/ReportInputs.tsx` - Add collapsible wrapper and summary view
+2. `src/pages/ApplicationWorkspace.tsx` - Add collapse state, auto-collapse logic, and scroll behavior
 
 ---
 
-## After Implementation
+## User Experience
 
-Once approved, I will:
-1. Request your OpenAI API key using the secrets tool
-2. Update the edge function with the fallback system
-3. Deploy and test the report generation flow
+1. User fills in Research Details and clicks "Generate Report"
+2. The Research Details card smoothly collapses to a single-line summary
+3. The page scrolls down to show the progress indicator prominently
+4. User watches the 10-step progress in real-time
+5. User can click "Expand" anytime to review their inputs
+6. When complete, the Reports List appears below the progress
 
