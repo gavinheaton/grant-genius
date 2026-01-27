@@ -1,142 +1,103 @@
 
-# Add Report Viewing and Download Functionality
+# Fix Report Viewer to Handle Existing Data Structure
 
 ## The Problem
 
-Your generated report contains all the research data in `content_json`, but:
-- No "View Report" button exists to see the content
-- PDF/DOCX files aren't being generated, so download buttons don't appear
-- Users have no way to access their completed report
+The error `TypeError: i.marketSegments.map is not a function` occurs because:
 
-## Solution Overview
+- **What's stored in the database**: Raw AI-generated text strings (e.g., `marketSegments` is a long markdown/text response)
+- **What the ReportViewer expects**: Structured arrays (e.g., `Array<{ name, description, size }>`)
 
-We'll implement a two-part solution:
+Your existing report data is valid and complete - it just needs to be displayed correctly.
 
-1. **Immediate: "View Report" Button** - Let users view their report content in-app
-2. **PDF Generation** - Create downloadable PDF files from the report content
+## The Solution
 
-## What You'll See
+Update `ReportViewer.tsx` to handle both data formats:
+1. Check if each field is an array or a string
+2. Display strings as formatted text blocks
+3. Only use `.map()` on actual arrays
 
-| Feature | Description |
-|---------|-------------|
-| "View Report" button | Opens a modal/page showing the full report content |
-| Report sections | Market segments, TAM/SAM/SOM, competitors, partners, etc. |
-| "Download PDF" button | Generates and downloads a formatted PDF |
+**No report regeneration required - your existing data will display correctly.**
 
-## Architecture
+## Files to Modify
 
-```text
-User clicks "View Report"
-        │
-        ▼
-Fetch report content_json from database
-        │
-        ▼
-Render formatted report in modal/page
-        │
-        ▼
-User clicks "Download PDF"
-        │
-        ▼
-Edge function generates PDF (using html-to-pdf service)
-        │
-        ▼
-PDF stored in storage bucket → URL saved to pdf_path
-        │
-        ▼
-Browser downloads the PDF
-```
+| File | Change |
+|------|--------|
+| `src/components/workspace/ReportViewer.tsx` | Add type guards to safely render both string and array content |
 
-## Files to Create/Modify
+## Implementation Approach
 
-| File | Action | Description |
-|------|--------|-------------|
-| `src/components/workspace/ReportsList.tsx` | Modify | Add "View Report" button for all reports (not just those with files) |
-| `src/components/workspace/ReportViewer.tsx` | Create | Modal/dialog component to display formatted report content |
-| `src/hooks/useReportGeneration.ts` | Modify | Fetch full report content including `content_json` |
-| `supabase/functions/generate-pdf/index.ts` | Create | Edge function to generate PDF from report content |
-| `supabase/migrations/xxx.sql` | Create | Create storage bucket for report files |
-
-## Implementation Details
-
-### 1. Update ReportsList to Show View Button
-
-The current code only shows buttons when `pdf_path` or `docx_path` exist. We'll add a "View Report" button that always appears:
+For each section in the viewer, add a type check:
 
 ```typescript
-// Always show View Report button
-<Button variant="default" size="sm" onClick={() => onViewReport(report.id)}>
-  <Eye className="h-4 w-4 mr-1" />
-  View Report
-</Button>
+// Before (causes error on string data):
+{content.marketSegments && content.marketSegments.length > 0 && (
+  <section>
+    {content.marketSegments.map((segment, idx) => (
+      // ...
+    ))}
+  </section>
+)}
 
-// Only show PDF download when file exists
-{report.pdf_path && (
-  <Button variant="outline" size="sm" onClick={() => onDownload(report.id, "pdf")}>
-    <Download className="h-4 w-4 mr-1" />
-    PDF
-  </Button>
+// After (handles both string and array):
+{content.marketSegments && (
+  <section>
+    {Array.isArray(content.marketSegments) ? (
+      // Render as structured cards
+      content.marketSegments.map((segment, idx) => (...))
+    ) : (
+      // Render as formatted text block
+      <div className="prose prose-sm max-w-none">
+        <pre className="whitespace-pre-wrap">{String(content.marketSegments)}</pre>
+      </div>
+    )}
+  </section>
 )}
 ```
 
-### 2. Create ReportViewer Component
+## Sections to Update
 
-A dialog/modal that formats and displays the report sections:
+All sections need this pattern applied:
 
-- **Executive Summary** (from research context)
-- **Market Segments** (3+ identified segments)
-- **Competitive Landscape** (existing products/competitors)
-- **TAM/SAM/SOM Analysis** (with tables and calculations)
-- **Australian Economic Impact**
-- **Potential Partners** (ANZSIC-mapped businesses)
-- **Citations & References**
+| Section | Current Field | Fix |
+|---------|--------------|-----|
+| Market Segments | `marketSegments` | Handle string or array |
+| Competitors | `competitors` or `competitorResearch` or `existingCompetitors` | Handle string or array |
+| TAM/SAM/SOM | `tam`, `sam`, `som` | Handle string or object |
+| Economic Impact | `economicImpact` | Handle string or object |
+| Partners | `partners` or `partnerBusinesses` | Handle string or array |
+| Research Context | `researchContext` | Already handles string |
 
-### 3. Fetch Full Report Data
-
-Update the `fetchReports` query to include `content_json`:
+## Updated Interface Type
 
 ```typescript
-const { data, error } = await supabase
-  .from("reports")
-  .select("id, version_number, created_at, pdf_path, docx_path, content_json")
-  .eq("application_id", applicationId)
-  .order("version_number", { ascending: false });
+interface ReportContent {
+  researchContext?: string;
+  
+  // Can be structured array OR raw AI text
+  marketSegments?: string | Array<{...}>;
+  competitorResearch?: string;
+  existingCompetitors?: string | Array<{...}>;
+  competitors?: string | Array<{...}>;
+  
+  // Can be structured object OR raw AI text
+  tam?: string | { value?: string; methodology?: string; sources?: string[] };
+  sam?: string | { value?: string; methodology?: string; sources?: string[] };
+  som?: string | { value?: string; methodology?: string; sources?: string[] };
+  economicImpact?: string | { summary?: string; jobs?: string; ... };
+  
+  // Partner data may use different field name
+  partners?: string | Array<{...}>;
+  partnerBusinesses?: string;
+  
+  competitorTable?: string;
+  citations?: Array<{...}>;
+}
 ```
 
-### 4. PDF Generation (Phase 2)
+## Benefits of This Fix
 
-Create an edge function that:
-1. Fetches report content from database
-2. Generates HTML from the content
-3. Uses a PDF service (like PDFShift or html-pdf-edge) to create PDF
-4. Stores PDF in Supabase storage bucket
-5. Updates report record with the file path
-
-### Storage Setup
-
-Create a private bucket for report files:
-
-```sql
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('reports', 'reports', false);
-
--- RLS: Users can only access their own report files
-CREATE POLICY "Users can access own reports"
-ON storage.objects FOR SELECT
-USING (bucket_id = 'reports' AND auth.uid()::text = (storage.foldername(name))[1]);
-```
-
-## Recommended Phased Approach
-
-**Phase 1 (Immediate):**
-- Add "View Report" button
-- Create ReportViewer component to display content_json
-- Users can view and copy their report content
-
-**Phase 2 (PDF Generation):**
-- Set up storage bucket for report files
-- Create PDF generation edge function
-- Update report with pdf_path after generation
-- Enable actual PDF downloads
-
-This gives you immediate value (users can see their reports) while we build out the PDF functionality.
+1. **Immediate fix** - View your existing reports right away
+2. **Backward compatible** - Works with old string-based data
+3. **Forward compatible** - Will work if you later upgrade to structured data
+4. **No data loss** - All your generated research content is preserved
