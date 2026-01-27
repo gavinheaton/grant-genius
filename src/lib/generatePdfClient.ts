@@ -61,6 +61,9 @@ export async function generatePdfFromElement(
   // Calculate how many pages we need
   const totalPages = Math.ceil(imgHeight / contentHeight);
   
+  // Calculate pixels per page based on content height ratio
+  const pxPerPage = (contentHeight / imgHeight) * canvas.height;
+  
   // For each page, slice the canvas and add to PDF
   for (let page = 0; page < totalPages; page++) {
     if (page > 0) {
@@ -68,8 +71,8 @@ export async function generatePdfFromElement(
     }
     
     // Calculate the portion of the canvas to use for this page
-    const sourceY = page * (canvas.height / totalPages);
-    const sourceHeight = canvas.height / totalPages;
+    const sourceY = page * pxPerPage;
+    const sourceHeight = Math.min(pxPerPage, canvas.height - sourceY);
     
     // Create a temporary canvas for this page slice
     const pageCanvas = document.createElement("canvas");
@@ -85,6 +88,9 @@ export async function generatePdfFromElement(
       );
     }
     
+    // Calculate the height for this specific page slice
+    const sliceHeight = (sourceHeight / canvas.height) * imgHeight;
+    
     // Add the sliced image to the PDF
     const imgData = pageCanvas.toDataURL("image/jpeg", 0.95);
     pdf.addImage(
@@ -93,9 +99,8 @@ export async function generatePdfFromElement(
       margins.left,
       margins.top,
       imgWidth,
-      contentHeight
+      Math.min(sliceHeight, contentHeight)
     );
-    
     // Add footer with page numbers
     if (template.footer_text) {
       const footerText = template.footer_text
