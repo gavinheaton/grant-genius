@@ -24,11 +24,15 @@ const RESEARCH_STEPS = [
 // Lighter model for simple steps, heavier for complex analysis
 function getModelForStep(stepNumber: number): string {
   // Steps 1-3: Context extraction, basic search - use lighter model
-  // Steps 4-5: Complex market analysis - use heavier model
+  // Steps 4-7: Complex market analysis - use heavier model
+  // Steps 8-10: Summary and formatting - use lighter model
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
-  return "google/gemini-3-flash-preview";
+  if (stepNumber <= 7) {
+    return "google/gemini-3-flash-preview";
+  }
+  return "google/gemini-2.5-flash-lite";
 }
 
 // System prompt for AI calls
@@ -236,12 +240,9 @@ serve(async (req) => {
     });
 
     // Start async processing - this runs after response is sent
-    processReportGeneration(
+    // 10-PHASE ARCHITECTURE: Phase 1 runs ONLY Step 1, then checkpoints
+    processStep1Only(
       reportRun.id,
-      applicationId,
-      application.grant_version_id,
-      templateVersion.id,
-      userId,
       inputs
     ).catch((e) => console.error("Background processing error:", e));
 
@@ -262,12 +263,13 @@ serve(async (req) => {
   }
 });
 
-async function processReportGeneration(
+/**
+ * 10-PHASE ARCHITECTURE: Phase 1
+ * Runs ONLY Step 1 (context extraction), then checkpoints.
+ * The frontend will detect the checkpoint and invoke resume-report-run for Step 2.
+ */
+async function processStep1Only(
   reportRunId: string,
-  applicationId: string,
-  grantVersionId: string,
-  templateVersionId: string,
-  userId: string,
   inputs: Record<string, unknown>
 ) {
   const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
@@ -287,7 +289,7 @@ async function processReportGeneration(
   const citations: Array<{ url: string; title: string; accessed: string }> = [];
 
   try {
-    // Step 1: Extract context from article
+    // Step 1: Extract context from article (Firecrawl + AI)
     await executeStep(supabase, reportRunId, 1, async () => {
       let articleContent = "";
       if (FIRECRAWL_API_KEY) {
@@ -347,86 +349,25 @@ Provide a structured analysis.`;
       return { context: contextResult };
     });
 
-    // Step 2: Competitor Research
-    await executeStep(supabase, reportRunId, 2, async () => {
-      const competitorPrompt = `Based on this research:
-${summary}
-
-Search for and identify competing or similar research projects from other researchers worldwide. Include:
-1. Names of competing research groups/universities
-2. Brief description of their work
-3. Key differences from our research
-4. Publication dates and status
-
-Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
-
-      const competitorResult = await callAIWithRetry(competitorPrompt, 2);
-      reportContent.competitorResearch = competitorResult;
-      return { competitors: competitorResult };
-    });
-
-    // Step 3: Market Segments
-    await executeStep(supabase, reportRunId, 3, async () => {
-      const marketPrompt = `Based on this research innovation:
-${summary}
-
-Identify at least 3 different market segments where this research could be commercialized as a product or service. At least one must be in Australia.
-
-For each segment provide:
-1. Segment name
-2. Target customers
-3. Product/service concept
-4. Geographic focus (include at least one Australian market)
-5. Estimated market size category (small/medium/large)
-
-Be specific and practical.`;
-
-      const marketResult = await callAIWithRetry(marketPrompt, 3);
-      reportContent.marketSegments = marketResult;
-      return { segments: marketResult };
-    });
-
-    // Step 4: Find Competitors
-    await executeStep(supabase, reportRunId, 4, async () => {
-      const existingCompetitorsPrompt = `Based on the market segments identified for this research:
-${summary}
-
-Market Segments:
-${reportContent.marketSegments}
-
-Find companies that may already have products or services in these markets. For each competitor:
-1. Company name
-2. Product/service name
-3. Estimated market share or revenue if available
-4. Geographic presence
-5. How they compare to the proposed research
-
-Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
-
-      const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4);
-      reportContent.existingCompetitors = existingCompetitorsResult;
-      return { competitors: existingCompetitorsResult };
-    });
-
-    // CHECKPOINT: Save progress BEFORE step 5 to prevent data loss on timeout
-    // Step 5 will be executed by resume-report-run
+    // CHECKPOINT: Save progress after Step 1
+    // Frontend will detect status="pending" and invoke resume-report-run for Step 2
     await supabase
       .from("report_runs")
       .update({
         checkpoint_data_json: reportContent,
         checkpoint_citations_json: citations,
-        current_step: 4, // Indicate we completed step 4
-        status: "pending", // Signal checkpoint - frontend will detect and resume
+        current_step: 1,
+        status: "pending",
       })
       .eq("id", reportRunId);
 
-    console.log(`Checkpoint saved for report run ${reportRunId} at step 4`);
+    console.log(`Phase 1 complete: Checkpoint saved at step 1 for report run ${reportRunId}`);
     
-    // Return early - the resume-report-run function will continue from step 5
+    // Return - the resume-report-run function will continue from step 2
     return;
 
   } catch (error) {
-    console.error("Report generation error (phase 1):", error);
+    console.error("Report generation error (phase 1 - step 1):", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
   }
