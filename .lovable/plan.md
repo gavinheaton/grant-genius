@@ -1,61 +1,52 @@
 
-# Redesign: From "Application Builder" to "Research Report Generator"
 
-## ✅ COMPLETED
+# Fix: CORS Error in Generate Report Function
 
-The system has been redesigned from a complex multi-tab "Application Builder" to a streamlined one-click "Research Report Generator".
+## Problem Identified
 
-### What Was Built
+The browser is blocking requests to the `generate-report` edge function because the CORS configuration is missing a required header.
 
-1. **Simplified ApplicationWorkspace UI** (`src/pages/ApplicationWorkspace.tsx`)
-   - Removed 4-tab layout (Inputs, Sections, Evidence, Finalize)
-   - Single-page flow with inputs, generate button, progress indicator, and downloads
+**Error:**
+```
+Request header field x-supabase-client-platform is not allowed by Access-Control-Allow-Headers in preflight response
+```
 
-2. **Component Breakdown:**
-   - `ReportInputs.tsx` - Article URL + 100-word summary inputs
-   - `GenerationProgress.tsx` - 10-step progress indicator
-   - `ReportsList.tsx` - Download completed reports
+**Root Cause:**
+The `generate-report` function's CORS headers don't include `x-supabase-client-platform`, which the Supabase client automatically sends with every request.
 
-3. **Report Generation Hook** (`src/hooks/useReportGeneration.ts`)
-   - Polls for generation progress
-   - Manages report state and downloads
+| Function | CORS Headers |
+|----------|--------------|
+| `create-checkout` | `authorization, x-client-info, apikey, content-type, x-supabase-client-platform` |
+| `generate-report` | `authorization, x-client-info, apikey, content-type` (missing!) |
 
-4. **Generate Report Edge Function** (`supabase/functions/generate-report/index.ts`)
-   - Validates inputs (URL + summary required)
-   - Consumes entitlement credit
-   - Executes 10-step AI research pipeline using Lovable AI (Gemini-3-Flash)
-   - Uses Firecrawl to scrape user's article URL
-   - Stores report in database
+---
 
-### The 10 Research Steps (Automated)
+## Solution
 
-| Step | Research Task |
-|------|---------------|
-| 1 | Extract research context from article |
-| 2 | Search for competing/similar research |
-| 3 | Identify 3+ market segments |
-| 4 | Find existing competitors in market |
-| 5 | Calculate TAM using validated sources |
-| 6 | Calculate SAM based on target segments |
-| 7 | Calculate realistic SOM |
-| 8 | Calculate Australian economic impact |
-| 9 | Build competitor comparison table |
-| 10 | Find Australian partner businesses (ANZSIC codes) |
+Update the CORS headers in `supabase/functions/generate-report/index.ts` to include the missing header.
 
-### User Flow
+**Change (line 4-7):**
+```typescript
+// Before
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-1. User enters Article URL + Summary
-2. Clicks "Generate Report" (consumes 1 credit)
-3. Sees progress indicator (Step 1/10, 2/10, etc.)
-4. Downloads PDF/DOCX when complete
+// After
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
+};
+```
 
-### Dependencies Enabled
+---
 
-- ✅ Firecrawl connector (for web scraping)
-- ✅ Lovable AI (Gemini-3-Flash for research pipeline)
+## Implementation Steps
 
-### Next Steps (Future)
+1. Update the `corsHeaders` constant in `generate-report/index.ts` to add `x-supabase-client-platform`
+2. The edge function will automatically redeploy
+3. Test the "Generate Report" button - it should now work without CORS errors
 
-- [ ] PDF/DOCX file generation with proper formatting
-- [ ] MLA citation formatting in final output
-- [ ] Web preview of generated report content
+This is a one-line fix that matches the working pattern used in the `create-checkout` function.
+
