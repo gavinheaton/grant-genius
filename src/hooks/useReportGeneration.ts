@@ -99,11 +99,29 @@ export function useReportGeneration(applicationId: string | undefined) {
     } catch (error) {
       console.error("Error starting generation:", error);
       setIsGenerating(false);
-      toast({
-        title: "Generation failed",
-        description: error instanceof Error ? error.message : "Failed to start report generation",
-        variant: "destructive",
-      });
+      
+      const errorMessage = error instanceof Error ? error.message : "Failed to start report generation";
+      
+      // Check for rate limit or service errors
+      if (errorMessage.includes("429") || errorMessage.includes("rate limit")) {
+        toast({
+          title: "High demand",
+          description: "The AI service is busy. Please wait a minute and try again.",
+          variant: "destructive",
+        });
+      } else if (errorMessage.includes("402")) {
+        toast({
+          title: "Service unavailable",
+          description: "Please add credits to your workspace and try again.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Generation failed",
+          description: errorMessage,
+          variant: "destructive",
+        });
+      }
     }
   }, [applicationId, toast, checkActiveRun]);
 
