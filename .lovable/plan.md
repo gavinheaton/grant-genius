@@ -1,69 +1,46 @@
 
-# Fix: Allow Status Reset for Stalled/Failed Report Runs
+# Update "Starting Generation" Message for Accuracy
 
-## Problem Identified
+## Overview
 
-When clicking "Try Again" on a stalled report run, you get a 400 error. This happens because:
+Change the message shown during the `pending` status to accurately reflect whether the system is starting fresh or continuing between steps.
 
-1. The `retryFromFailedStep` function in the frontend tries to update the run's status to `"pending"` in the database
-2. **The `report_runs` table has no UPDATE RLS policy for users** - users can only INSERT and SELECT
-3. The update silently fails, so the status remains `"running"` 
-4. When `resume-report-run` is called, it checks `status === "pending"` and returns 400 because the status wasn't actually changed
+## Current vs. New Behavior
 
-## Solution
+| Scenario | Current Step | Current Message | New Message |
+|----------|--------------|-----------------|-------------|
+| Initial start | 0 | "Starting generation..." | "Starting generation..." (unchanged) |
+| Between steps | 1-9 | "Starting generation..." | "Preparing next step..." |
 
-Add a database RLS policy that allows users to update their own report runs (specifically for status changes to retry/resume).
+## What You'll See
 
-## Database Change Required
+- When you first click "Generate Report", you'll see "Starting generation..."
+- Between steps (e.g., after step 5 completes, before step 6 starts), you'll see "Preparing next step..."
 
-Add an UPDATE policy on the `report_runs` table:
+## File to Modify
 
-```sql
--- Allow users to update their own report runs (for retry/cancel)
-CREATE POLICY "Users can update own report runs"
-  ON report_runs
-  FOR UPDATE
-  USING (
-    EXISTS (
-      SELECT 1 FROM applications
-      WHERE applications.id = report_runs.application_id
-      AND applications.user_id = auth.uid()
-    )
-  );
+| File | Changes |
+|------|---------|
+| `src/components/workspace/GenerationProgress.tsx` | Update pending status message based on currentStep value |
+
+## Implementation
+
+Update line 53 to show context-aware messaging:
+
+```typescript
+{status === "pending" && (currentStep === 0 
+  ? "Starting generation..." 
+  : `Preparing step ${currentStep + 1}...`)}
 ```
 
-## Files/Changes
+This will show:
+- "Starting generation..." when `currentStep === 0` (fresh start)
+- "Preparing step 6..." when `currentStep === 5` (continuing to next step)
 
-| Change | Description |
-|--------|-------------|
-| Database Migration | Add UPDATE policy on `report_runs` for authenticated users to reset status on their own runs |
+## Why This Works
 
-## Why This Is Safe
+The 10-phase architecture sets `status = "pending"` after each step completes as a checkpoint. The `currentStep` value tells us how far we've progressed:
+- `0` = Haven't started any steps yet
+- `1-9` = Completed that step, waiting to start the next one
 
-- The policy only allows users to update runs belonging to their own applications (via the ownership check through the `applications` table)
-- This is the same ownership logic used for the existing SELECT and INSERT policies
-- Users already own this data; they just couldn't modify it before
-
-## Flow After Fix
-
-```text
-User clicks "Try Again"
-        │
-        ▼
-Frontend: UPDATE report_runs SET status = 'pending' WHERE id = X
-        │
-        ▼
-RLS: Check if user owns the application ✓
-        │
-        ▼
-Status updated to 'pending'
-        │
-        ▼
-Frontend: Call resume-report-run edge function
-        │
-        ▼
-Edge function: Check status === 'pending' ✓
-        │
-        ▼
-Generation resumes from checkpoint
-```
+By checking `currentStep`, we can display an accurate message that reflects the actual stage of the process.
