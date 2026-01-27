@@ -1,158 +1,110 @@
 
+# Add "Try Again" Button for Stalled Report Runs
 
-# Add Delete Draft Functionality to Dashboard
+## Problem
 
-## Overview
+When a report generation stalls at a step (e.g., step 5), the user only sees a "Cancel & Retry" button. This cancels the run entirely, losing all progress. The user wants a "Try Again" button that resumes from the last checkpoint instead.
 
-Allow users to delete draft applications directly from the dashboard. This provides a clean way to remove incomplete or unwanted applications without cluttering the application list.
+## Solution
+
+Add a "Try Again" button for stalled runs that works the same way as for failed runs - it resets the status and resumes from the checkpoint without losing progress.
 
 ## What You'll See
 
-When you hover over or interact with a draft application card on the dashboard:
-- A delete button (trash icon) will appear in the card
-- Clicking it opens a confirmation dialog to prevent accidental deletions
-- Only draft applications can be deleted (applications with reports or in-progress cannot be deleted)
-- After deletion, the application is removed from the list without a page refresh
-
-## Technical Changes
-
-### 1. Dashboard Component Updates
-
-Add delete functionality with confirmation:
-
-**New state:**
-- `deleteModalOpen` - controls the confirmation dialog visibility
-- `applicationToDelete` - stores the application being deleted
-
-**New function:**
-- `handleDeleteDraft(applicationId)` - triggers the confirmation dialog
-- `confirmDelete()` - executes the deletion after user confirms
-
-**UI Changes:**
-- Add a trash icon button to each draft application card
-- Button only appears for applications with `status === "draft"`
-- Styled subtly to not interfere with the main card action
-
-### 2. Confirmation Dialog
-
-Using the existing AlertDialog component:
-
-```text
-+----------------------------------+
-| Delete Draft Application?        |
-+----------------------------------+
-| This will permanently delete     |
-| "[Grant Name]" draft. This       |
-| action cannot be undone.         |
-|                                  |
-| [Cancel]    [Delete Application] |
-+----------------------------------+
-```
-
-### 3. Delete Function Implementation
-
-```typescript
-const confirmDelete = async () => {
-  if (!applicationToDelete) return;
-  
-  const { error } = await supabase
-    .from("applications")
-    .delete()
-    .eq("id", applicationToDelete.id);
-
-  if (error) {
-    toast({
-      title: "Error deleting application",
-      description: "Please try again.",
-      variant: "destructive",
-    });
-  } else {
-    // Remove from local state
-    setApplications(prev => prev.filter(a => a.id !== applicationToDelete.id));
-    toast({
-      title: "Application deleted",
-      description: "The draft has been removed.",
-    });
-  }
-  
-  setDeleteModalOpen(false);
-  setApplicationToDelete(null);
-};
-```
+When a run is stalled, you'll now see two options:
+- **Try Again** (primary) - Resumes from the last successful step
+- **Cancel & Start Over** (secondary) - Cancels the run entirely (renamed for clarity)
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/pages/Dashboard.tsx` | Add delete button, confirmation dialog, and delete logic |
-
-## Database Considerations
-
-The `applications` table already has the necessary RLS policy:
-- **Policy:** "Users can delete own applications"
-- **Expression:** `auth.uid() = user_id`
-
-No database changes are required since users can already delete their own applications via RLS.
-
-## Safety Features
-
-1. **Draft-only deletion** - The delete button only appears on draft applications, preventing accidental deletion of applications with completed reports
-2. **Confirmation dialog** - Requires explicit user confirmation before deletion
-3. **Error handling** - Graceful error messages if deletion fails
-4. **Optimistic UI** - Immediate removal from the list for responsive feel
+| `src/components/workspace/GenerationProgress.tsx` | Add "Try Again" button to stalled state UI |
+| `src/pages/ApplicationWorkspace.tsx` | Pass `onRestart` prop for stalled runs, update display condition |
 
 ## Implementation Details
 
-**Card modification:**
+### 1. GenerationProgress.tsx - Update Stalled State UI
 
-```tsx
-{/* In the application card header */}
-<div className="flex items-start justify-between">
-  <CardTitle className="text-lg">{app.grant_version?.grant?.name}</CardTitle>
-  <div className="flex items-center gap-2">
-    {app.status === "draft" && (
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-8 w-8 text-muted-foreground hover:text-destructive"
-        onClick={(e) => {
-          e.preventDefault();
-          handleDeleteDraft(app);
-        }}
-      >
-        <Trash2 className="h-4 w-4" />
-      </Button>
-    )}
-    <Badge variant={config.variant}>
-      <StatusIcon className="h-3 w-3" />
-      {config.label}
-    </Badge>
+```typescript
+{status === "stalled" && (
+  <div className="space-y-3">
+    <p className="text-sm text-warning">
+      Generation appears to have stalled. This can happen due to high demand or network issues.
+    </p>
+    <div className="flex gap-2">
+      {onRestart && (
+        <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
+          <RefreshCw className="h-4 w-4" />
+          Try Again
+        </Button>
+      )}
+      {onCancel && (
+        <Button variant="outline" size="sm" onClick={onCancel} className="gap-2">
+          <XCircle className="h-4 w-4" />
+          Cancel & Start Over
+        </Button>
+      )}
+    </div>
   </div>
+)}
+```
+
+### 2. ApplicationWorkspace.tsx - Pass onRestart for Stalled Runs
+
+Update the display condition and props:
+
+```typescript
+{/* Progress Indicator */}
+<div ref={progressRef}>
+  {(isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
+    <GenerationProgress
+      currentStep={activeRun.current_step}
+      totalSteps={activeRun.total_steps}
+      status={activeRun.status}
+      onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
+      onRestart={
+        (activeRun.status === "failed" || activeRun.status === "stalled") 
+          ? () => retryFromFailedStep(activeRun.id) 
+          : undefined
+      }
+    />
+  )}
 </div>
 ```
 
-**Confirmation dialog:**
+## User Experience
 
-```tsx
-<AlertDialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
-  <AlertDialogContent>
-    <AlertDialogHeader>
-      <AlertDialogTitle>Delete Draft Application?</AlertDialogTitle>
-      <AlertDialogDescription>
-        This will permanently delete the "{applicationToDelete?.grant_version?.grant?.name}" 
-        draft. This action cannot be undone.
-      </AlertDialogDescription>
-    </AlertDialogHeader>
-    <AlertDialogFooter>
-      <AlertDialogCancel>Cancel</AlertDialogCancel>
-      <AlertDialogAction 
-        onClick={confirmDelete}
-        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-      >
-        Delete Application
-      </AlertDialogAction>
-    </AlertDialogFooter>
-  </AlertDialogContent>
-</AlertDialog>
+```text
+Before (stalled):
+┌─────────────────────────────────────────────────────┐
+│ 🕐 Generating Report                                │
+├─────────────────────────────────────────────────────┤
+│ Stalled at step 5/10                           50%  │
+│ ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
+│                                                     │
+│ Generation appears to have stalled...               │
+│                                                     │
+│ [Cancel & Retry]                                    │
+└─────────────────────────────────────────────────────┘
+
+After (stalled):
+┌─────────────────────────────────────────────────────┐
+│ 🕐 Generating Report                                │
+├─────────────────────────────────────────────────────┤
+│ Stalled at step 5/10                           50%  │
+│ ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   │
+│                                                     │
+│ Generation appears to have stalled...               │
+│                                                     │
+│ [🔄 Try Again]  [Cancel & Start Over]               │
+└─────────────────────────────────────────────────────┘
 ```
 
+## How It Works
+
+When "Try Again" is clicked for a stalled run:
+1. The run's status is reset to `pending` in the database
+2. The `resume-report-run` edge function is called
+3. Generation resumes from the last checkpoint (step 5 in this case)
+4. No credit is consumed again since the original credit is still tied to this run
