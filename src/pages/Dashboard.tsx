@@ -14,8 +14,19 @@ import {
   LogOut,
   Loader2,
   CreditCard,
-  Sparkles
+  Sparkles,
+  Trash2
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
@@ -49,6 +60,8 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [user, setUser] = useState<{ email?: string } | null>(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [applicationToDelete, setApplicationToDelete] = useState<Application | null>(null);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
@@ -133,6 +146,37 @@ export default function Dashboard() {
       title: "Signed out",
       description: "You have been signed out successfully.",
     });
+  };
+
+  const handleDeleteDraft = (app: Application) => {
+    setApplicationToDelete(app);
+    setDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!applicationToDelete) return;
+
+    const { error } = await supabase
+      .from("applications")
+      .delete()
+      .eq("id", applicationToDelete.id);
+
+    if (error) {
+      toast({
+        title: "Error deleting application",
+        description: "Please try again.",
+        variant: "destructive",
+      });
+    } else {
+      setApplications(prev => prev.filter(a => a.id !== applicationToDelete.id));
+      toast({
+        title: "Application deleted",
+        description: "The draft has been removed.",
+      });
+    }
+
+    setDeleteModalOpen(false);
+    setApplicationToDelete(null);
   };
 
   const filteredApplications = applications.filter((app) =>
@@ -260,10 +304,26 @@ export default function Dashboard() {
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between">
                       <CardTitle className="text-lg">{app.grant_version?.grant?.name || "Application"}</CardTitle>
-                      <Badge variant={config.variant} className="flex items-center gap-1">
-                        <StatusIcon className="h-3 w-3" />
-                        {config.label}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        {app.status === "draft" && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleDeleteDraft(app);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                        <Badge variant={config.variant} className="flex items-center gap-1">
+                          <StatusIcon className="h-3 w-3" />
+                          {config.label}
+                        </Badge>
+                      </div>
                     </div>
                     {app.title && (
                       <p className="text-sm text-muted-foreground truncate">{app.title}</p>
@@ -288,6 +348,28 @@ export default function Dashboard() {
 
       {/* Purchase Modal */}
       <PurchaseModal open={purchaseModalOpen} onOpenChange={setPurchaseModalOpen} />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Draft Application?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the "{applicationToDelete?.grant_version?.grant?.name}" 
+              draft. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={confirmDelete}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete Application
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
