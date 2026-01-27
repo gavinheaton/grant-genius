@@ -1,136 +1,146 @@
 
 
-# Credit Refund and Checkpoint System Implementation
+# Multi-Phase Checkpoint and Circuit-Break Implementation
 
 ## Overview
 
-Two improvements to make report generation more robust:
-1. **Refund credits** when a report fails or is cancelled
-2. **Add checkpoint at step 5** to split processing into two phases, avoiding edge function timeouts
+Two improvements to further reduce rate limits and timeouts:
+1. Add a second checkpoint after Step 8, splitting the current Phase 2 into two smaller phases
+2. Implement a circuit-breaker that switches to Gemini for the remainder of a run after OpenAI returns a 429
 
 ---
 
-## Current Problems
+## Current Flow
 
-| Problem | Impact |
-|---------|--------|
-| Credits consumed before processing starts | User loses credit even if generation fails |
-| 10 steps run in one function call | Risk of hitting edge function timeout (~5min) |
-| No way to resume from checkpoint | Failed runs waste all prior work |
+```text
+Phase 1 (generate-report)     →  Checkpoint at Step 5
+     Steps 1-5
+         ↓
+Phase 2 (resume-report-run)   →  Steps 6-10 (currently all in one call)
+```
+
+## New Flow
+
+```text
+Phase 1 (generate-report)         →  Checkpoint at Step 5
+     Steps 1-5
+         ↓
+Phase 2 (resume-report-run)       →  Checkpoint at Step 8
+     Steps 6-8
+         ↓
+Phase 3 (resume-report-run)       →  Completion
+     Steps 9-10
+```
 
 ---
 
-## Implementation Plan
+## Implementation Details
 
-### 1. Credit Refund on Failure/Cancellation
+### 1. Checkpoint After Step 8
 
-When a report run fails or is cancelled, refund the credit by:
-- Decreasing `used_quantity` on the entitlement
-- Deleting the corresponding `entitlement_consumptions` record
+**What changes:**
+- After completing Step 8 (Economic Impact), save checkpoint data and set status to `pending` with `current_step: 8`
+- Frontend detects Step 8 checkpoint and calls `resume-report-run` again
+- `resume-report-run` will detect Step 8 and execute only Steps 9–10
 
-**Update `cancel-report-run/index.ts`:**
+**File: `supabase/functions/resume-report-run/index.ts`**
+
+Update the checkpoint logic:
+- After Step 8 completes, save checkpoint data and return early
+- Add conditional logic to detect whether resuming from Step 5 or Step 8:
+  - If `current_step === 5`: Execute Steps 6–8, then save checkpoint at Step 8
+  - If `current_step === 8`: Execute Steps 9–10, then complete the report
+
 ```typescript
-// After marking run as failed, find and refund the consumption
-const { data: consumption } = await supabaseAdmin
-  .from("entitlement_consumptions")
-  .select("id, entitlement_id")
-  .eq("report_run_id", reportRunId)
-  .maybeSingle();
-
-if (consumption) {
-  // Decrement used_quantity
-  await supabaseAdmin.rpc("decrement_entitlement", { 
-    ent_id: consumption.entitlement_id 
-  });
+// After Step 8 completes:
+if (resumeFromStep === 5) {
+  // Save checkpoint at step 8
+  await supabase.from("report_runs").update({
+    checkpoint_data_json: reportContent,
+    checkpoint_citations_json: citations,
+    current_step: 8,
+    status: "pending",
+  }).eq("id", reportRunId);
   
-  // Delete consumption record
-  await supabaseAdmin
-    .from("entitlement_consumptions")
-    .delete()
-    .eq("id", consumption.id);
-    
-  console.log("Credit refunded for cancelled run");
+  console.log(`Checkpoint saved at step 8 for run ${reportRunId}`);
+  return; // Frontend will detect and resume
 }
 ```
 
-**Add database function for safe decrement:**
-```sql
-CREATE OR REPLACE FUNCTION decrement_entitlement(ent_id uuid)
-RETURNS void AS $$
-BEGIN
-  UPDATE entitlements 
-  SET used_quantity = GREATEST(0, used_quantity - 1)
-  WHERE id = ent_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+**File: `src/hooks/useReportGeneration.ts`**
+
+Update the checkpoint detection:
+
+```typescript
+// Detect checkpoint status and auto-resume
+useEffect(() => {
+  if (activeRun && activeRun.status === "pending") {
+    // Checkpoint at step 5 OR step 8 - trigger resume
+    if (activeRun.current_step === 5 || activeRun.current_step === 8) {
+      resumeFromCheckpoint(activeRun.id);
+    }
+  }
+}, [activeRun, resumeFromCheckpoint]);
 ```
 
-**Link consumption to report run:**
-Add `report_run_id` column to `entitlement_consumptions` table to track which run consumed which credit.
+### 2. Circuit-Breaker for OpenAI 429
 
-### 2. Checkpoint System at Step 5
+**Problem:** The current retry logic retries OpenAI 3 times per step, but if OpenAI is rate-limited, every subsequent step will also fail/retry, wasting time.
 
-Split the 10-step pipeline into two phases:
-- **Phase 1** (Steps 1-5): Context, Competitors, Segments, Find Competitors, TAM
-- **Phase 2** (Steps 6-10): SAM, SOM, Impact, Table, Partners
+**Solution:** Track a "circuit-breaker" flag that, once OpenAI returns a 429, switches to Gemini for all remaining AI calls in that run.
 
-**How it works:**
+**Implementation approach:**
 
-1. After completing Step 5, save checkpoint data to `report_runs`:
-   ```typescript
-   await supabase
-     .from("report_runs")
-     .update({
-       checkpoint_data_json: reportContent,
-       checkpoint_citations_json: citations,
-       current_step: 5,
-       status: "checkpoint",  // New status
-     })
-     .eq("id", reportRunId);
-   ```
+Create a closure or module-level flag within each edge function execution:
 
-2. Return early from the edge function
+```typescript
+// At the start of processing:
+let useGeminiFallback = false;
 
-3. **New endpoint `resume-report-run`** picks up from checkpoint:
-   - Loads `checkpoint_data_json` 
-   - Continues steps 6-10
-   - Completes the report
+async function callAIWithRetry(prompt: string): Promise<string> {
+  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+  
+  // If circuit-breaker tripped OR no OpenAI key, use Gemini directly
+  if (useGeminiFallback || !OPENAI_API_KEY) {
+    return await callLovableAI(prompt);
+  }
 
-4. **Frontend polling** detects `checkpoint` status and calls `resume-report-run`:
-   ```typescript
-   if (activeRun.status === "checkpoint") {
-     await supabase.functions.invoke("resume-report-run", {
-       body: { reportRunId: activeRun.id }
-     });
-   }
-   ```
-
-**Database schema changes:**
-```sql
--- Add checkpoint columns to report_runs
-ALTER TABLE report_runs 
-ADD COLUMN checkpoint_data_json jsonb DEFAULT '{}',
-ADD COLUMN checkpoint_citations_json jsonb DEFAULT '[]';
-
--- Add new status value
--- (Note: step_status enum already includes the statuses we need)
-
--- Add report_run_id to entitlement_consumptions
-ALTER TABLE entitlement_consumptions
-ADD COLUMN report_run_id uuid REFERENCES report_runs(id);
+  // Try OpenAI with retries
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await callOpenAI(OPENAI_API_KEY, prompt);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      if (errorMessage.includes("429") || errorMessage.includes("timed out")) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  
+  // All retries exhausted - trip the circuit breaker
+  console.log("OpenAI rate limited - circuit breaker tripped, using Gemini for remaining calls");
+  useGeminiFallback = true;
+  return await callLovableAI(prompt);
+}
 ```
+
+This flag persists for the duration of that function execution, so all subsequent steps in that phase will use Gemini without attempting OpenAI.
 
 ---
 
-## File Changes
+## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/generate-report/index.ts` | Add checkpoint save after step 5, return early |
-| `supabase/functions/cancel-report-run/index.ts` | Add credit refund logic |
-| `supabase/functions/resume-report-run/index.ts` | **NEW** - Resume from checkpoint |
-| `src/hooks/useReportGeneration.ts` | Detect checkpoint status, auto-call resume |
-| Database migration | Add checkpoint columns, decrement function, consumption tracking |
+| `supabase/functions/resume-report-run/index.ts` | Add checkpoint after Step 8, detect resume point (5 vs 8), add circuit-breaker flag |
+| `supabase/functions/generate-report/index.ts` | Add circuit-breaker flag for Phase 1 consistency |
+| `src/hooks/useReportGeneration.ts` | Update checkpoint detection to include Step 8 |
+| `src/components/workspace/GenerationProgress.tsx` | Optional: show phase labels in progress UI |
 
 ---
 
@@ -142,30 +152,38 @@ User clicks "Generate Report"
 ┌─────────────────────────┐
 │  generate-report        │
 │  Steps 1-5              │
-│  Save checkpoint        │
-│  Return "checkpoint"    │
+│  Save checkpoint (5)    │
 └─────────────────────────┘
          ↓
-Frontend detects "checkpoint" status
+Frontend detects step=5, status=pending
          ↓
 ┌─────────────────────────┐
 │  resume-report-run      │
-│  Load checkpoint        │
-│  Steps 6-10             │
+│  Steps 6-8              │
+│  Save checkpoint (8)    │
+└─────────────────────────┘
+         ↓
+Frontend detects step=8, status=pending
+         ↓
+┌─────────────────────────┐
+│  resume-report-run      │
+│  Steps 9-10             │
 │  Complete report        │
 └─────────────────────────┘
          ↓
 Report ready!
+```
 
-─── If failure at any point ───
-         ↓
-User clicks "Cancel & Retry"
-         ↓
-┌─────────────────────────┐
-│  cancel-report-run      │
-│  Mark run as failed     │
-│  REFUND CREDIT ← NEW    │
-└─────────────────────────┘
+---
+
+## Circuit-Breaker Behavior
+
+```text
+Step 6: Try OpenAI → 429 → Retry 1 → 429 → Retry 2 → 429
+        → Trip circuit breaker → Use Gemini
+Step 7: Circuit breaker tripped → Use Gemini directly (no OpenAI attempts)
+Step 8: Circuit breaker tripped → Use Gemini directly
+...and so on
 ```
 
 ---
@@ -174,8 +192,17 @@ User clicks "Cancel & Retry"
 
 | Before | After |
 |--------|-------|
-| Credit lost on failure | Credit refunded automatically |
-| Single long-running call | Two shorter calls with checkpoint |
-| Lost progress on timeout | Can resume from step 5 |
-| ~10 min processing risk | ~5 min per phase, safer |
+| Phase 2 runs 5 steps in one call | Phase 2a (3 steps) + Phase 3 (2 steps) |
+| ~5+ min risk per phase | ~2-3 min per phase |
+| OpenAI retries every step even if rate limited | One rate limit trips circuit breaker for entire run |
+| Wasted time on repeated 429 retries | Immediate fallback to Gemini after first failure |
+
+---
+
+## Technical Notes
+
+- The circuit-breaker flag is scoped to each function execution (not persistent across runs)
+- Each edge function call gets a fresh circuit-breaker state
+- The flag is set when retries are exhausted, not on the first 429 (to allow transient recovery)
+- Frontend polling interval (3s) will detect checkpoint changes quickly
 
