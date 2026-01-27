@@ -21,7 +21,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
 interface ApplicationInputs {
-  technicalDescription: string;
   publicArticleUrl: string;
   summary: string;
   trl: string;
@@ -50,7 +49,6 @@ export default function ApplicationWorkspace() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [application, setApplication] = useState<ApplicationData | null>(null);
   const [inputs, setInputs] = useState<ApplicationInputs>({
-    technicalDescription: "",
     publicArticleUrl: "",
     summary: "",
     trl: "",
@@ -99,7 +97,6 @@ export default function ApplicationWorkspace() {
           title: data.title,
           status: data.status,
           inputs_json: {
-            technicalDescription: (inputsData.technicalDescription as string) || "",
             publicArticleUrl: (inputsData.publicArticleUrl as string) || "",
             summary: (inputsData.summary as string) || "",
             trl: (inputsData.trl as string) || "",
@@ -150,7 +147,7 @@ export default function ApplicationWorkspace() {
     if (!application) return;
     
     const timer = setTimeout(() => {
-      if (inputs.technicalDescription || inputs.summary || inputs.publicArticleUrl) {
+      if (inputs.summary || inputs.publicArticleUrl) {
         saveInputs();
       }
     }, 2000);
@@ -245,22 +242,7 @@ export default function ApplicationWorkspace() {
                   Provide the core information for your grant application. Changes are saved automatically.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Technical Description */}
-                <div className="space-y-2">
-                  <Label htmlFor="technicalDescription">
-                    Research Technical Description <span className="text-destructive">*</span>
-                  </Label>
-                  <Textarea
-                    id="technicalDescription"
-                    placeholder="Describe your research innovation, methodology, and technical approach..."
-                    value={inputs.technicalDescription}
-                    onChange={(e) => handleInputChange("technicalDescription", e.target.value)}
-                    rows={6}
-                    className="resize-none"
-                  />
-                </div>
-
+            <CardContent className="space-y-6">
                 {/* Public Article URL */}
                 <div className="space-y-2">
                   <Label htmlFor="publicArticleUrl">
