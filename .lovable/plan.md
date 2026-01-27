@@ -1,143 +1,174 @@
 
 
-# Switch to OpenAI Primary with Gemini Fallback
+# Timeout and Error Handling Implementation
 
 ## Overview
 
-Invert the AI provider priority so OpenAI (`gpt-4o-mini`) is tried first, with Gemini via Lovable AI as the fallback if OpenAI fails or is rate-limited.
+Add comprehensive timeout detection and error handling to prevent report generation from getting stuck in a "running" state indefinitely.
 
 ---
 
-## Current Flow
+## Current Gaps
 
-```text
-Request → Lovable AI (Gemini) → [retry 3x on 429] → OpenAI fallback
-```
-
-## New Flow
-
-```text
-Request → OpenAI (gpt-4o-mini) → [retry 3x on 429] → Lovable AI (Gemini) fallback
-```
+| Gap | Impact |
+|-----|--------|
+| No fetch timeouts | AI/Firecrawl calls can hang forever |
+| No step-level error recording | No visibility into which step failed |
+| No stale detection on frontend | User stuck with spinning indicator |
+| Silent failures in async processing | Run stays "running" even when backend crashed |
 
 ---
 
-## Implementation
+## Implementation Plan
 
-### Update `callAIWithRetry` function
+### 1. Backend: Add Request Timeouts
 
-Swap the primary and fallback providers:
+Add a timeout wrapper for all fetch calls to prevent indefinite hangs:
 
 ```typescript
-async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+async function fetchWithTimeout(
+  url: string, 
+  options: RequestInit, 
+  timeoutMs: number = 30000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
-  if (!OPENAI_API_KEY) {
-    // No OpenAI key - go straight to Gemini
-    console.log("No OpenAI key configured, using Lovable AI");
-    return await callLovableAI(prompt);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  let lastError: Error | null = null;
-  
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await callOpenAI(OPENAI_API_KEY, prompt);  // Primary
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      
-      if (errorMessage.includes("429")) {
-        const delay = Math.pow(2, attempt) * 1000;
-        console.log(`Rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
-        await new Promise(r => setTimeout(r, delay));
-        lastError = error instanceof Error ? error : new Error(errorMessage);
-        continue;
-      }
-      
-      throw error;
-    }
-  }
-  
-  // OpenAI retries exhausted - try Lovable AI fallback
-  console.log("OpenAI retries exhausted, attempting Lovable AI fallback");
-  return await callLovableAI(prompt);  // Fallback
 }
 ```
 
-### Rename and refactor AI functions
+Apply to:
+- OpenAI API calls (30s timeout)
+- Lovable AI calls (30s timeout)  
+- Firecrawl scrape calls (60s timeout)
 
-| Current Function | New Function | Role |
-|------------------|--------------|------|
-| `callLovableAI(apiKey, prompt)` | `callLovableAI(prompt)` | Fallback (gets key internally) |
-| `callOpenAIFallback(prompt)` | `callOpenAI(apiKey, prompt)` | Primary |
+### 2. Backend: Step-Level Error Handling
 
-**`callOpenAI` (Primary):**
+Wrap each step in its own try-catch and record errors:
+
 ```typescript
-async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "You are a research commercialization expert..." },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
-  // ... error handling
+// For each step:
+try {
+  await updateStep(supabase, reportRunId, stepNumber, "running");
+  const result = await callAIWithRetry(prompt);
+  await updateStep(supabase, reportRunId, stepNumber, "completed", { result });
+} catch (error) {
+  const errorMsg = error instanceof Error ? error.message : "Unknown error";
+  await updateStep(supabase, reportRunId, stepNumber, "failed", null, errorMsg);
+  throw error; // Re-throw to trigger overall failure
 }
 ```
 
-**`callLovableAI` (Fallback):**
+Update `updateStep` function to accept error message:
 ```typescript
-async function callLovableAI(prompt: string): Promise<string> {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-  
-  if (!LOVABLE_API_KEY) {
-    throw new Error("AI service temporarily unavailable.");
-  }
-  
-  console.log("Using Lovable AI (Gemini) fallback");
-  
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${LOVABLE_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-3-flash-preview",
-      messages: [
-        { role: "system", content: "You are a research commercialization expert..." },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
-  // ... error handling
+async function updateStep(
+  supabase: any,
+  reportRunId: string,
+  stepNumber: number,
+  status: string,
+  outputs?: Record<string, unknown>,
+  errorMessage?: string  // NEW parameter
+)
+```
+
+### 3. Frontend: Stale Run Detection
+
+Add timeout detection to `useReportGeneration.ts`:
+
+```typescript
+interface ReportRun {
+  // ... existing fields
+  started_at: string;  // Add this field
 }
+
+// In checkActiveRun:
+if (data) {
+  const startedAt = new Date(data.started_at || data.created_at);
+  const now = new Date();
+  const staleThresholdMs = 5 * 60 * 1000; // 5 minutes
+  
+  if (now.getTime() - startedAt.getTime() > staleThresholdMs) {
+    // Mark as stale - show different UI state
+    setActiveRun({ ...data, status: "stalled" as any });
+  } else {
+    setActiveRun(data);
+  }
+  setIsGenerating(true);
+}
+```
+
+### 4. Frontend: Add Cancel/Retry Button for Stalled Runs
+
+Add a function to cancel stalled runs and update the UI:
+
+```typescript
+const cancelRun = useCallback(async (runId: string) => {
+  const { error } = await supabase.functions.invoke("cancel-report-run", {
+    body: { reportRunId: runId },
+  });
+  
+  if (!error) {
+    setActiveRun(null);
+    setIsGenerating(false);
+    toast({ title: "Generation cancelled", description: "You can try again." });
+  }
+}, [toast]);
+```
+
+### 5. New Edge Function: Cancel Report Run
+
+Create `supabase/functions/cancel-report-run/index.ts`:
+
+```typescript
+// Marks a stuck report run as failed
+// Allows user to retry generation
+```
+
+### 6. Update GenerationProgress Component
+
+Show stalled state and retry button:
+
+```tsx
+{status === "stalled" && (
+  <>
+    <p className="text-sm text-warning">
+      Generation appears to have stalled. This can happen due to high demand.
+    </p>
+    <Button variant="outline" onClick={onCancel}>
+      Cancel & Retry
+    </Button>
+  </>
+)}
 ```
 
 ---
 
 ## Files to Modify
 
-1. `supabase/functions/generate-report/index.ts`
-   - Refactor `callAIWithRetry` to use OpenAI first
-   - Rename `callOpenAIFallback` → `callOpenAI` (primary)
-   - Refactor `callLovableAI` to get its own API key (fallback)
-   - Update logging to reflect new priority
+| File | Changes |
+|------|---------|
+| `supabase/functions/generate-report/index.ts` | Add `fetchWithTimeout`, wrap steps in try-catch, update `updateStep` signature |
+| `src/hooks/useReportGeneration.ts` | Add stale detection, add `started_at` field, add `cancelRun` function |
+| `src/components/workspace/GenerationProgress.tsx` | Add stalled state UI with cancel/retry button |
+| `supabase/functions/cancel-report-run/index.ts` | **NEW** - endpoint to mark runs as failed |
 
 ---
 
 ## Benefits
 
-| Aspect | Result |
-|--------|--------|
-| **Reliability** | OpenAI has proven more stable for this workload |
-| **Fallback** | Gemini still available if OpenAI is rate-limited |
-| **Graceful degradation** | If OpenAI key missing, uses Gemini directly |
+| Before | After |
+|--------|-------|
+| Runs can hang forever | 30-60s timeout on all external calls |
+| User stuck in loading state | Stalled detection after 5 min with retry option |
+| No visibility into failures | Step-level error messages recorded |
+| Manual database fix required | Self-service cancel/retry |
 
