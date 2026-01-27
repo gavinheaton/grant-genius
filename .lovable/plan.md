@@ -1,149 +1,182 @@
 
-# Admin Console Implementation Plan
 
-## Overview
+# Guidelines Upload and AI Analysis System
 
-This plan outlines the implementation of a comprehensive Admin Console for the Grant Genius application. The console will provide role-based access for managing grants, users, email templates, and viewing audit logs, following the specifications in the PRD.
+## Understanding the Problem
 
----
+You've highlighted a critical insight about the grant application workflow:
 
-## Current State Analysis
+1. **What's publicly available**: When a grant is released, researchers only get the **guidelines document** (like the AEA Ignite PDF you uploaded)
+2. **What's NOT available**: The actual rubric (scoring criteria) and structured required inputs are internal to the funding body
+3. **What's needed**: An AI system that analyzes the guidelines PDF and **infers/extracts**:
+   - Required inputs (what information the researcher must provide)
+   - Rubric criteria (assessment areas based on the guidelines)
 
-**What exists:**
-- Database tables: `grants`, `grant_versions`, `profiles`, `user_roles`, `email_templates`, `email_outbox`, `email_events`, `audit_logs`
-- RBAC system with `app_role` enum (`researcher`, `admin`, `super_admin`)
-- Security functions: `has_role()` and `is_admin()` already implemented
-- RLS policies protecting admin-only operations
-- 4 grants with published versions in the database
-- 1 user (researcher role)
-
-**What needs to be built:**
-- Admin Console UI with sidebar navigation
-- Grant management screens (list, create, edit, publish)
-- User management screens (list, view, role assignment)
-- Email template management screens
-- Audit log viewer
-- Role-based access control in the frontend
+This transforms the Admin Console from "manually entering rubric/inputs" to "upload guidelines, AI suggests structure, admin reviews and refines."
 
 ---
 
-## Architecture
+## Current State
+
+The `grant_versions` table already has the right structure:
+- `guidelines_json` - Currently empty, will store the raw extracted content
+- `required_inputs_json` - Currently empty, AI will suggest these
+- `rubric_json` - Currently empty, AI will suggest these
+
+The Admin Console currently has manual JSON editors for these fields, but no way to upload a PDF or analyze it.
+
+---
+
+## Proposed Solution
+
+### Phase 1: Database Schema Update
+
+Add a new column to `grant_versions` for storing the original PDF:
 
 ```text
-/admin (layout with sidebar)
-  /admin/grants           - Grant list + management
-  /admin/grants/new       - Create new grant
-  /admin/grants/:id       - Edit grant + versions
-  /admin/users            - User list
-  /admin/users/:id        - User details + role management
-  /admin/emails           - Email template management
-  /admin/emails/logs      - Email delivery logs
-  /admin/audit-logs       - Audit log viewer
+grant_versions
+├── guidelines_source_path (TEXT) - Path to uploaded PDF in storage
+├── guidelines_raw_text (TEXT) - Extracted raw text from PDF
+├── ai_analysis_status (TEXT) - 'pending' | 'analyzing' | 'completed' | 'failed'
+├── ai_suggestions_json (JSONB) - AI's suggested inputs and rubric
+```
+
+Create a storage bucket for grant guidelines PDFs.
+
+---
+
+### Phase 2: UI Enhancement for Grant Edit Page
+
+Update the Grant Edit page (`/admin/grants/:id`) to add a new **Guidelines** tab:
+
+```text
+Tabs: Details | Versions | Guidelines | Required Inputs | Rubric
+                           ↑ NEW
+```
+
+**Guidelines Tab Features:**
+1. **Upload PDF** - Drag and drop or file picker for guidelines PDF
+2. **View uploaded PDF** - Show link to current guidelines
+3. **AI Analysis Button** - "Analyze Guidelines" triggers the AI edge function
+4. **Analysis Status** - Shows progress (Pending → Analyzing → Complete)
+5. **AI Suggestions Preview** - Shows what AI extracted:
+   - Suggested required inputs with checkboxes to accept/modify
+   - Suggested rubric criteria with checkboxes to accept/modify
+6. **Apply Suggestions** - Copies accepted suggestions to the Required Inputs and Rubric tabs
+
+---
+
+### Phase 3: Edge Function for PDF Analysis
+
+Create `supabase/functions/analyze-grant-guidelines/index.ts`:
+
+**What it does:**
+1. Receives: `grant_version_id` and optional `pdf_url`
+2. Fetches the PDF from storage
+3. Extracts text content using PDF parsing
+4. Calls Lovable AI with a structured prompt to analyze the text
+5. Returns structured JSON with:
+   - `required_inputs`: Array of input field definitions
+   - `rubric`: Assessment criteria organized by section
+   - `summary`: Brief description of the grant
+
+**AI Prompt Strategy:**
+
+```text
+You are analyzing grant application guidelines to extract two things:
+
+1. REQUIRED INPUTS: What information must the applicant provide?
+   - Look for sections like "Part A", "Part B", form fields
+   - Each input should have: key, label, type (text/textarea/url/file/select), required, help_text
+
+2. RUBRIC CRITERIA: What will applications be assessed on?
+   - Look for "selection criteria", "assessment criteria", "scoring"
+   - Each criterion should have: section_key, title, description, weight (if mentioned)
+
+From the AEA Ignite guidelines, extract structured data...
+```
+
+**Output Format:**
+
+```json
+{
+  "required_inputs": [
+    {
+      "key": "project_title",
+      "label": "Project Title",
+      "type": "text",
+      "required": true,
+      "help_text": "Provide a concise title (max 20 words)",
+      "max_length": 200,
+      "source_section": "A1"
+    },
+    {
+      "key": "public_summary",
+      "label": "Public Project Summary",
+      "type": "textarea",
+      "required": true,
+      "help_text": "Non-technical summary for public (750 chars)",
+      "max_length": 750,
+      "source_section": "A8"
+    },
+    {
+      "key": "business_case_pdf",
+      "label": "Business Case Document",
+      "type": "file",
+      "required": true,
+      "help_text": "5 pages max using AEA template",
+      "source_section": "B1"
+    }
+  ],
+  "rubric": {
+    "sections": [
+      {
+        "key": "commercialisation_potential",
+        "title": "Commercialisation Potential",
+        "description": "Ability to translate research into commercial outcomes",
+        "criteria": [
+          "Clear pathway to market",
+          "Identified end-users and market demand",
+          "Competitive advantage and IP position"
+        ],
+        "weight": 25
+      },
+      {
+        "key": "team_capability",
+        "title": "Team and Capability",
+        "description": "Expertise and capacity to deliver",
+        "criteria": [
+          "Relevant commercialisation experience",
+          "Technical expertise",
+          "Partner organisation commitment"
+        ],
+        "weight": 25
+      }
+    ]
+  },
+  "grant_summary": "AEA Ignite grants support researchers at TRL 3-5..."
+}
 ```
 
 ---
 
-## Implementation Tasks
+### Phase 4: Workflow Integration
 
-### Phase 1: Foundation and Routing
+**Admin Workflow:**
 
-**1.1 Create Admin Layout Component**
-- Create `src/components/admin/AdminLayout.tsx`
-- Implement sidebar navigation using existing Sidebar components
-- Add role-based route protection (redirect non-admins)
-- Include header with user info and logout
-
-**1.2 Create Admin Auth Hook**
-- Create `src/hooks/useAdminAuth.ts`
-- Fetch user role from `user_roles` table
-- Provide `isAdmin`, `isSuperAdmin`, `isLoading` states
-- Handle unauthorized access gracefully
-
-**1.3 Set Up Admin Routes**
-- Add admin routes to `src/App.tsx`
-- Create placeholder pages for each section
-
----
-
-### Phase 2: Grant Management
-
-**2.1 Grants List Page (`/admin/grants`)**
-- Create `src/pages/admin/Grants.tsx`
-- Display all grants in a table with columns: Name, Description, Status (Active/Inactive), Latest Version, Actions
-- Add "New Grant" button
-- Implement search and filter functionality
-
-**2.2 Create Grant Page (`/admin/grants/new`)**
-- Create `src/pages/admin/GrantCreate.tsx`
-- Form fields: Name, Description
-- On submit, create grant and redirect to edit page
-
-**2.3 Edit Grant Page (`/admin/grants/:id`)**
-- Create `src/pages/admin/GrantEdit.tsx`
-- Tabs: Details, Versions, Required Inputs, Rubric
-- **Details Tab:** Edit name, description, toggle active status
-- **Versions Tab:** List all versions, show draft vs published status
-- **Required Inputs Tab:** JSON editor for defining input fields
-- **Rubric Tab:** JSON editor for rubric criteria
-- Add "Create New Version" functionality (copies latest version)
-- Add "Publish Version" button (Super Admin only)
-
----
-
-### Phase 3: User Management
-
-**3.1 Users List Page (`/admin/users`)**
-- Create `src/pages/admin/Users.tsx`
-- Display users table with: Email, Full Name, Role, Created Date, Actions
-- Search by email or name
-- Filter by role
-
-**3.2 User Detail Page (`/admin/users/:id`)**
-- Create `src/pages/admin/UserDetail.tsx`
-- Show user profile information
-- Show user's applications (read-only view)
-- Show user's orders and entitlements
-- Role management dropdown (Super Admin only)
-
----
-
-### Phase 4: Email Template Management
-
-**4.1 Email Templates Page (`/admin/emails`)**
-- Create `src/pages/admin/EmailTemplates.tsx`
-- Display templates table: Template Key, Brevo Template ID, Description, Actions
-- Add "New Template" button
-- Edit template mapping (template_key to brevo_template_id)
-- "Send Test" button to send test email to admin
-
-**4.2 Email Logs Page (`/admin/emails/logs`)**
-- Create `src/pages/admin/EmailLogs.tsx`
-- Display email_outbox records with status
-- Filter by: recipient, template key, status, date range
-- Show related email_events for each outbox entry
-- Add "Resend" button for failed emails (with rate limiting)
-
----
-
-### Phase 5: Audit Logs
-
-**5.1 Audit Logs Page (`/admin/audit-logs`)**
-- Create `src/pages/admin/AuditLogs.tsx`
-- Display audit_logs with: Action, Entity Type, Entity ID, User, Timestamp
-- Filter by entity type, action, date range
-- Expandable rows to show old/new value JSON diffs
-
----
-
-### Phase 6: Backend Enhancements
-
-**6.1 Add Audit Logging Trigger (Database)**
-- Create a trigger function to automatically log changes to grants, grant_versions, email_templates
-- Insert records into audit_logs table
-
-**6.2 Update RLS Policies**
-- Ensure admin can read all profiles (currently restricted)
-- Add policy for admin to view email_outbox for all users
+1. Admin creates new grant or edits existing
+2. Admin uploads guidelines PDF in the Guidelines tab
+3. Admin clicks "Analyze with AI"
+4. System shows progress indicator
+5. AI returns suggestions in a preview panel
+6. Admin reviews suggestions:
+   - Checkboxes to include/exclude each suggested input
+   - Editable fields to refine labels/descriptions
+   - Drag to reorder
+7. Admin clicks "Apply to Grant Version"
+8. Suggestions are copied to `required_inputs_json` and `rubric_json`
+9. Admin can further refine in the existing JSON editors if needed
+10. Super Admin publishes the version when ready
 
 ---
 
@@ -151,96 +184,59 @@ This plan outlines the implementation of a comprehensive Admin Console for the G
 
 ```text
 src/
-├── components/
-│   └── admin/
-│       ├── AdminLayout.tsx
-│       ├── AdminSidebar.tsx
-│       ├── GrantForm.tsx
-│       ├── GrantVersionEditor.tsx
-│       ├── UserRoleSelect.tsx
-│       ├── EmailTemplateForm.tsx
-│       └── AuditLogViewer.tsx
-├── hooks/
-│   └── useAdminAuth.ts
-└── pages/
-    └── admin/
-        ├── AdminDashboard.tsx
-        ├── Grants.tsx
-        ├── GrantCreate.tsx
-        ├── GrantEdit.tsx
-        ├── Users.tsx
-        ├── UserDetail.tsx
-        ├── EmailTemplates.tsx
-        ├── EmailLogs.tsx
-        └── AuditLogs.tsx
+├── components/admin/
+│   ├── GuidelinesUploader.tsx      # PDF upload component
+│   ├── AIAnalysisPanel.tsx         # Shows AI suggestions
+│   └── SuggestionReview.tsx        # Checkbox list to accept/modify
+├── pages/admin/
+│   └── GrantEdit.tsx               # Updated with Guidelines tab
+
+supabase/
+├── functions/
+│   └── analyze-grant-guidelines/
+│       └── index.ts                # AI analysis edge function
+├── migrations/
+│   └── add_guidelines_storage.sql  # New columns + storage bucket
 ```
 
 ---
 
-## Permission Matrix Implementation
+## Technical Considerations
 
-| Feature | Admin | Super Admin |
-|---------|-------|-------------|
-| View grants/versions | Yes | Yes |
-| Create/edit grant drafts | Yes | Yes |
-| Publish/rollback versions | No | Yes |
-| View all users | Yes | Yes |
-| Change user roles | No | Yes |
-| Manage email templates | Yes | Yes |
-| View email logs | Yes | Yes |
-| Resend emails | Yes | Yes |
-| View audit logs | Yes | Yes |
-| Revoke user sessions | No | Yes |
+**PDF Text Extraction Options:**
+1. **Use pdf-parse library in edge function** - Parse PDF directly
+2. **Use external service** - More reliable for complex PDFs
+3. **Store raw text from document parser** - Use Lovable's document parsing
 
----
+**Storage:**
+- Create `grant-guidelines` storage bucket
+- Store PDFs at path: `{grant_id}/{version_number}/guidelines.pdf`
+- RLS: Only admins can upload/view
 
-## Database Changes Required
-
-**Migration 1: Add RLS policy for admin to view all profiles**
-```sql
-CREATE POLICY "Admins can view all profiles"
-  ON profiles FOR SELECT
-  USING (is_admin(auth.uid()));
-```
-
-**Migration 2: Create audit logging trigger**
-```sql
-CREATE OR REPLACE FUNCTION log_audit()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO audit_logs (entity_type, entity_id, action, user_id, old_value_json, new_value_json)
-  VALUES (
-    TG_TABLE_NAME,
-    COALESCE(NEW.id, OLD.id),
-    TG_OP,
-    auth.uid(),
-    CASE WHEN TG_OP = 'DELETE' THEN row_to_json(OLD) ELSE NULL END,
-    CASE WHEN TG_OP != 'DELETE' THEN row_to_json(NEW) ELSE NULL END
-  );
-  RETURN COALESCE(NEW, OLD);
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-```
+**AI Model Selection:**
+- Use `google/gemini-3-flash-preview` for fast, cost-effective analysis
+- Structured output using tool calling for reliable JSON
 
 ---
 
-## Technical Notes
+## Security
 
-- All admin pages will use the `useAdminAuth` hook to verify role before rendering
-- The sidebar will show/hide items based on admin vs super_admin role
-- Forms will use react-hook-form with zod validation (existing pattern)
-- Tables will use the existing shadcn Table components
-- JSON editors for rubric/inputs will use a simple textarea with JSON validation initially
-- The design will follow the existing Grant Genius design system (navy + amber)
+- File upload restricted to admin users
+- Edge function validates admin role before processing
+- PDFs stored in private bucket with admin-only RLS
+- AI analysis logged in audit_logs
 
 ---
 
-## Estimated Scope
+## Summary of Changes
 
-- **15-20 new components**
-- **9 new pages**
-- **1 new hook**
-- **2 database migrations**
-- **Updates to App.tsx for routing**
+| Component | Change |
+|-----------|--------|
+| Database | Add 4 columns to grant_versions, create storage bucket |
+| GrantEdit.tsx | Add Guidelines tab with upload and AI analysis |
+| New Edge Function | analyze-grant-guidelines for AI processing |
+| New Components | GuidelinesUploader, AIAnalysisPanel |
+| Storage | grant-guidelines bucket with admin RLS |
 
-This implementation will provide a complete Admin Console matching the PRD requirements while integrating seamlessly with the existing codebase patterns and design system.
+This approach transforms grant setup from "manual JSON entry" to "upload PDF, review AI suggestions, refine" - making it much faster and more accurate for admins while ensuring the system has structured data for the researcher workspace.
+
