@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { Json } from "@/integrations/supabase/types";
 
 interface ReportRun {
   id: string;
@@ -12,12 +13,13 @@ interface ReportRun {
   email_on_complete: boolean;
 }
 
-interface Report {
+export interface Report {
   id: string;
   version_number: number;
   created_at: string;
   pdf_path: string | null;
   docx_path: string | null;
+  content_json?: Json;
 }
 
 // 5 minutes stale threshold
@@ -36,7 +38,7 @@ export function useReportGeneration(applicationId: string | undefined) {
 
     const { data, error } = await supabase
       .from("reports")
-      .select("id, version_number, created_at, pdf_path, docx_path")
+      .select("id, version_number, created_at, pdf_path, docx_path, content_json")
       .eq("application_id", applicationId)
       .order("version_number", { ascending: false });
 
