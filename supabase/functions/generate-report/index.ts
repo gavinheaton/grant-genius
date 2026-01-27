@@ -223,7 +223,6 @@ async function processReportGeneration(
   userId: string,
   inputs: Record<string, unknown>
 ) {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
 
   // Create admin client for writes
@@ -231,11 +230,6 @@ async function processReportGeneration(
     Deno.env.get("SUPABASE_URL") ?? "",
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
   );
-
-  if (!LOVABLE_API_KEY) {
-    await updateRunStatus(supabase, reportRunId, "failed");
-    return;
-  }
 
   const publicArticleUrl = inputs.publicArticleUrl as string;
   const summary = inputs.summary as string;
@@ -297,7 +291,7 @@ Extract and summarize:
 
 Provide a structured analysis.`;
 
-    const contextResult = await callLovableAI(LOVABLE_API_KEY, contextPrompt);
+    const contextResult = await callAIWithRetry(contextPrompt);
     reportContent.researchContext = contextResult;
     await updateStep(supabase, reportRunId, 1, "completed", { context: contextResult });
 
@@ -315,7 +309,7 @@ Search for and identify competing or similar research projects from other resear
 
 Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
 
-    const competitorResult = await callLovableAI(LOVABLE_API_KEY, competitorPrompt);
+    const competitorResult = await callAIWithRetry(competitorPrompt);
     reportContent.competitorResearch = competitorResult;
     await updateStep(supabase, reportRunId, 2, "completed", { competitors: competitorResult });
 
@@ -336,7 +330,7 @@ For each segment provide:
 
 Be specific and practical.`;
 
-    const marketResult = await callLovableAI(LOVABLE_API_KEY, marketPrompt);
+    const marketResult = await callAIWithRetry(marketPrompt);
     reportContent.marketSegments = marketResult;
     await updateStep(supabase, reportRunId, 3, "completed", { segments: marketResult });
 
@@ -358,7 +352,7 @@ Find companies that may already have products or services in these markets. For 
 
 Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
 
-    const existingCompetitorsResult = await callLovableAI(LOVABLE_API_KEY, existingCompetitorsPrompt);
+    const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt);
     reportContent.existingCompetitors = existingCompetitorsResult;
     await updateStep(supabase, reportRunId, 4, "completed", { competitors: existingCompetitorsResult });
 
@@ -378,7 +372,7 @@ Using data from validated sources (OECD, World Bank, ABS, industry reports), est
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
 
-    const tamResult = await callLovableAI(LOVABLE_API_KEY, tamPrompt);
+    const tamResult = await callAIWithRetry(tamPrompt);
     reportContent.tam = tamResult;
     await updateStep(supabase, reportRunId, 5, "completed", { tam: tamResult });
 
@@ -396,7 +390,7 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-    const samResult = await callLovableAI(LOVABLE_API_KEY, samPrompt);
+    const samResult = await callAIWithRetry(samPrompt);
     reportContent.sam = samResult;
     await updateStep(supabase, reportRunId, 6, "completed", { sam: samResult });
 
@@ -415,7 +409,7 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-    const somResult = await callLovableAI(LOVABLE_API_KEY, somPrompt);
+    const somResult = await callAIWithRetry(somPrompt);
     reportContent.som = somResult;
     await updateStep(supabase, reportRunId, 7, "completed", { som: somResult });
 
@@ -436,7 +430,7 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-    const impactResult = await callLovableAI(LOVABLE_API_KEY, impactPrompt);
+    const impactResult = await callAIWithRetry(impactPrompt);
     reportContent.economicImpact = impactResult;
     await updateStep(supabase, reportRunId, 8, "completed", { impact: impactResult });
 
@@ -459,7 +453,7 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`;
 
-    const tableResult = await callLovableAI(LOVABLE_API_KEY, tablePrompt);
+    const tableResult = await callAIWithRetry(tablePrompt);
     reportContent.competitorTable = tableResult;
     await updateStep(supabase, reportRunId, 9, "completed", { table: tableResult });
 
@@ -482,7 +476,7 @@ Market Segments: ${marketResult}
 
 Use the ANZSIC hierarchy for classification.`;
 
-    const partnerResult = await callLovableAI(LOVABLE_API_KEY, partnerPrompt);
+    const partnerResult = await callAIWithRetry(partnerPrompt);
     reportContent.partnerBusinesses = partnerResult;
     await updateStep(supabase, reportRunId, 10, "completed", { partners: partnerResult });
 
@@ -533,6 +527,41 @@ Use the ANZSIC hierarchy for classification.`;
   }
 }
 
+// Retry wrapper with exponential backoff + OpenAI fallback
+async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("AI service not configured");
+  }
+
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await callLovableAI(LOVABLE_API_KEY, prompt);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Check if rate limited (429)
+      if (errorMessage.includes("429")) {
+        const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+        console.log(`Rate limited, waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, delay));
+        lastError = error instanceof Error ? error : new Error(errorMessage);
+        continue;
+      }
+      
+      // Non-rate-limit error - throw immediately
+      throw error;
+    }
+  }
+  
+  // All Lovable AI retries failed - try OpenAI fallback
+  console.log("Lovable AI retries exhausted, attempting OpenAI fallback");
+  return await callOpenAIFallback(prompt);
+}
+
 async function callLovableAI(apiKey: string, prompt: string): Promise<string> {
   const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
@@ -556,6 +585,43 @@ async function callLovableAI(apiKey: string, prompt: string): Promise<string> {
     const errorText = await response.text();
     console.error("AI API error:", response.status, errorText);
     throw new Error(`AI request failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "No response generated";
+}
+
+async function callOpenAIFallback(prompt: string): Promise<string> {
+  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+  
+  if (!OPENAI_API_KEY) {
+    throw new Error("AI service temporarily unavailable. Please try again later.");
+  }
+
+  console.log("Using OpenAI fallback");
+  
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
+        },
+        { role: "user", content: prompt }
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("OpenAI API error:", response.status, errorText);
+    throw new Error(`OpenAI request failed: ${response.status}`);
   }
 
   const data = await response.json();
