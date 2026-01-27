@@ -1,8 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
-import { GraduationCap } from "lucide-react";
+import { GraduationCap, Shield, Loader2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
 
 export function Header() {
+  const { isAuthenticated, isAdmin, isLoading } = useAuth();
+
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="container flex h-16 items-center justify-between">
@@ -29,12 +32,33 @@ export function Header() {
           >
             Pricing
           </a>
-          <Button variant="ghost" size="sm" asChild>
-            <Link to="/auth">Sign In</Link>
-          </Button>
-          <Button size="sm" asChild>
-            <Link to="/auth">Get Started</Link>
-          </Button>
+          
+          {isLoading ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : isAuthenticated ? (
+            <>
+              {isAdmin && (
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/admin">
+                    <Shield className="h-4 w-4 mr-2" />
+                    Admin
+                  </Link>
+                </Button>
+              )}
+              <Button size="sm" asChild>
+                <Link to="/dashboard">Dashboard</Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" size="sm" asChild>
+                <Link to="/auth">Sign In</Link>
+              </Button>
+              <Button size="sm" asChild>
+                <Link to="/auth">Get Started</Link>
+              </Button>
+            </>
+          )}
         </nav>
       </div>
     </header>
