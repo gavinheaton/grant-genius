@@ -6,6 +6,26 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
 };
 
+// Model selection based on step complexity
+// Lighter model for simple steps, heavier for complex analysis
+function getModelForStep(stepNumber: number): string {
+  // Steps 6-7: Complex market analysis - use heavier model
+  // Steps 8-10: Summary and formatting - use lighter model
+  if (stepNumber <= 7) {
+    return "google/gemini-3-flash-preview";
+  }
+  return "google/gemini-2.5-flash-lite";
+}
+
+// System prompt for AI calls
+const SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
+
+// Inter-step throttle delay (ms) to spread requests and avoid rate limits
+const INTER_STEP_DELAY_MS = 3000;
+
+// Retry delays for rate limit errors (5s, 15s, 30s)
+const RETRY_DELAYS = [5000, 15000, 30000];
+
 // Timeout wrapper for fetch calls
 async function fetchWithTimeout(
   url: string,
@@ -158,9 +178,6 @@ serve(async (req) => {
   }
 });
 
-// Circuit-breaker flag - scoped to function execution
-let useGeminiFallback = false;
-
 async function processReportPhase(
   reportRunId: string,
   applicationId: string,
@@ -172,9 +189,6 @@ async function processReportPhase(
   checkpointCitations: Array<{ url: string; title: string; accessed: string }>,
   resumeFromStep: number
 ) {
-  // Reset circuit breaker for each phase execution
-  useGeminiFallback = false;
-  
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -201,7 +215,7 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-        const samResult = await callAIWithRetry(samPrompt);
+        const samResult = await callAIWithRetry(samPrompt, 6);
         reportContent.sam = samResult;
         return { sam: samResult };
       });
@@ -220,7 +234,7 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-        const somResult = await callAIWithRetry(somPrompt);
+        const somResult = await callAIWithRetry(somPrompt, 7);
         reportContent.som = somResult;
         return { som: somResult };
       });
@@ -241,7 +255,7 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-        const impactResult = await callAIWithRetry(impactPrompt);
+        const impactResult = await callAIWithRetry(impactPrompt, 8);
         reportContent.economicImpact = impactResult;
         return { impact: impactResult };
       });
@@ -281,7 +295,7 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`;
 
-      const tableResult = await callAIWithRetry(tablePrompt);
+      const tableResult = await callAIWithRetry(tablePrompt, 9);
       reportContent.competitorTable = tableResult;
       return { table: tableResult };
     });
@@ -304,7 +318,7 @@ Market Segments: ${reportContent.marketSegments}
 
 Use the ANZSIC hierarchy for classification.`;
 
-      const partnerResult = await callAIWithRetry(partnerPrompt);
+      const partnerResult = await callAIWithRetry(partnerPrompt, 10);
       reportContent.partnerBusinesses = partnerResult;
       return { partners: partnerResult };
     });
@@ -359,7 +373,7 @@ Use the ANZSIC hierarchy for classification.`;
   }
 }
 
-// Execute a step with proper error handling and recording
+// Execute a step with proper error handling, recording, and inter-step throttling
 // deno-lint-ignore no-explicit-any
 async function executeStep(
   supabase: any,
@@ -371,6 +385,10 @@ async function executeStep(
     await updateStep(supabase, reportRunId, stepNumber, "running");
     const outputs = await stepFn();
     await updateStep(supabase, reportRunId, stepNumber, "completed", outputs);
+    
+    // Throttle: wait between steps to spread requests and avoid rate limits
+    console.log(`Step ${stepNumber} complete, waiting ${INTER_STEP_DELAY_MS / 1000}s before next step`);
+    await new Promise(r => setTimeout(r, INTER_STEP_DELAY_MS));
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error(`Step ${stepNumber} failed:`, errorMessage);
@@ -379,113 +397,86 @@ async function executeStep(
   }
 }
 
-// Retry wrapper with exponential backoff + Gemini fallback + circuit breaker
-async function callAIWithRetry(prompt: string, maxRetries: number = 3): Promise<string> {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+// Gemini-only AI call with aggressive retry delays for rate limits
+async function callAIWithRetry(prompt: string, stepNumber: number): Promise<string> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
-  // Circuit breaker tripped OR no OpenAI key - use Gemini directly
-  if (useGeminiFallback || !OPENAI_API_KEY) {
-    if (useGeminiFallback) {
-      console.log("Circuit breaker active - using Gemini directly");
-    } else {
-      console.log("No OpenAI key configured, using Lovable AI (Gemini)");
-    }
-    return await callLovableAI(prompt);
+  if (!LOVABLE_API_KEY) {
+    throw new Error("AI service not configured. Please contact support.");
   }
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
+  const model = getModelForStep(stepNumber);
+  console.log(`Step ${stepNumber}: Using model ${model}`);
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+    // Wait before retry (not on first attempt)
+    if (attempt > 0) {
+      const delay = RETRY_DELAYS[attempt - 1] || RETRY_DELAYS[RETRY_DELAYS.length - 1];
+      console.log(`Rate limited, retry ${attempt}/${RETRY_DELAYS.length}, waiting ${delay / 1000}s...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+
     try {
-      return await callOpenAI(OPENAI_API_KEY, prompt);
+      const response = await fetchWithTimeout(
+        "https://ai.gateway.lovable.dev/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: prompt }
+            ],
+          }),
+        },
+        45000 // 45s timeout for AI calls
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`AI API error (attempt ${attempt + 1}):`, response.status, errorText);
+        
+        // Rate limit - retry with backoff
+        if (response.status === 429) {
+          if (attempt < RETRY_DELAYS.length) {
+            continue; // Will wait and retry
+          }
+          throw new Error("AI service rate limited. Please try again in a few minutes.");
+        }
+        
+        // Payment required
+        if (response.status === 402) {
+          throw new Error("AI credits exhausted. Please add funds to continue.");
+        }
+        
+        throw new Error(`AI request failed: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content || "No response generated";
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const msg = error instanceof Error ? error.message : String(error);
       
-      if (errorMessage.includes("429") || errorMessage.includes("timed out")) {
-        const delay = Math.pow(2, attempt) * 1000;
-        console.log(`OpenAI error (${errorMessage}), waiting ${delay}ms before retry ${attempt + 1}/${maxRetries}`);
-        await new Promise(r => setTimeout(r, delay));
+      // If it's a rate limit message and we have retries left, continue
+      if (msg.includes("429") && attempt < RETRY_DELAYS.length) {
+        continue;
+      }
+      
+      // If it's a timeout and we have retries left, continue
+      if (msg.includes("timed out") && attempt < RETRY_DELAYS.length) {
+        console.log(`Request timed out on attempt ${attempt + 1}, will retry`);
         continue;
       }
       
       throw error;
     }
   }
-  
-  // All retries exhausted - trip the circuit breaker for remaining calls in this run
-  console.log("OpenAI rate limited - circuit breaker tripped, using Gemini for remaining calls");
-  useGeminiFallback = true;
-  return await callLovableAI(prompt);
-}
 
-async function callOpenAI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetchWithTimeout(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
-          },
-          { role: "user", content: prompt }
-        ],
-      }),
-    },
-    30000
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("OpenAI API error:", response.status, errorText);
-    throw new Error(`OpenAI request failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || "No response generated";
-}
-
-async function callLovableAI(prompt: string): Promise<string> {
-  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-  
-  if (!LOVABLE_API_KEY) {
-    throw new Error("AI service temporarily unavailable. Please try again later.");
-  }
-
-  const response = await fetchWithTimeout(
-    "https://ai.gateway.lovable.dev/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages: [
-          {
-            role: "system",
-            content: "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
-          },
-          { role: "user", content: prompt }
-        ],
-      }),
-    },
-    30000
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error("Lovable AI API error:", response.status, errorText);
-    throw new Error(`Lovable AI request failed: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || "No response generated";
+  throw new Error("AI service rate limited after all retries. Please try again later.");
 }
 
 // deno-lint-ignore no-explicit-any
