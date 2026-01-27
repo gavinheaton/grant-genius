@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
-import { Check } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Check, Loader2 } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { usePurchase } from "@/hooks/usePurchase";
 
 const plans = [
   {
@@ -17,6 +18,7 @@ const plans = [
     ],
     cta: "Purchase Report",
     highlighted: true,
+    isPurchase: true,
   },
   {
     name: "Research Team",
@@ -32,10 +34,21 @@ const plans = [
     ],
     cta: "Contact Sales",
     highlighted: false,
+    isPurchase: false,
   },
 ];
 
 export function Pricing() {
+  const navigate = useNavigate();
+  const { purchaseReport, isLoading } = usePurchase();
+
+  const handlePurchase = async () => {
+    const result = await purchaseReport();
+    if (result.requiresAuth) {
+      navigate("/auth");
+    }
+  };
+
   return (
     <section id="pricing" className="py-20">
       <div className="container">
@@ -73,7 +86,7 @@ export function Pricing() {
                 <span className="text-4xl font-bold">{plan.price}</span>
                 {plan.price !== "Contact Us" && (
                   <span className={`text-sm ${plan.highlighted ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
-                    {" "}/ report
+                    {" "}AUD / report
                   </span>
                 )}
               </div>
@@ -87,14 +100,33 @@ export function Pricing() {
                 ))}
               </ul>
               
-              <Button
-                variant={plan.highlighted ? "accent" : "outline"}
-                size="lg"
-                className="w-full"
-                asChild
-              >
-                <Link to="/auth">{plan.cta}</Link>
-              </Button>
+              {plan.isPurchase ? (
+                <Button
+                  variant="accent"
+                  size="lg"
+                  className="w-full"
+                  onClick={handlePurchase}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    plan.cta
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="w-full"
+                  asChild
+                >
+                  <a href="mailto:sales@grantgenius.com.au">{plan.cta}</a>
+                </Button>
+              )}
             </div>
           ))}
         </div>
