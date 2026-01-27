@@ -339,9 +339,13 @@ export type Database = {
       }
       grant_versions: {
         Row: {
+          ai_analysis_status: string | null
+          ai_suggestions_json: Json | null
           created_at: string
           grant_id: string
           guidelines_json: Json | null
+          guidelines_raw_text: string | null
+          guidelines_source_path: string | null
           id: string
           is_published: boolean
           published_at: string | null
@@ -350,9 +354,13 @@ export type Database = {
           version_number: number
         }
         Insert: {
+          ai_analysis_status?: string | null
+          ai_suggestions_json?: Json | null
           created_at?: string
           grant_id: string
           guidelines_json?: Json | null
+          guidelines_raw_text?: string | null
+          guidelines_source_path?: string | null
           id?: string
           is_published?: boolean
           published_at?: string | null
@@ -361,9 +369,13 @@ export type Database = {
           version_number: number
         }
         Update: {
+          ai_analysis_status?: string | null
+          ai_suggestions_json?: Json | null
           created_at?: string
           grant_id?: string
           guidelines_json?: Json | null
+          guidelines_raw_text?: string | null
+          guidelines_source_path?: string | null
           id?: string
           is_published?: boolean
           published_at?: string | null
