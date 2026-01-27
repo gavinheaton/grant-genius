@@ -136,7 +136,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-center w-9 h-9 rounded-lg gradient-hero">
               <GraduationCap className="h-5 w-5 text-primary-foreground" />
             </div>
-            <span className="font-semibold text-lg hidden sm:inline-block">GCA</span>
+            <span className="font-semibold text-lg hidden sm:inline-block">Grant Genius</span>
           </Link>
           
           <div className="flex items-center gap-4">

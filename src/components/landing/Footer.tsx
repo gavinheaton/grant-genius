@@ -10,7 +10,7 @@ export function Footer() {
             <div className="flex items-center justify-center w-8 h-8 rounded-lg gradient-hero">
               <GraduationCap className="h-4 w-4 text-primary-foreground" />
             </div>
-            <span className="font-semibold">Grant Commercialisation Assistant</span>
+            <span className="font-semibold">Grant Genius</span>
           </div>
           
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
@@ -20,13 +20,13 @@ export function Footer() {
             <Link to="/terms" className="hover:text-foreground transition-colors">
               Terms of Service
             </Link>
-            <a href="mailto:support@grantassist.com.au" className="hover:text-foreground transition-colors">
+            <a href="mailto:support@grantgenius.com.au" className="hover:text-foreground transition-colors">
               Support
             </a>
           </div>
           
           <p className="text-sm text-muted-foreground">
-            © {new Date().getFullYear()} Grant Commercialisation Assistant
+            © {new Date().getFullYear()} Grant Genius · Powered by Disruptors Co
           </p>
         </div>
       </div>
