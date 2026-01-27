@@ -99,7 +99,7 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
 
         {status === "running" && (
           <p className="text-xs text-muted-foreground">
-            This typically takes 2-3 minutes. The AI is conducting thorough market research with validated sources.
+            Grant Genius takes a few minutes to process. We'll be back soon with your report.
           </p>
         )}
       </CardContent>
