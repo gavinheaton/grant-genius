@@ -1,17 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { 
   GraduationCap, 
   ArrowLeft, 
-  FileText, 
-  Library, 
-  Download,
   Loader2,
   CheckCircle,
   Sparkles,
@@ -21,7 +13,11 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlements } from "@/hooks/useEntitlements";
+import { useReportGeneration } from "@/hooks/useReportGeneration";
 import { PurchaseModal } from "@/components/PurchaseModal";
+import { ReportInputs } from "@/components/workspace/ReportInputs";
+import { GenerationProgress } from "@/components/workspace/GenerationProgress";
+import { ReportsList } from "@/components/workspace/ReportsList";
 
 interface ApplicationInputs {
   publicArticleUrl: string;
@@ -46,7 +42,6 @@ export default function ApplicationWorkspace() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("inputs");
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -59,7 +54,15 @@ export default function ApplicationWorkspace() {
     ipStatus: "",
   });
   
-  const { availableReports, hasAvailableReport, isLoading: entitlementsLoading } = useEntitlements();
+  const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
+  const { 
+    isGenerating, 
+    activeRun, 
+    reports, 
+    isLoadingReports, 
+    startGeneration, 
+    downloadReport 
+  } = useReportGeneration(id);
 
   useEffect(() => {
     const fetchApplication = async () => {
@@ -164,7 +167,19 @@ export default function ApplicationWorkspace() {
     setInputs((prev) => ({ ...prev, [field]: value }));
   };
 
-  const wordCount = inputs.summary.trim().split(/\s+/).filter(Boolean).length;
+  const handleGenerateReport = async () => {
+    if (!hasAvailableReport) {
+      setPurchaseModalOpen(true);
+      return;
+    }
+
+    await startGeneration();
+    // Refetch entitlements after starting (credit consumed)
+    setTimeout(() => refetchEntitlements(), 1000);
+  };
+
+  // Check if inputs are complete
+  const inputsComplete = inputs.publicArticleUrl.trim() !== "" && inputs.summary.trim() !== "";
 
   if (isLoading) {
     return (
@@ -229,186 +244,50 @@ export default function ApplicationWorkspace() {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 container py-6">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full max-w-lg grid-cols-4">
-            <TabsTrigger value="inputs" className="flex items-center gap-2">
-              <FileText className="h-4 w-4" />
-              <span className="hidden sm:inline">Inputs</span>
-            </TabsTrigger>
-            <TabsTrigger value="sections" className="flex items-center gap-2">
-              <Sparkles className="h-4 w-4" />
-              <span className="hidden sm:inline">Sections</span>
-            </TabsTrigger>
-            <TabsTrigger value="evidence" className="flex items-center gap-2">
-              <Library className="h-4 w-4" />
-              <span className="hidden sm:inline">Evidence</span>
-            </TabsTrigger>
-            <TabsTrigger value="finalize" className="flex items-center gap-2">
-              <Download className="h-4 w-4" />
-              <span className="hidden sm:inline">Finalize</span>
-            </TabsTrigger>
-          </TabsList>
+      <main className="flex-1 container py-6 space-y-6">
+        {/* Inputs Section */}
+        <ReportInputs 
+          inputs={inputs} 
+          onInputChange={handleInputChange}
+          disabled={isGenerating}
+        />
 
-          {/* Inputs Tab */}
-          <TabsContent value="inputs" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle>Application Inputs</CardTitle>
-                <CardDescription>
-                  Provide the core information for your grant application. Changes are saved automatically.
-                </CardDescription>
-              </CardHeader>
-            <CardContent className="space-y-6">
-                {/* Public Article URL */}
-                <div className="space-y-2">
-                  <Label htmlFor="publicArticleUrl">
-                    Public Article URL <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="publicArticleUrl"
-                    type="url"
-                    placeholder="https://doi.org/..."
-                    value={inputs.publicArticleUrl}
-                    onChange={(e) => handleInputChange("publicArticleUrl", e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Link to a published article or preprint describing your research
-                  </p>
-                </div>
+        {/* Generate Report Button */}
+        <div className="flex flex-col items-center gap-4">
+          {!isGenerating && (
+            <Button 
+              size="lg" 
+              onClick={handleGenerateReport}
+              disabled={!inputsComplete || isGenerating}
+              className="min-w-[200px]"
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              {hasAvailableReport ? "Generate Report" : "Purchase & Generate Report"}
+            </Button>
+          )}
+          
+          {!inputsComplete && !isGenerating && (
+            <p className="text-sm text-muted-foreground">
+              Please fill in the Article URL and Summary to generate your report.
+            </p>
+          )}
+        </div>
 
-                {/* 100-word Summary */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="summary">
-                      100-Word Summary <span className="text-destructive">*</span>
-                    </Label>
-                    <span className={`text-xs ${wordCount > 100 ? "text-destructive" : "text-muted-foreground"}`}>
-                      {wordCount}/100 words
-                    </span>
-                  </div>
-                  <Textarea
-                    id="summary"
-                    placeholder="Write a concise summary of your research commercialisation potential..."
-                    value={inputs.summary}
-                    onChange={(e) => handleInputChange("summary", e.target.value)}
-                    rows={4}
-                    className="resize-none"
-                  />
-                </div>
+        {/* Progress Indicator */}
+        {isGenerating && activeRun && (
+          <GenerationProgress
+            currentStep={activeRun.current_step}
+            totalSteps={activeRun.total_steps}
+            status={activeRun.status}
+          />
+        )}
 
-                {/* Optional Fields */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="trl">Technology Readiness Level (TRL)</Label>
-                    <Input
-                      id="trl"
-                      placeholder="e.g., TRL 4"
-                      value={inputs.trl}
-                      onChange={(e) => handleInputChange("trl", e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="ipStatus">IP Status</Label>
-                    <Input
-                      id="ipStatus"
-                      placeholder="e.g., Patent pending"
-                      value={inputs.ipStatus}
-                      onChange={(e) => handleInputChange("ipStatus", e.target.value)}
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Sections Tab */}
-          <TabsContent value="sections" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle>Generated Sections</CardTitle>
-                <CardDescription>
-                  AI-generated content sections based on your inputs. Review and regenerate as needed.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="py-16 text-center">
-                <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-muted">
-                  <Sparkles className="h-8 w-8 text-muted-foreground" />
-                </div>
-                {hasAvailableReport ? (
-                  <>
-                    <h3 className="text-lg font-semibold mb-2">Complete your inputs first</h3>
-                    <p className="text-muted-foreground max-w-sm mx-auto mb-6">
-                      Fill in the required inputs to generate AI-powered sections for your application.
-                    </p>
-                    <Button variant="outline" onClick={() => setActiveTab("inputs")}>
-                      Go to Inputs
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <h3 className="text-lg font-semibold mb-2">Purchase a report credit</h3>
-                    <p className="text-muted-foreground max-w-sm mx-auto mb-6">
-                      You need a report credit to generate AI-powered sections. Your draft is saved and ready.
-                    </p>
-                    <Button onClick={() => setPurchaseModalOpen(true)}>
-                      <CreditCard className="h-4 w-4 mr-2" />
-                      Purchase Report ($99 AUD)
-                    </Button>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Evidence Tab */}
-          <TabsContent value="evidence" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle>Evidence Library</CardTitle>
-                <CardDescription>
-                  Upload and manage supporting documents, references, and citations.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="py-16 text-center">
-                <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-muted">
-                  <Library className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <h3 className="text-lg font-semibold mb-2">No evidence items yet</h3>
-                <p className="text-muted-foreground max-w-sm mx-auto mb-6">
-                  Add URLs, documents, and references to support your application.
-                </p>
-                <Button variant="outline">
-                  Add Evidence
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Finalize Tab */}
-          <TabsContent value="finalize" className="space-y-6">
-            <Card className="shadow-card">
-              <CardHeader>
-                <CardTitle>Finalize & Export</CardTitle>
-                <CardDescription>
-                  Generate your final report and download in PDF or DOCX format.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="py-16 text-center">
-                <div className="mx-auto mb-4 flex items-center justify-center w-16 h-16 rounded-full bg-muted">
-                  <Download className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <h3 className="text-lg font-semibold mb-2">Complete all sections first</h3>
-                <p className="text-muted-foreground max-w-sm mx-auto mb-6">
-                  Generate and review all sections before finalizing your application report.
-                </p>
-                <Button variant="outline" onClick={() => setActiveTab("sections")}>
-                  Go to Sections
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+        {/* Reports List */}
+        <ReportsList
+          reports={reports}
+          isLoading={isLoadingReports}
+          onDownload={downloadReport}
+        />
       </main>
 
       {/* Purchase Modal */}
