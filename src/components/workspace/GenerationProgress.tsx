@@ -1,6 +1,7 @@
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle } from "lucide-react";
 
 const RESEARCH_STEPS = [
   "Extracting research context from article",
@@ -18,11 +19,12 @@ const RESEARCH_STEPS = [
 interface GenerationProgressProps {
   currentStep: number;
   totalSteps: number;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "stalled";
   errorMessage?: string;
+  onCancel?: () => void;
 }
 
-export function GenerationProgress({ currentStep, totalSteps, status, errorMessage }: GenerationProgressProps) {
+export function GenerationProgress({ currentStep, totalSteps, status, errorMessage, onCancel }: GenerationProgressProps) {
   const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
     ? RESEARCH_STEPS[currentStep - 1] 
@@ -36,6 +38,7 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
           {status === "completed" && <CheckCircle className="h-5 w-5 text-success" />}
           {status === "failed" && <AlertCircle className="h-5 w-5 text-destructive" />}
           {status === "pending" && <Loader2 className="h-5 w-5 text-muted-foreground" />}
+          {status === "stalled" && <Clock className="h-5 w-5 text-warning" />}
           Generating Report
         </CardTitle>
       </CardHeader>
@@ -47,6 +50,7 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
               {status === "completed" && "Report generation complete!"}
               {status === "failed" && "Generation failed"}
               {status === "pending" && "Starting generation..."}
+              {status === "stalled" && `Stalled at step ${currentStep}/${totalSteps}`}
             </span>
             <span className="font-medium">{Math.round(progressPercent)}%</span>
           </div>
@@ -55,6 +59,20 @@ export function GenerationProgress({ currentStep, totalSteps, status, errorMessa
 
         {status === "failed" && errorMessage && (
           <p className="text-sm text-destructive">{errorMessage}</p>
+        )}
+
+        {status === "stalled" && (
+          <div className="space-y-3">
+            <p className="text-sm text-warning">
+              Generation appears to have stalled. This can happen due to high demand or network issues.
+            </p>
+            {onCancel && (
+              <Button variant="outline" size="sm" onClick={onCancel} className="gap-2">
+                <XCircle className="h-4 w-4" />
+                Cancel & Retry
+              </Button>
+            )}
+          </div>
         )}
 
         {status === "running" && (
