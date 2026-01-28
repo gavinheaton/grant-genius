@@ -17,6 +17,7 @@ const RESEARCH_STEPS = [
   "Analyzing Australian economic impact",
   "Building competitor comparison",
   "Finding Australian partner businesses",
+  "Assembling final report",
 ];
 
 const AUTO_RETRY_SECONDS = 30;
@@ -85,7 +86,7 @@ export function GenerationProgress({
 
   const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
-    ? RESEARCH_STEPS[currentStep - 1] 
+    ? RESEARCH_STEPS[currentStep - 1] + (currentStep === 11 ? " (this step takes longer)" : "")
     : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending";
