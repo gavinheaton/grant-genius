@@ -22,14 +22,94 @@ function getModelForStep(stepNumber: number): string {
   return "google/gemini-2.5-flash-lite";
 }
 
-// System prompt for AI calls
-const SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
+// Default system prompt (fallback if no active bundle)
+const DEFAULT_SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
 
 // Inter-step throttle delay (ms) to spread requests and avoid rate limits
 const INTER_STEP_DELAY_MS = 3000;
 
 // Retry delays for rate limit errors (5s, 15s, 30s)
 const RETRY_DELAYS = [5000, 15000, 30000];
+
+// Cache for active prompt bundle
+let cachedBundle: {
+  system_prompt: string;
+  steps: Map<number, { prompt_template: string; model_override: string | null }>;
+} | null = null;
+
+// Fetch active prompt bundle from database
+// deno-lint-ignore no-explicit-any
+async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
+  if (cachedBundle) return cachedBundle;
+
+  try {
+    const { data: bundle, error: bundleError } = await supabase
+      .from("prompt_bundles")
+      .select("id, system_prompt")
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (bundleError || !bundle) {
+      console.log("No active prompt bundle found, using defaults");
+      return null;
+    }
+
+    const { data: steps, error: stepsError } = await supabase
+      .from("prompt_bundle_steps")
+      .select("step_number, prompt_template, model_override")
+      .eq("bundle_id", bundle.id)
+      .order("step_number", { ascending: true });
+
+    if (stepsError || !steps) {
+      console.log("No prompt steps found, using defaults");
+      return null;
+    }
+
+    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null }>();
+    for (const step of steps) {
+      stepsMap.set(step.step_number, {
+        prompt_template: step.prompt_template,
+        model_override: step.model_override,
+      });
+    }
+
+    cachedBundle = {
+      system_prompt: bundle.system_prompt,
+      steps: stepsMap,
+    };
+
+    console.log("Loaded active prompt bundle with", stepsMap.size, "steps");
+    return cachedBundle;
+  } catch (e) {
+    console.error("Error fetching prompt bundle:", e);
+    return null;
+  }
+}
+
+// Interpolate variables in prompt template
+function interpolatePrompt(template: string, variables: Record<string, string>): string {
+  let result = template;
+  
+  // Handle simple {{variable}} replacements
+  for (const [key, value] of Object.entries(variables)) {
+    const regex = new RegExp(`\\{\\{${key}\\}\\}`, "g");
+    result = result.replace(regex, value || "");
+  }
+  
+  // Handle conditional blocks {{#variable}}...{{/variable}}
+  for (const [key, value] of Object.entries(variables)) {
+    const conditionalRegex = new RegExp(`\\{\\{#${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, "g");
+    if (value && value.trim()) {
+      // Replace with content inside the block
+      result = result.replace(conditionalRegex, "$1");
+    } else {
+      // Remove the entire block
+      result = result.replace(conditionalRegex, "");
+    }
+  }
+  
+  return result.trim();
+}
 
 // Timeout wrapper for fetch calls
 async function fetchWithTimeout(
@@ -207,12 +287,30 @@ async function processSingleStep(
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
   );
 
+  // Fetch active prompt bundle
+  const bundle = await fetchActiveBundle(supabase);
+  const systemPrompt = bundle?.system_prompt || DEFAULT_SYSTEM_PROMPT;
+
   const summary = inputs.summary as string || "";
   const reportContent: Record<string, unknown> = { ...checkpointData };
   const citations = [...checkpointCitations];
   
   const nextStep = resumeFromStep + 1;
   console.log(`10-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
+
+  // Helper function to get prompt for a step
+  const getStepPrompt = (stepNum: number, defaultPrompt: string, variables: Record<string, string>) => {
+    const stepConfig = bundle?.steps.get(stepNum);
+    if (stepConfig?.prompt_template) {
+      return interpolatePrompt(stepConfig.prompt_template, variables);
+    }
+    return defaultPrompt;
+  };
+
+  // Helper function to get model override for a step
+  const getStepModel = (stepNum: number) => {
+    return bundle?.steps.get(stepNum)?.model_override || null;
+  };
 
   try {
     // Execute exactly one step based on nextStep
@@ -231,7 +329,7 @@ Search for and identify competing or similar research projects from other resear
 
 Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
 
-          const competitorResult = await callAIWithRetry(competitorPrompt, 2);
+          const competitorResult = await callAIWithRetry(competitorPrompt, 2, systemPrompt, getStepModel(2));
           reportContent.competitorResearch = competitorResult;
           return { competitors: competitorResult };
         });
@@ -254,7 +352,7 @@ For each segment provide:
 
 Be specific and practical.`;
 
-          const marketResult = await callAIWithRetry(marketPrompt, 3);
+          const marketResult = await callAIWithRetry(marketPrompt, 3, systemPrompt, getStepModel(3));
           reportContent.marketSegments = marketResult;
           return { segments: marketResult };
         });
@@ -278,7 +376,7 @@ Find companies that may already have products or services in these markets. For 
 
 Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
 
-          const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4);
+          const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4, systemPrompt, getStepModel(4));
           reportContent.existingCompetitors = existingCompetitorsResult;
           return { competitors: existingCompetitorsResult };
         });
@@ -300,7 +398,7 @@ Using data from validated sources (OECD, World Bank, ABS, industry reports), est
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
 
-          const tamResult = await callAIWithRetry(tamPrompt, 5);
+          const tamResult = await callAIWithRetry(tamPrompt, 5, systemPrompt, getStepModel(5));
           reportContent.tam = tamResult;
           return { tam: tamResult };
         });
@@ -320,7 +418,7 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 
 Provide SAM for each market segment with clear methodology.`;
 
-          const samResult = await callAIWithRetry(samPrompt, 6);
+          const samResult = await callAIWithRetry(samPrompt, 6, systemPrompt, getStepModel(6));
           reportContent.sam = samResult;
           return { sam: samResult };
         });
@@ -341,7 +439,7 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 
 Be conservative and realistic in estimates.`;
 
-          const somResult = await callAIWithRetry(somPrompt, 7);
+          const somResult = await callAIWithRetry(somPrompt, 7, systemPrompt, getStepModel(7));
           reportContent.som = somResult;
           return { som: somResult };
         });
@@ -364,7 +462,7 @@ Calculate the likely economic impact to the Australian economy from commercializ
 
 Provide 5-year projections where possible.`;
 
-          const impactResult = await callAIWithRetry(impactPrompt, 8);
+          const impactResult = await callAIWithRetry(impactPrompt, 8, systemPrompt, getStepModel(8));
           reportContent.economicImpact = impactResult;
           return { impact: impactResult };
         });
@@ -389,7 +487,7 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`;
 
-          const tableResult = await callAIWithRetry(tablePrompt, 9);
+          const tableResult = await callAIWithRetry(tablePrompt, 9, systemPrompt, getStepModel(9));
           reportContent.competitorTable = tableResult;
           return { table: tableResult };
         });
@@ -414,7 +512,7 @@ Market Segments: ${reportContent.marketSegments}
 
 Use the ANZSIC hierarchy for classification.`;
 
-          const partnerResult = await callAIWithRetry(partnerPrompt, 10);
+          const partnerResult = await callAIWithRetry(partnerPrompt, 10, systemPrompt, getStepModel(10));
           reportContent.partnerBusinesses = partnerResult;
           return { partners: partnerResult };
         });
@@ -598,14 +696,20 @@ async function executeStep(
 }
 
 // Gemini-only AI call with aggressive retry delays for rate limits
-async function callAIWithRetry(prompt: string, stepNumber: number): Promise<string> {
+async function callAIWithRetry(
+  prompt: string, 
+  stepNumber: number,
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
+  modelOverride?: string | null
+): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
   if (!LOVABLE_API_KEY) {
     throw new Error("AI service not configured. Please contact support.");
   }
 
-  const model = getModelForStep(stepNumber);
+  // Use model override if provided, otherwise use default for step
+  const model = modelOverride || getModelForStep(stepNumber);
   console.log(`Step ${stepNumber}: Using model ${model}`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
@@ -628,7 +732,7 @@ async function callAIWithRetry(prompt: string, stepNumber: number): Promise<stri
           body: JSON.stringify({
             model,
             messages: [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: systemPrompt },
               { role: "user", content: prompt }
             ],
           }),

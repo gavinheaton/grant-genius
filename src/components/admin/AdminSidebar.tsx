@@ -8,6 +8,7 @@ import {
   LogOut,
   Printer,
   Home,
+  Bot,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -44,6 +45,7 @@ const emailItems = [
 
 const reportItems = [
   { title: "PDF Templates", url: "/admin/pdf-templates", icon: Printer },
+  { title: "AI Prompts", url: "/admin/prompt-bundles", icon: Bot },
 ];
 
 const systemItems = [

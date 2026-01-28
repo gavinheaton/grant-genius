@@ -35,14 +35,94 @@ function getModelForStep(stepNumber: number): string {
   return "google/gemini-2.5-flash-lite";
 }
 
-// System prompt for AI calls
-const SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
+// Default system prompt (fallback if no active bundle)
+const DEFAULT_SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
 
 // Inter-step throttle delay (ms) to spread requests and avoid rate limits
 const INTER_STEP_DELAY_MS = 3000;
 
 // Retry delays for rate limit errors (5s, 15s, 30s)
 const RETRY_DELAYS = [5000, 15000, 30000];
+
+// Cache for active prompt bundle
+let cachedBundle: {
+  system_prompt: string;
+  steps: Map<number, { prompt_template: string; model_override: string | null }>;
+} | null = null;
+
+// Fetch active prompt bundle from database
+// deno-lint-ignore no-explicit-any
+async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
+  if (cachedBundle) return cachedBundle;
+
+  try {
+    const { data: bundle, error: bundleError } = await supabase
+      .from("prompt_bundles")
+      .select("id, system_prompt")
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (bundleError || !bundle) {
+      console.log("No active prompt bundle found, using defaults");
+      return null;
+    }
+
+    const { data: steps, error: stepsError } = await supabase
+      .from("prompt_bundle_steps")
+      .select("step_number, prompt_template, model_override")
+      .eq("bundle_id", bundle.id)
+      .order("step_number", { ascending: true });
+
+    if (stepsError || !steps) {
+      console.log("No prompt steps found, using defaults");
+      return null;
+    }
+
+    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null }>();
+    for (const step of steps) {
+      stepsMap.set(step.step_number, {
+        prompt_template: step.prompt_template,
+        model_override: step.model_override,
+      });
+    }
+
+    cachedBundle = {
+      system_prompt: bundle.system_prompt,
+      steps: stepsMap,
+    };
+
+    console.log("Loaded active prompt bundle with", stepsMap.size, "steps");
+    return cachedBundle;
+  } catch (e) {
+    console.error("Error fetching prompt bundle:", e);
+    return null;
+  }
+}
+
+// Interpolate variables in prompt template
+function interpolatePrompt(template: string, variables: Record<string, string>): string {
+  let result = template;
+  
+  // Handle simple {{variable}} replacements
+  for (const [key, value] of Object.entries(variables)) {
+    const regex = new RegExp(`\\{\\{${key}\\}\\}`, "g");
+    result = result.replace(regex, value || "");
+  }
+  
+  // Handle conditional blocks {{#variable}}...{{/variable}}
+  for (const [key, value] of Object.entries(variables)) {
+    const conditionalRegex = new RegExp(`\\{\\{#${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, "g");
+    if (value && value.trim()) {
+      // Replace with content inside the block
+      result = result.replace(conditionalRegex, "$1");
+    } else {
+      // Remove the entire block
+      result = result.replace(conditionalRegex, "");
+    }
+  }
+  
+  return result.trim();
+}
 
 // Timeout wrapper for fetch calls
 async function fetchWithTimeout(
@@ -280,6 +360,10 @@ async function processStep1Only(
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
   );
 
+  // Fetch active prompt bundle
+  const bundle = await fetchActiveBundle(supabase);
+  const systemPrompt = bundle?.system_prompt || DEFAULT_SYSTEM_PROMPT;
+
   const publicArticleUrl = inputs.publicArticleUrl as string;
   const summary = inputs.summary as string;
   const trl = (inputs.trl as string) || "";
@@ -328,7 +412,21 @@ async function processStep1Only(
         }
       }
 
-      const contextPrompt = `You are analyzing research for commercialization potential.
+      // Get step 1 prompt from bundle or use default
+      const stepConfig = bundle?.steps.get(1);
+      let contextPrompt: string;
+      
+      if (stepConfig?.prompt_template) {
+        contextPrompt = interpolatePrompt(stepConfig.prompt_template, {
+          summary,
+          publicArticleUrl,
+          articleContent: articleContent.slice(0, 8000),
+          trl,
+          ipStatus,
+        });
+      } else {
+        // Fallback to hardcoded prompt
+        contextPrompt = `You are analyzing research for commercialization potential.
 
 Research Summary: ${summary}
 Article URL: ${publicArticleUrl}
@@ -343,8 +441,9 @@ Extract and summarize:
 4. Current stage of development
 
 Provide a structured analysis.`;
+      }
 
-      const contextResult = await callAIWithRetry(contextPrompt, 1);
+      const contextResult = await callAIWithRetry(contextPrompt, 1, systemPrompt, stepConfig?.model_override);
       reportContent.researchContext = contextResult;
       return { context: contextResult };
     });
@@ -432,14 +531,20 @@ async function executeStep(
 }
 
 // Gemini-only AI call with aggressive retry delays for rate limits
-async function callAIWithRetry(prompt: string, stepNumber: number): Promise<string> {
+async function callAIWithRetry(
+  prompt: string, 
+  stepNumber: number, 
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
+  modelOverride?: string | null
+): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
   if (!LOVABLE_API_KEY) {
     throw new Error("AI service not configured. Please contact support.");
   }
 
-  const model = getModelForStep(stepNumber);
+  // Use model override if provided, otherwise use default for step
+  const model = modelOverride || getModelForStep(stepNumber);
   console.log(`Step ${stepNumber}: Using model ${model}`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
@@ -462,7 +567,7 @@ async function callAIWithRetry(prompt: string, stepNumber: number): Promise<stri
           body: JSON.stringify({
             model,
             messages: [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: systemPrompt },
               { role: "user", content: prompt }
             ],
           }),
