@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.generate-pdf]
 verify_jwt = false
+
+[functions.invite-admin]
+verify_jwt = false

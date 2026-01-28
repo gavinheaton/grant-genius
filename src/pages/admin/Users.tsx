@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -20,13 +21,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Eye } from "lucide-react";
+import { Search, Eye, UserPlus } from "lucide-react";
 import { format } from "date-fns";
+import { AddAdminDialog } from "@/components/admin/AddAdminDialog";
 
 export default function Users() {
   const navigate = useNavigate();
+  const { isSuperAdmin } = useAdminAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
+  const [addAdminDialogOpen, setAddAdminDialogOpen] = useState(false);
 
   const { data: users, isLoading } = useQuery({
     queryKey: ["admin-users"],
@@ -77,11 +81,19 @@ export default function Users() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-foreground">Users</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage user accounts and permissions
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-foreground">Users</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage user accounts and permissions
+          </p>
+        </div>
+        {isSuperAdmin && (
+          <Button onClick={() => setAddAdminDialogOpen(true)}>
+            <UserPlus className="h-4 w-4 mr-2" />
+            Add Admin
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-4">
@@ -159,6 +171,11 @@ export default function Users() {
           </TableBody>
         </Table>
       </div>
+
+      <AddAdminDialog
+        open={addAdminDialogOpen}
+        onOpenChange={setAddAdminDialogOpen}
+      />
     </div>
   );
 }
