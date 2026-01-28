@@ -8,18 +8,17 @@ const corsHeaders = {
 };
 
 // Model selection based on step complexity
-// Lighter model for simple steps, heavier for complex analysis
 function getModelForStep(stepNumber: number): string {
+  // Step 0: Source pack - handled by generate-report
   // Steps 1-3: Context extraction, basic search - use lighter model
-  // Steps 4-7: Complex market analysis - use heavier model
-  // Steps 8-10: Summary and formatting - use lighter model
-  // Step 11: Final assembly - use most capable model
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
+  // Steps 4-7: Complex market analysis - use heavier model
   if (stepNumber <= 7) {
     return "google/gemini-3-flash-preview";
   }
+  // Step 11: Final assembly - use most capable model
   if (stepNumber === 11) {
     return "google/gemini-3-pro-preview";
   }
@@ -307,19 +306,8 @@ serve(async (req) => {
       );
     }
 
-    // 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10, plus recovery for step 11
+    // 12-PHASE ARCHITECTURE: Accept any checkpoint from steps 0-10, plus recovery for step 11
     let effectiveResumeFromStep = reportRun.current_step;
-
-    // Specific error for step 0 (Step 1 never completed)
-    if (effectiveResumeFromStep === 0) {
-      return new Response(
-        JSON.stringify({ 
-          error: "No checkpoint available. Step 1 did not complete. Please cancel this run and start a new report.",
-          code: "NO_CHECKPOINT"
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
 
     // STEP 11 RECOVERY: Handle case where final step stalled without completing
     if (effectiveResumeFromStep >= 11) {
@@ -370,8 +358,8 @@ serve(async (req) => {
       effectiveResumeFromStep = 10;
     }
 
-    // Validate checkpoint range (steps 1-10 are valid checkpoints)
-    if (effectiveResumeFromStep < 1 || effectiveResumeFromStep > 10) {
+    // Validate checkpoint range (steps 0-10 are valid checkpoints)
+    if (effectiveResumeFromStep < 0 || effectiveResumeFromStep > 10) {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -427,8 +415,8 @@ serve(async (req) => {
 });
 
 /**
- * 11-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
- * This function is called for steps 2-11.
+ * 12-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
+ * This function is called for steps 1-11.
  * Step 11 completes the report instead of checkpointing.
  */
 async function processSingleStep(
@@ -443,6 +431,8 @@ async function processSingleStep(
   resumeFromStep: number,
   emailOnComplete: boolean
 ) {
+  const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
+  
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL") ?? "",
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -461,12 +451,18 @@ async function processSingleStep(
   const citations = [...checkpointCitations];
   
   const nextStep = resumeFromStep + 1;
-  console.log(`10-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
+  console.log(`12-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
 
   // Fetch grant context for prompt interpolation
   const grantContext = await fetchGrantContext(supabase, grantVersionId);
 
-  // Build base interpolation variables including grant context
+  // Extract source pack from Step 0 output
+  // deno-lint-ignore no-explicit-any
+  const sourcePack = reportContent.sourcePack as any || { sources: [], unknowns: [] };
+  const sourcesJson = JSON.stringify(sourcePack.sources || []);
+  const unknownsJson = JSON.stringify(sourcePack.unknowns || []);
+
+  // Build base interpolation variables including grant context and source pack
   const getBaseVariables = (): Record<string, string> => ({
     summary,
     publicArticleUrl,
@@ -477,6 +473,9 @@ async function processSingleStep(
     grantGuidelines: grantContext.guidelinesExcerpt,
     grantRubric: grantContext.formattedRubric,
     grantSummary: grantContext.summary,
+    // Source pack from Step 0
+    sources: sourcesJson,
+    unknowns: unknownsJson,
     // Step outputs (from checkpoint data)
     researchContext: String(reportContent.researchContext || ""),
     competitorResearch: String(reportContent.competitorResearch || ""),
@@ -489,6 +488,7 @@ async function processSingleStep(
     competitorTable: String(reportContent.competitorTable || ""),
     partnerBusinesses: String(reportContent.partnerBusinesses || ""),
     // Assembly variables (JSON stringified for Step 11)
+    step0: JSON.stringify(reportContent.sourcePack || {}),
     step1: JSON.stringify(reportContent.researchContext || {}),
     step2: JSON.stringify(reportContent.competitorResearch || {}),
     step3: JSON.stringify(reportContent.marketSegments || {}),
@@ -518,11 +518,94 @@ async function processSingleStep(
   try {
     // Execute exactly one step based on nextStep
     switch (nextStep) {
+      case 1:
+        // Step 1: Extract Context (moved from generate-report)
+        await executeStep(supabase, reportRunId, 1, async () => {
+          // Scrape article content if not already in checkpoint
+          let articleContent = "";
+          if (FIRECRAWL_API_KEY) {
+            try {
+              const scrapeResponse = await fetchWithTimeout(
+                "https://api.firecrawl.dev/v1/scrape",
+                {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({
+                    url: publicArticleUrl,
+                    formats: ["markdown"],
+                    onlyMainContent: true,
+                  }),
+                },
+                60000
+              );
+
+              if (scrapeResponse.ok) {
+                const scrapeData = await scrapeResponse.json();
+                articleContent = scrapeData.data?.markdown || scrapeData.markdown || "";
+                if (scrapeData.data?.metadata?.title) {
+                  citations.push({
+                    url: publicArticleUrl,
+                    title: scrapeData.data.metadata.title,
+                    accessed: new Date().toISOString().split("T")[0],
+                  });
+                }
+              }
+            } catch (e) {
+              console.error("Firecrawl scrape error:", e);
+            }
+          }
+
+          const stepConfig = bundle?.steps.get(1);
+          const interpolationVars = {
+            ...getBaseVariables(),
+            articleContent: articleContent.slice(0, 8000),
+          };
+          
+          let contextPrompt: string;
+          if (stepConfig?.prompt_template) {
+            contextPrompt = interpolatePrompt(stepConfig.prompt_template, interpolationVars);
+          } else {
+            contextPrompt = `You are analyzing research for commercialization potential.
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
+
+## MISSING DATA CATEGORIES
+${unknownsJson}
+
+Research Summary: ${summary}
+Article URL: ${publicArticleUrl}
+${articleContent ? `Article Content:\n${articleContent.slice(0, 8000)}` : ""}
+${trl ? `Technology Readiness Level: ${trl}` : ""}
+${ipStatus ? `IP Status: ${ipStatus}` : ""}
+
+Extract and summarize:
+1. The core research innovation
+2. Key technologies or methods involved
+3. Potential applications
+4. Current stage of development
+
+When citing data, reference sources by source_id from the source pack (e.g., [S0-1]).
+Provide a structured analysis.`;
+          }
+
+          const contextResult = await callAIWithRetry(contextPrompt, 1, systemPrompt, stepConfig?.model_override);
+          reportContent.researchContext = contextResult;
+          return { context: contextResult };
+        });
+        break;
+
       case 2:
         // Step 2: Competitor Research
         await executeStep(supabase, reportRunId, 2, async () => {
-          const competitorPrompt = `Based on this research:
+          const competitorPrompt = getStepPrompt(2, `Based on this research:
 ${summary}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Search for and identify competing or similar research projects from other researchers worldwide. Include:
 1. Names of competing research groups/universities
@@ -530,7 +613,8 @@ Search for and identify competing or similar research projects from other resear
 3. Key differences from our research
 4. Publication dates and status
 
-Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`;
+Reference sources by source_id (e.g., [S0-1]).
+Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`);
 
           const competitorResult = await callAIWithRetry(competitorPrompt, 2, systemPrompt, getStepModel(2));
           reportContent.competitorResearch = competitorResult;
@@ -541,8 +625,11 @@ Format as a structured list. If you cannot find specific examples, indicate this
       case 3:
         // Step 3: Market Segments
         await executeStep(supabase, reportRunId, 3, async () => {
-          const marketPrompt = `Based on this research innovation:
+          const marketPrompt = getStepPrompt(3, `Based on this research innovation:
 ${summary}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Identify at least 3 different market segments where this research could be commercialized as a product or service. At least one must be in Australia.
 
@@ -553,7 +640,8 @@ For each segment provide:
 4. Geographic focus (include at least one Australian market)
 5. Estimated market size category (small/medium/large)
 
-Be specific and practical.`;
+Reference sources by source_id (e.g., [S0-1]).
+Be specific and practical.`);
 
           const marketResult = await callAIWithRetry(marketPrompt, 3, systemPrompt, getStepModel(3));
           reportContent.marketSegments = marketResult;
@@ -564,8 +652,11 @@ Be specific and practical.`;
       case 4:
         // Step 4: Find Competitors
         await executeStep(supabase, reportRunId, 4, async () => {
-          const existingCompetitorsPrompt = `Based on the market segments identified for this research:
+          const existingCompetitorsPrompt = getStepPrompt(4, `Based on the market segments identified for this research:
 ${summary}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Market Segments:
 ${reportContent.marketSegments}
@@ -577,7 +668,8 @@ Find companies that may already have products or services in these markets. For 
 4. Geographic presence
 5. How they compare to the proposed research
 
-Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`;
+Reference sources by source_id (e.g., [S0-1]).
+Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`);
 
           const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4, systemPrompt, getStepModel(4));
           reportContent.existingCompetitors = existingCompetitorsResult;
@@ -588,18 +680,21 @@ Note: If specific market data cannot be validated, mark as "Data not available -
       case 5:
         // Step 5: Calculate TAM
         await executeStep(supabase, reportRunId, 5, async () => {
-          const tamPrompt = `Calculate the Total Addressable Market (TAM) for the research commercialization:
+          const tamPrompt = getStepPrompt(5, `Calculate the Total Addressable Market (TAM) for the research commercialization:
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
 
-Using data from validated sources (OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
+Using data from the validated sources above (prioritize Australian Government, OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
 1. Market size in USD/AUD
-2. Data source and year
+2. Data source and year (reference by source_id e.g., [S0-1])
 3. Growth rate if available
 4. Key assumptions
 
-IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`;
+IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`);
 
           const tamResult = await callAIWithRetry(tamPrompt, 5, systemPrompt, getStepModel(5));
           reportContent.tam = tamResult;
@@ -610,8 +705,11 @@ IMPORTANT: Only use numbers from validated sources. If you cannot find validated
       case 6:
         // Step 6: Calculate SAM
         await executeStep(supabase, reportRunId, 6, async () => {
-          const samPrompt = `Based on the TAM analysis:
+          const samPrompt = getStepPrompt(6, `Based on the TAM analysis:
 ${reportContent.tam}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
 1. Geographic limitations
@@ -619,7 +717,8 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 3. Distribution capabilities
 4. Regulatory constraints
 
-Provide SAM for each market segment with clear methodology.`;
+Reference sources by source_id (e.g., [S0-1]).
+Provide SAM for each market segment with clear methodology.`);
 
           const samResult = await callAIWithRetry(samPrompt, 6, systemPrompt, getStepModel(6));
           reportContent.sam = samResult;
@@ -630,8 +729,11 @@ Provide SAM for each market segment with clear methodology.`;
       case 7:
         // Step 7: Calculate SOM
         await executeStep(supabase, reportRunId, 7, async () => {
-          const somPrompt = `Based on the SAM analysis:
+          const somPrompt = getStepPrompt(7, `Based on the SAM analysis:
 ${reportContent.sam}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
 1. First year targets
@@ -640,7 +742,8 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 4. Market penetration assumptions
 5. Competitive dynamics
 
-Be conservative and realistic in estimates.`;
+Reference sources by source_id (e.g., [S0-1]).
+Be conservative and realistic in estimates.`);
 
           const somResult = await callAIWithRetry(somPrompt, 7, systemPrompt, getStepModel(7));
           reportContent.som = somResult;
@@ -651,8 +754,11 @@ Be conservative and realistic in estimates.`;
       case 8:
         // Step 8: Australian Economic Impact
         await executeStep(supabase, reportRunId, 8, async () => {
-          const impactPrompt = `Based on the SOM projections:
+          const impactPrompt = getStepPrompt(8, `Based on the SOM projections:
 ${reportContent.som}
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Calculate the likely economic impact to the Australian economy from commercializing this research:
 1. Direct revenue in Australia
@@ -663,7 +769,8 @@ Calculate the likely economic impact to the Australian economy from commercializ
 6. Industry development benefits
 7. Knowledge economy contribution
 
-Provide 5-year projections where possible.`;
+Reference sources by source_id (e.g., [S0-1]).
+Provide 5-year projections where possible.`);
 
           const impactResult = await callAIWithRetry(impactPrompt, 8, systemPrompt, getStepModel(8));
           reportContent.economicImpact = impactResult;
@@ -674,7 +781,7 @@ Provide 5-year projections where possible.`;
       case 9:
         // Step 9: Competitor Comparison Table
         await executeStep(supabase, reportRunId, 9, async () => {
-          const tablePrompt = `Create a competitor comparison table based on:
+          const tablePrompt = getStepPrompt(9, `Create a competitor comparison table based on:
 
 Our Products: ${reportContent.marketSegments}
 Existing Competitors: ${reportContent.existingCompetitors}
@@ -688,7 +795,7 @@ Build a markdown table comparing:
 | Technology | | | | |
 | Market Focus | | | | |
 
-Fill in with specific comparisons.`;
+Fill in with specific comparisons.`);
 
           const tableResult = await callAIWithRetry(tablePrompt, 9, systemPrompt, getStepModel(9));
           reportContent.competitorTable = tableResult;
@@ -700,6 +807,9 @@ Fill in with specific comparisons.`;
         // Step 10: Partner Businesses
         await executeStep(supabase, reportRunId, 10, async () => {
           const partnerPrompt = getStepPrompt(10, `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
+
+## AVAILABLE SOURCES (from Step 0)
+${sourcesJson}
 
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
@@ -713,6 +823,7 @@ Market Segments: ${reportContent.marketSegments}
    - License the technology
    - Invest in the venture
 
+Reference sources by source_id (e.g., [S0-1]).
 Use the ANZSIC hierarchy for classification.`);
 
           const partnerResult = await callAIWithRetry(partnerPrompt, 10, systemPrompt, getStepModel(10));
@@ -727,6 +838,9 @@ Use the ANZSIC hierarchy for classification.`);
           const defaultAssemblyPrompt = `You are assembling a final grant report for Australian government assessors.
 
 Grant: {{grantName}} ({{grantVersionLabel}})
+
+## SOURCE PACK (from Step 0)
+{{step0}}
 
 ## STEP OUTPUTS (raw JSON from research pipeline)
 
@@ -747,7 +861,7 @@ Parse and merge these outputs into ONE coherent report for Australian government
 
 RULES:
 - Use ONLY validated facts from step outputs
-- Every numeric claim must have a citation marker [S#]
+- Every numeric claim must have a citation marker [S#] referencing sources from Step 0
 - If an output contains an assumption, label it (High/Med/Low confidence)
 - Remove internal process phrasing ("in Step X", "your instructions")
 - Eliminate placeholders - add missing items to Data Gaps section
@@ -814,11 +928,11 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
           emailOnComplete
         );
         
-        console.log(`11-PHASE: Report run ${reportRunId} completed successfully`);
+        console.log(`12-PHASE: Report run ${reportRunId} completed successfully`);
         return; // No checkpoint needed - we're done
     }
 
-    // For steps 2-10: Save checkpoint and exit
+    // For steps 1-10: Save checkpoint and exit
     // Frontend will detect pending status and call resume-report-run again
     await supabase
       .from("report_runs")
@@ -830,10 +944,10 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
       })
       .eq("id", reportRunId);
 
-    console.log(`11-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
+    console.log(`12-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
 
   } catch (error) {
-    console.error(`11-PHASE: Step ${nextStep} failed:`, error);
+    console.error(`12-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
     
@@ -1139,7 +1253,7 @@ async function updateRunStatus(
       .eq("id", reportRunId)
       .single();
     
-    if (run?.current_step) {
+    if (run?.current_step !== undefined) {
       await supabase
         .from("report_run_steps")
         .update({ 

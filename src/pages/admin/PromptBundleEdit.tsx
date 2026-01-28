@@ -60,6 +60,13 @@ const VARIABLE_CATEGORIES = [
     ],
   },
   {
+    name: "Source Pack (from Step 0)",
+    variables: [
+      { name: "{{sources}}", description: "JSON array of curated sources from Step 0" },
+      { name: "{{unknowns}}", description: "JSON array of missing source categories from Step 0" },
+    ],
+  },
+  {
     name: "Step Outputs (available in later steps)",
     variables: [
       { name: "{{researchContext}}", description: "Output from context extraction (Step 1)" },
@@ -77,6 +84,7 @@ const VARIABLE_CATEGORIES = [
   {
     name: "Assembly Variables (Step 11 only - JSON stringified)",
     variables: [
+      { name: "{{step0}}", description: "JSON from Step 0 (Source Pack)" },
       { name: "{{step1}}", description: "JSON from Step 1 (Research Context)" },
       { name: "{{step2}}", description: "JSON from Step 2 (Competitor Research)" },
       { name: "{{step3}}", description: "JSON from Step 3 (Market Segments)" },

@@ -7,7 +7,9 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// 12-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-10 (research) + Step 11 (assembly)
 const RESEARCH_STEPS = [
+  { name: "build_source_pack", description: "Building Australia-first source pack" },
   { name: "extract_context", description: "Extracting research context from article" },
   { name: "competitor_research", description: "Searching for competing research" },
   { name: "market_segments", description: "Identifying market segments" },
@@ -22,18 +24,20 @@ const RESEARCH_STEPS = [
 ];
 
 // Model selection based on step complexity
-// Lighter model for simple steps, heavier for complex analysis
 function getModelForStep(stepNumber: number): string {
+  // Step 0: Source pack - needs good reasoning for source curation
+  if (stepNumber === 0) {
+    return "google/gemini-3-flash-preview";
+  }
   // Steps 1-3: Context extraction, basic search - use lighter model
-  // Steps 4-7: Complex market analysis - use heavier model
-  // Steps 8-10: Summary and formatting - use lighter model
-  // Step 11: Final assembly - use most capable model
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
+  // Steps 4-7: Complex market analysis - use heavier model
   if (stepNumber <= 7) {
     return "google/gemini-3-flash-preview";
   }
+  // Step 11: Final assembly - use most capable model
   if (stepNumber === 11) {
     return "google/gemini-3-pro-preview";
   }
@@ -366,7 +370,7 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Create report run
+    // Create report run with 12 total steps (0-11)
     const { data: reportRun, error: runError } = await supabaseAdmin
       .from("report_runs")
       .insert({
@@ -374,7 +378,7 @@ serve(async (req) => {
         report_template_version_id: templateVersion.id,
         status: "running",
         current_step: 0,
-        total_steps: RESEARCH_STEPS.length,
+        total_steps: RESEARCH_STEPS.length, // 12 steps (0-11)
         started_at: new Date().toISOString(),
       })
       .select("id")
@@ -388,10 +392,10 @@ serve(async (req) => {
       );
     }
 
-    // Create step records
+    // Create step records (0-11)
     const stepRecords = RESEARCH_STEPS.map((step, index) => ({
       report_run_id: reportRun.id,
-      step_number: index + 1,
+      step_number: index, // 0-11
       step_name: step.name,
       status: "pending" as const,
     }));
@@ -411,9 +415,8 @@ serve(async (req) => {
       report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
-    // Start async processing - this runs after response is sent
-    // 10-PHASE ARCHITECTURE: Phase 1 runs ONLY Step 1, then checkpoints
-    processStep1Only(
+    // Start async processing - 12-PHASE ARCHITECTURE: Phase 0 runs ONLY Step 0, then checkpoints
+    processStep0Only(
       reportRun.id,
       applicationId,
       application.grant_version_id,
@@ -438,11 +441,11 @@ serve(async (req) => {
 });
 
 /**
- * 10-PHASE ARCHITECTURE: Phase 1
- * Runs ONLY Step 1 (context extraction), then checkpoints.
- * The frontend will detect the checkpoint and invoke resume-report-run for Step 2.
+ * 12-PHASE ARCHITECTURE: Phase 0
+ * Runs ONLY Step 0 (build source pack), then checkpoints.
+ * The frontend will detect the checkpoint and invoke resume-report-run for Step 1.
  */
-async function processStep1Only(
+async function processStep0Only(
   reportRunId: string,
   applicationId: string,
   grantVersionId: string,
@@ -472,48 +475,48 @@ async function processStep1Only(
   const citations: Array<{ url: string; title: string; accessed: string }> = [];
 
   try {
-    // Step 1: Extract context from article (Firecrawl + AI)
-    await executeStep(supabase, reportRunId, 1, async () => {
-      let articleContent = "";
-      if (FIRECRAWL_API_KEY) {
-        try {
-          const scrapeResponse = await fetchWithTimeout(
-            "https://api.firecrawl.dev/v1/scrape",
-            {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                url: publicArticleUrl,
-                formats: ["markdown"],
-                onlyMainContent: true,
-              }),
+    // First, scrape the article to get content for Step 0
+    let articleContent = "";
+    if (FIRECRAWL_API_KEY) {
+      try {
+        const scrapeResponse = await fetchWithTimeout(
+          "https://api.firecrawl.dev/v1/scrape",
+          {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+              "Content-Type": "application/json",
             },
-            60000 // 60s timeout for Firecrawl
-          );
+            body: JSON.stringify({
+              url: publicArticleUrl,
+              formats: ["markdown"],
+              onlyMainContent: true,
+            }),
+          },
+          60000 // 60s timeout for Firecrawl
+        );
 
-          if (scrapeResponse.ok) {
-            const scrapeData = await scrapeResponse.json();
-            articleContent = scrapeData.data?.markdown || scrapeData.markdown || "";
-            if (scrapeData.data?.metadata?.title) {
-              citations.push({
-                url: publicArticleUrl,
-                title: scrapeData.data.metadata.title,
-                accessed: new Date().toISOString().split("T")[0],
-              });
-            }
+        if (scrapeResponse.ok) {
+          const scrapeData = await scrapeResponse.json();
+          articleContent = scrapeData.data?.markdown || scrapeData.markdown || "";
+          if (scrapeData.data?.metadata?.title) {
+            citations.push({
+              url: publicArticleUrl,
+              title: scrapeData.data.metadata.title,
+              accessed: new Date().toISOString().split("T")[0],
+            });
           }
-        } catch (e) {
-          console.error("Firecrawl scrape error:", e);
-          // Continue without scraped content
         }
+      } catch (e) {
+        console.error("Firecrawl scrape error:", e);
+        // Continue without scraped content
       }
+    }
 
-      // Get step 1 prompt from bundle or use default
-      const stepConfig = bundle?.steps.get(1);
-      let contextPrompt: string;
+    // Step 0: Build Source Pack
+    await executeStep(supabase, reportRunId, 0, async () => {
+      // Get step 0 prompt from bundle
+      const stepConfig = bundle?.steps.get(0);
       
       // Build interpolation variables including grant context
       const interpolationVars = {
@@ -529,11 +532,12 @@ async function processStep1Only(
         grantSummary: grantContext.summary,
       };
       
+      let sourcePackPrompt: string;
       if (stepConfig?.prompt_template) {
-        contextPrompt = interpolatePrompt(stepConfig.prompt_template, interpolationVars);
+        sourcePackPrompt = interpolatePrompt(stepConfig.prompt_template, interpolationVars);
       } else {
-        // Fallback to hardcoded prompt
-        contextPrompt = `You are analyzing research for commercialization potential.
+        // Fallback prompt for source pack
+        sourcePackPrompt = `You are a grant research analyst preparing Australia-first validated sources.
 
 Research Summary: ${summary}
 Article URL: ${publicArticleUrl}
@@ -541,39 +545,75 @@ ${articleContent ? `Article Content:\n${articleContent.slice(0, 8000)}` : ""}
 ${trl ? `Technology Readiness Level: ${trl}` : ""}
 ${ipStatus ? `IP Status: ${ipStatus}` : ""}
 
-Extract and summarize:
-1. The core research innovation
-2. Key technologies or methods involved
-3. Potential applications
-4. Current stage of development
+Grant Context: ${grantContext.name} (${grantContext.versionLabel})
 
-Provide a structured analysis.`;
+Your task is to curate 12-25 authoritative sources for downstream research steps.
+
+Priority Order:
+1. Australian Government (.gov.au, ABS, CSIRO, NHMRC)
+2. Australian Industry Bodies (CSIRO, universities, peak bodies)
+3. Global Authoritative (OECD, World Bank, WHO, peer-reviewed journals)
+4. Reputable Industry Sources (established market research firms)
+
+For each source, provide:
+- source_id: S0-1, S0-2, etc.
+- url: Full URL
+- title: Source title
+- publisher: Organization name
+- accessed: Today's date
+- type: government | academic | industry | market_research
+- relevance: Brief note on why this is relevant
+- data_type: market_size | competitor | policy | technical | economic
+
+Also identify unknowns - data categories that could not be sourced:
+- category: What data is missing
+- search_attempted: What you searched for
+- suggested_source: Where this data might be found
+
+Return JSON:
+{
+  "sources": [...],
+  "unknowns": [...]
+}`;
       }
 
-      const contextResult = await callAIWithRetry(contextPrompt, 1, systemPrompt, stepConfig?.model_override);
-      reportContent.researchContext = contextResult;
-      return { context: contextResult };
+      const sourcePackResult = await callAIWithRetry(sourcePackPrompt, 0, systemPrompt, stepConfig?.model_override);
+      
+      // Try to parse as JSON, otherwise wrap in structure
+      let parsedSourcePack;
+      try {
+        parsedSourcePack = JSON.parse(sourcePackResult);
+      } catch {
+        parsedSourcePack = { 
+          sources: [], 
+          unknowns: [],
+          raw: sourcePackResult 
+        };
+      }
+      
+      reportContent.sourcePack = parsedSourcePack;
+      return { sourcePack: parsedSourcePack };
     });
 
-    // CHECKPOINT: Save progress after Step 1
-    // Frontend will detect status="pending" and invoke resume-report-run for Step 2
+    // CHECKPOINT: Save progress after Step 0
+    // Frontend will detect status="pending" and invoke resume-report-run for Step 1
     await supabase
       .from("report_runs")
       .update({
         checkpoint_data_json: reportContent,
         checkpoint_citations_json: citations,
-        current_step: 1,
+        current_step: 0,
         status: "pending",
       })
       .eq("id", reportRunId);
 
-    console.log(`Phase 1 complete: Checkpoint saved at step 1 for report run ${reportRunId}`);
+    console.log(`Phase 0 complete: Checkpoint saved at step 0 for report run ${reportRunId}`);
     
-    // Return - the resume-report-run function will continue from step 2
+    // Return - the resume-report-run function will continue from step 1
     return;
 
   } catch (error) {
-    console.error("Report generation error (phase 1 - step 1):", error);
+    console.error("Report generation error (phase 0 - step 0):", error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
     
@@ -786,7 +826,7 @@ async function updateRunStatus(
       .eq("id", reportRunId)
       .single();
     
-    if (run?.current_step) {
+    if (run?.current_step !== undefined) {
       await supabase
         .from("report_run_steps")
         .update({ 
