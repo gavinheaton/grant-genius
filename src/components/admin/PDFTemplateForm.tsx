@@ -17,12 +17,21 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ChevronDown, Save, Loader2 } from "lucide-react";
+import { ChevronDown, Save, Loader2, Palette, Plus } from "lucide-react";
 import { ColorPicker } from "./ColorPicker";
 import { LogoUploader } from "./LogoUploader";
 import { PDFTemplatePreview } from "./PDFTemplatePreview";
-import { type PdfTemplate } from "@/hooks/usePdfTemplates";
+import { type PdfTemplate, type CoverLayout } from "@/hooks/usePdfTemplates";
+import { useColorPalettes, useCreateColorPalette } from "@/hooks/useColorPalettes";
 import { cn } from "@/lib/utils";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { toast } from "@/hooks/use-toast";
 
 const PAGE_FORMATS = ["A4", "Letter", "Legal"];
 
@@ -45,6 +54,12 @@ const HEADING_SIZES = {
   body: [10, 11, 12, 13, 14],
 };
 
+const LOGO_POSITIONS = [
+  { value: "left", label: "Left" },
+  { value: "center", label: "Center" },
+  { value: "right", label: "Right" },
+];
+
 interface PDFTemplateFormProps {
   template: PdfTemplate;
   onSave: (updates: Partial<PdfTemplate>) => void;
@@ -57,6 +72,11 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
     "page-setup",
     "branding",
   ]);
+  const [savePaletteOpen, setSavePaletteOpen] = useState(false);
+  const [newPaletteName, setNewPaletteName] = useState("");
+
+  const { data: palettes = [] } = useColorPalettes();
+  const createPalette = useCreateColorPalette();
 
   useEffect(() => {
     setFormData({
@@ -75,6 +95,9 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
       include_toc: template.include_toc,
       section_page_breaks: template.section_page_breaks,
       watermark_text: template.watermark_text,
+      show_grant_genius_branding: template.show_grant_genius_branding,
+      powered_by_text: template.powered_by_text,
+      cover_layout_json: template.cover_layout_json,
     });
   }, [template]);
 
@@ -117,8 +140,46 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
     }));
   };
 
+  const updateCoverLayout = (key: keyof CoverLayout, value: any) => {
+    setFormData((prev) => ({
+      ...prev,
+      cover_layout_json: {
+        ...((prev.cover_layout_json as CoverLayout) || template.cover_layout_json),
+        [key]: value,
+      },
+    }));
+  };
+
   const handleSave = () => {
     onSave(formData);
+  };
+
+  const handleApplyPalette = (paletteId: string) => {
+    const palette = palettes.find((p) => p.id === paletteId);
+    if (palette) {
+      setFormData((prev) => ({
+        ...prev,
+        primary_color: palette.primary_color,
+        secondary_color: palette.secondary_color,
+      }));
+      toast({
+        title: "Palette applied",
+        description: `Applied "${palette.name}" color palette`,
+      });
+    }
+  };
+
+  const handleSavePalette = async () => {
+    if (!newPaletteName.trim()) return;
+    
+    await createPalette.mutateAsync({
+      name: newPaletteName,
+      primary_color: formData.primary_color || template.primary_color,
+      secondary_color: formData.secondary_color || template.secondary_color,
+    });
+    
+    setNewPaletteName("");
+    setSavePaletteOpen(false);
   };
 
   const previewData = {
@@ -163,6 +224,8 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
       </CollapsibleContent>
     </Collapsible>
   );
+
+  const currentCoverLayout = (formData.cover_layout_json as CoverLayout) || template.cover_layout_json;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -231,11 +294,86 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
             </CollapsibleSection>
 
             {/* Branding */}
-            <CollapsibleSection id="branding" title="Branding">
+            <CollapsibleSection id="branding" title="Branding & Colors">
               <LogoUploader
                 value={formData.logo_path ?? template.logo_path}
                 onChange={(path) => updateField("logo_path", path)}
               />
+
+              {/* Palette Selector */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label>Color Palette</Label>
+                  <Dialog open={savePaletteOpen} onOpenChange={setSavePaletteOpen}>
+                    <DialogTrigger asChild>
+                      <Button variant="ghost" size="sm">
+                        <Plus className="h-4 w-4 mr-1" />
+                        Save Current
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Save Color Palette</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4 pt-4">
+                        <div className="flex gap-4 items-center">
+                          <div
+                            className="w-10 h-10 rounded border"
+                            style={{ backgroundColor: formData.primary_color || template.primary_color }}
+                          />
+                          <div
+                            className="w-10 h-10 rounded border"
+                            style={{ backgroundColor: formData.secondary_color || template.secondary_color }}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Palette Name</Label>
+                          <Input
+                            placeholder="e.g., My Custom Palette"
+                            value={newPaletteName}
+                            onChange={(e) => setNewPaletteName(e.target.value)}
+                          />
+                        </div>
+                        <Button
+                          onClick={handleSavePalette}
+                          disabled={!newPaletteName.trim() || createPalette.isPending}
+                          className="w-full"
+                        >
+                          {createPalette.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                          Save Palette
+                        </Button>
+                      </div>
+                    </DialogContent>
+                  </Dialog>
+                </div>
+                <Select onValueChange={handleApplyPalette}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Apply a saved palette..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {palettes.map((palette) => (
+                      <SelectItem key={palette.id} value={palette.id}>
+                        <div className="flex items-center gap-2">
+                          <div className="flex gap-1">
+                            <div
+                              className="w-4 h-4 rounded-sm border"
+                              style={{ backgroundColor: palette.primary_color }}
+                            />
+                            <div
+                              className="w-4 h-4 rounded-sm border"
+                              style={{ backgroundColor: palette.secondary_color }}
+                            />
+                          </div>
+                          <span>{palette.name}</span>
+                          {palette.is_preset && (
+                            <span className="text-xs text-muted-foreground">(preset)</span>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <ColorPicker
@@ -267,6 +405,135 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Grant Genius Branding */}
+              <div className="pt-4 space-y-4 border-t">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Show Grant Genius Branding</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Display "Grant Genius" on cover page
+                    </p>
+                  </div>
+                  <Switch
+                    checked={formData.show_grant_genius_branding ?? template.show_grant_genius_branding}
+                    onCheckedChange={(checked) =>
+                      updateField("show_grant_genius_branding", checked)
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Powered By Text</Label>
+                  <Input
+                    value={formData.powered_by_text ?? template.powered_by_text}
+                    onChange={(e) => updateField("powered_by_text", e.target.value)}
+                    placeholder="Powered by Disruptors Co"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Appears in the footer of each page
+                  </p>
+                </div>
+              </div>
+            </CollapsibleSection>
+
+            {/* Cover Page Designer */}
+            <CollapsibleSection id="cover-page" title="Cover Page Design">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label>Include Cover Page</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Show title page with logo and report metadata
+                    </p>
+                  </div>
+                  <Switch
+                    checked={formData.include_cover_page ?? template.include_cover_page}
+                    onCheckedChange={(checked) =>
+                      updateField("include_cover_page", checked)
+                    }
+                  />
+                </div>
+
+                {(formData.include_cover_page ?? template.include_cover_page) && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Logo Position</Label>
+                        <Select
+                          value={currentCoverLayout.logo_position || "center"}
+                          onValueChange={(value) => updateCoverLayout("logo_position", value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {LOGO_POSITIONS.map((pos) => (
+                              <SelectItem key={pos.value} value={pos.value}>
+                                {pos.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Background Style</Label>
+                        <Select
+                          value={currentCoverLayout.background_style || "solid"}
+                          onValueChange={(value) => updateCoverLayout("background_style", value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="solid">Solid White</SelectItem>
+                            <SelectItem value="gradient">Subtle Gradient</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Title Text</Label>
+                      <Input
+                        value={currentCoverLayout.title_text || ""}
+                        onChange={(e) => updateCoverLayout("title_text", e.target.value)}
+                        placeholder="Commercialisation Research Report"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Subtitle Template</Label>
+                      <Input
+                        value={currentCoverLayout.subtitle_template || ""}
+                        onChange={(e) => updateCoverLayout("subtitle_template", e.target.value)}
+                        placeholder="{grant_name}"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Variables: {"{grant_name}"}, {"{date}"}, {"{version}"}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-6">
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={currentCoverLayout.show_date ?? true}
+                          onCheckedChange={(checked) => updateCoverLayout("show_date", checked)}
+                        />
+                        <Label className="text-sm">Show Date</Label>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          checked={currentCoverLayout.show_version ?? true}
+                          onCheckedChange={(checked) => updateCoverLayout("show_version", checked)}
+                        />
+                        <Label className="text-sm">Show Version</Label>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             </CollapsibleSection>
 
@@ -329,21 +596,6 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
             {/* Layout Options */}
             <CollapsibleSection id="layout" title="Layout Options">
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label>Include Cover Page</Label>
-                    <p className="text-xs text-muted-foreground">
-                      Show title page with logo and report metadata
-                    </p>
-                  </div>
-                  <Switch
-                    checked={formData.include_cover_page ?? template.include_cover_page}
-                    onCheckedChange={(checked) =>
-                      updateField("include_cover_page", checked)
-                    }
-                  />
-                </div>
-
                 <div className="flex items-center justify-between">
                   <div>
                     <Label>Include Table of Contents</Label>

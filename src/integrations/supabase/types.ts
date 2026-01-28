@@ -112,6 +112,33 @@ export type Database = {
         }
         Relationships: []
       }
+      color_palettes: {
+        Row: {
+          created_at: string
+          id: string
+          is_preset: boolean | null
+          name: string
+          primary_color: string
+          secondary_color: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_preset?: boolean | null
+          name: string
+          primary_color: string
+          secondary_color: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_preset?: boolean | null
+          name?: string
+          primary_color?: string
+          secondary_color?: string
+        }
+        Relationships: []
+      }
       email_events: {
         Row: {
           brevo_message_id: string | null
@@ -476,6 +503,7 @@ export type Database = {
       }
       pdf_templates: {
         Row: {
+          cover_layout_json: Json | null
           created_at: string
           disclaimer_text: string | null
           font_family: string
@@ -490,13 +518,16 @@ export type Database = {
           margins_json: Json
           name: string
           page_format: string
+          powered_by_text: string | null
           primary_color: string
           secondary_color: string
           section_page_breaks: boolean
+          show_grant_genius_branding: boolean | null
           updated_at: string
           watermark_text: string | null
         }
         Insert: {
+          cover_layout_json?: Json | null
           created_at?: string
           disclaimer_text?: string | null
           font_family?: string
@@ -511,13 +542,16 @@ export type Database = {
           margins_json?: Json
           name?: string
           page_format?: string
+          powered_by_text?: string | null
           primary_color?: string
           secondary_color?: string
           section_page_breaks?: boolean
+          show_grant_genius_branding?: boolean | null
           updated_at?: string
           watermark_text?: string | null
         }
         Update: {
+          cover_layout_json?: Json | null
           created_at?: string
           disclaimer_text?: string | null
           font_family?: string
@@ -532,9 +566,11 @@ export type Database = {
           margins_json?: Json
           name?: string
           page_format?: string
+          powered_by_text?: string | null
           primary_color?: string
           secondary_color?: string
           section_page_breaks?: boolean
+          show_grant_genius_branding?: boolean | null
           updated_at?: string
           watermark_text?: string | null
         }

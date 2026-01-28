@@ -6,8 +6,13 @@ import { type PdfTemplate } from "@/hooks/usePdfTemplates";
 const A4_WIDTH_MM = 210;
 const A4_HEIGHT_MM = 297;
 
-// Convert mm to pixels at 96 DPI
-const MM_TO_PX = 3.7795275591;
+// Letter dimensions in mm
+const LETTER_WIDTH_MM = 215.9;
+const LETTER_HEIGHT_MM = 279.4;
+
+// Legal dimensions in mm
+const LEGAL_WIDTH_MM = 215.9;
+const LEGAL_HEIGHT_MM = 355.6;
 
 interface GeneratePdfOptions {
   template: PdfTemplate;
@@ -16,11 +21,65 @@ interface GeneratePdfOptions {
   generatedDate: string;
 }
 
+interface PageDimensions {
+  width: number;
+  height: number;
+}
+
+function getPageDimensions(format: string): PageDimensions {
+  switch (format.toLowerCase()) {
+    case "letter":
+      return { width: LETTER_WIDTH_MM, height: LETTER_HEIGHT_MM };
+    case "legal":
+      return { width: LEGAL_WIDTH_MM, height: LEGAL_HEIGHT_MM };
+    case "a4":
+    default:
+      return { width: A4_WIDTH_MM, height: A4_HEIGHT_MM };
+  }
+}
+
+/**
+ * Preload a Google Font before PDF generation
+ */
+export async function preloadGoogleFont(fontFamily: string): Promise<void> {
+  // Check if font is already loaded
+  const existingLink = document.querySelector(`link[href*="${fontFamily.replace(/ /g, '+')}"]`);
+  if (existingLink) {
+    await document.fonts.ready;
+    return;
+  }
+
+  const link = document.createElement('link');
+  link.href = `https://fonts.googleapis.com/css2?family=${fontFamily.replace(/ /g, '+')}:wght@400;500;600;700&display=swap`;
+  link.rel = 'stylesheet';
+  document.head.appendChild(link);
+  
+  // Wait for font to load with timeout
+  await Promise.race([
+    document.fonts.ready,
+    new Promise(resolve => setTimeout(resolve, 3000)) // 3s timeout
+  ]);
+}
+
+/**
+ * Find page break positions from elements with data-page-break attribute
+ */
+function findPageBreakPositions(element: HTMLElement): number[] {
+  const breakElements = element.querySelectorAll('[data-page-break="true"]');
+  const positions: number[] = [];
+  
+  breakElements.forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    // Get the position relative to the container
+    positions.push(htmlEl.offsetTop);
+  });
+  
+  return positions.sort((a, b) => a - b);
+}
+
 /**
  * Generate a PDF from an HTML element using html2canvas and jsPDF
- * @param element - The HTML element to capture
- * @param options - PDF generation options
- * @returns Promise<Blob> - The generated PDF as a blob
+ * with smart page breaks at section boundaries
  */
 export async function generatePdfFromElement(
   element: HTMLElement,
@@ -28,14 +87,22 @@ export async function generatePdfFromElement(
 ): Promise<Blob> {
   const { template } = options;
   
+  // Preload font first
+  await preloadGoogleFont(template.font_family);
+  
+  // Wait a bit for font to be applied
+  await new Promise(resolve => setTimeout(resolve, 200));
+  
   // Determine page format dimensions
-  const pageWidth = A4_WIDTH_MM;
-  const pageHeight = A4_HEIGHT_MM;
+  const { width: pageWidth, height: pageHeight } = getPageDimensions(template.page_format);
   
   // Get margins from template
   const margins = template.margins_json;
   const contentWidth = pageWidth - margins.left - margins.right;
-  const contentHeight = pageHeight - margins.top - margins.bottom;
+  const contentHeight = pageHeight - margins.top - margins.bottom - 15; // Reserve 15mm for footer
+  
+  // Find page break positions before capturing
+  const breakPositions = findPageBreakPositions(element);
   
   // Capture the element with html2canvas at high resolution
   const canvas = await html2canvas(element, {
@@ -51,18 +118,45 @@ export async function generatePdfFromElement(
   const pdf = new jsPDF({
     orientation: "portrait",
     unit: "mm",
-    format: template.page_format.toLowerCase() as "a4" | "letter",
+    format: template.page_format.toLowerCase() as "a4" | "letter" | "legal",
   });
   
-  // Calculate scaling to fit content width
-  const imgWidth = contentWidth;
-  const imgHeight = (canvas.height * contentWidth) / canvas.width;
+  // Calculate scaling factor (canvas pixels to PDF mm)
+  const scale = contentWidth / canvas.width;
+  const pxPerMm = canvas.width / contentWidth;
   
-  // Calculate how many pages we need
-  const totalPages = Math.ceil(imgHeight / contentHeight);
+  // Calculate page height in pixels
+  const pageHeightPx = contentHeight * pxPerMm;
   
-  // Calculate pixels per page based on content height ratio
-  const pxPerPage = (contentHeight / imgHeight) * canvas.height;
+  // Determine slice points
+  let slicePoints: number[] = [0];
+  
+  if (breakPositions.length > 0 && template.section_page_breaks) {
+    // Use smart slicing at section boundaries
+    // Convert break positions to canvas pixels (accounting for scale used by html2canvas)
+    const breakPositionsPx = breakPositions.map(pos => pos * 2); // html2canvas scale is 2
+    
+    let currentY = 0;
+    for (const breakPx of breakPositionsPx) {
+      if (breakPx > currentY) {
+        slicePoints.push(breakPx);
+        currentY = breakPx;
+      }
+    }
+    slicePoints.push(canvas.height);
+  } else {
+    // Fall back to fixed-height slicing
+    let y = 0;
+    while (y < canvas.height) {
+      y += pageHeightPx;
+      slicePoints.push(Math.min(y, canvas.height));
+    }
+  }
+  
+  // Remove duplicates and sort
+  slicePoints = [...new Set(slicePoints)].sort((a, b) => a - b);
+  
+  const totalPages = slicePoints.length - 1;
   
   // For each page, slice the canvas and add to PDF
   for (let page = 0; page < totalPages; page++) {
@@ -70,26 +164,28 @@ export async function generatePdfFromElement(
       pdf.addPage();
     }
     
-    // Calculate the portion of the canvas to use for this page
-    const sourceY = page * pxPerPage;
-    const sourceHeight = Math.min(pxPerPage, canvas.height - sourceY);
+    const sourceY = slicePoints[page];
+    const sourceHeight = slicePoints[page + 1] - sourceY;
+    
+    // Skip empty pages
+    if (sourceHeight <= 0) continue;
     
     // Create a temporary canvas for this page slice
     const pageCanvas = document.createElement("canvas");
     pageCanvas.width = canvas.width;
-    pageCanvas.height = sourceHeight;
+    pageCanvas.height = Math.min(sourceHeight, pageHeightPx);
     
     const ctx = pageCanvas.getContext("2d");
     if (ctx) {
       ctx.drawImage(
         canvas,
-        0, sourceY, canvas.width, sourceHeight,
-        0, 0, canvas.width, sourceHeight
+        0, sourceY, canvas.width, pageCanvas.height,
+        0, 0, canvas.width, pageCanvas.height
       );
     }
     
-    // Calculate the height for this specific page slice
-    const sliceHeight = (sourceHeight / canvas.height) * imgHeight;
+    // Calculate the height for this specific page slice in mm
+    const sliceHeightMm = pageCanvas.height * scale;
     
     // Add the sliced image to the PDF
     const imgData = pageCanvas.toDataURL("image/jpeg", 0.95);
@@ -98,24 +194,12 @@ export async function generatePdfFromElement(
       "JPEG",
       margins.left,
       margins.top,
-      imgWidth,
-      Math.min(sliceHeight, contentHeight)
+      contentWidth,
+      Math.min(sliceHeightMm, contentHeight)
     );
-    // Add footer with page numbers
-    if (template.footer_text) {
-      const footerText = template.footer_text
-        .replace("{page}", String(page + 1))
-        .replace("{pages}", String(totalPages));
-      
-      pdf.setFontSize(10);
-      pdf.setTextColor(128, 128, 128);
-      pdf.text(
-        footerText,
-        pageWidth / 2,
-        pageHeight - 10,
-        { align: "center" }
-      );
-    }
+    
+    // Add footer with page numbers and branding
+    addFooter(pdf, template, page + 1, totalPages, pageWidth, pageHeight);
   }
   
   // Return as blob
@@ -123,9 +207,41 @@ export async function generatePdfFromElement(
 }
 
 /**
+ * Add footer with page numbers and branding to a PDF page
+ */
+function addFooter(
+  pdf: jsPDF,
+  template: PdfTemplate,
+  currentPage: number,
+  totalPages: number,
+  pageWidth: number,
+  pageHeight: number
+): void {
+  const footerY = pageHeight - 10;
+  
+  // Footer text (left side - page numbers)
+  if (template.footer_text) {
+    const footerText = template.footer_text
+      .replace("{page}", String(currentPage))
+      .replace("{pages}", String(totalPages))
+      .replace("{date}", new Date().toLocaleDateString());
+    
+    pdf.setFontSize(9);
+    pdf.setTextColor(128, 128, 128);
+    pdf.text(footerText, template.margins_json.left, footerY);
+  }
+  
+  // Powered by text (right side)
+  const poweredByText = (template as any).powered_by_text || "Powered by Disruptors Co";
+  if (poweredByText) {
+    pdf.setFontSize(8);
+    pdf.setTextColor(160, 160, 160);
+    pdf.text(poweredByText, pageWidth - template.margins_json.right, footerY, { align: "right" });
+  }
+}
+
+/**
  * Download a blob as a file
- * @param blob - The blob to download
- * @param filename - The filename for the download
  */
 export function downloadPdf(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
@@ -140,9 +256,6 @@ export function downloadPdf(blob: Blob, filename: string): void {
 
 /**
  * Generate and download a PDF in one call
- * @param element - The HTML element to capture
- * @param options - PDF generation options
- * @param filename - The filename for the download
  */
 export async function generateAndDownloadPdf(
   element: HTMLElement,
