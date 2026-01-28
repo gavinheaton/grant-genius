@@ -57,6 +57,13 @@ export default function ApplicationWorkspace() {
   const progressRef = useRef<HTMLDivElement>(null);
   
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
+  
+  // Callback when user runs out of credits - opens purchase modal
+  const handleNoCredits = useCallback(() => {
+    refetchEntitlements();
+    setPurchaseModalOpen(true);
+  }, [refetchEntitlements]);
+  
   const { 
     isGenerating, 
     activeRun, 
@@ -67,7 +74,7 @@ export default function ApplicationWorkspace() {
     cancelRun,
     retryFromFailedStep,
     toggleEmailOnComplete,
-  } = useReportGeneration(id);
+  } = useReportGeneration(id, { onNoCredits: handleNoCredits });
 
   useEffect(() => {
     const fetchApplication = async () => {
