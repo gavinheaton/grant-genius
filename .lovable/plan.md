@@ -1,216 +1,241 @@
 
-# PDF Report Design Enhancement Plan
+# DOCX Template-Based Report Generation Plan
 
-## Current State Analysis
+## Overview
 
-The PDF templating system exists but has several issues preventing it from working properly:
+Replace the current html2canvas → PDF approach with a DOCX template-based system where:
+1. Admin uploads a professionally designed DOCX template
+2. The template uses placeholder tags (e.g., `{grant_name}`, `{research_context}`)
+3. Server-side edge function fills the template with report data using **docxtemplater**
+4. Users can download a high-quality DOCX that preserves the original template's fonts, styles, and layout
 
-| Component | Status | Issue |
-|-----------|--------|-------|
-| Template Admin UI | Working | Can configure settings |
-| Color/Font Settings | Stored but not applied | Font not loaded, logo URL broken |
-| Page Breaks | Not working | html2canvas ignores CSS page-break |
-| Cover Page | Hardcoded | No designer interface |
-| Custom Palettes | Missing | Only one template, no save/load |
-| Branding | Missing | No "Grant Genius" or "Powered by" on reports |
+## Why This Is Better
 
-## Solution Overview
+| Current Approach | DOCX Template Approach |
+|-----------------|------------------------|
+| html2canvas captures HTML → pixelated images | Native Word formatting → crisp text |
+| Fonts must be preloaded, often fail | Template fonts embedded in DOCX |
+| Page breaks are complex workarounds | Word handles page breaks natively |
+| Users can't edit the output easily | Users can edit in Word/Google Docs |
+| No professional formatting control | Full control via Word template design |
 
-### 1. Fix Template Application Issues
+## Architecture
 
-**Problem**: The template settings are stored but not properly applied to the PDF output.
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                        DOCX Template Flow                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   1. Admin uploads template.docx                                 │
+│      ┌──────────────────────────────────────────┐               │
+│      │  Template with placeholders:              │               │
+│      │  • {grant_name}                           │               │
+│      │  • {research_context}                     │               │
+│      │  • {#market_segments}...{/market_segments}│               │
+│      │  • {tam}, {sam}, {som}                    │               │
+│      │  • {#citations}...{/citations}            │               │
+│      └──────────────────────────────────────────┘               │
+│                          │                                       │
+│                          ▼                                       │
+│   2. Template stored in Storage (docx-templates bucket)          │
+│                          │                                       │
+│                          ▼                                       │
+│   3. User clicks "Download DOCX"                                 │
+│      └── Frontend calls generate-docx edge function              │
+│                          │                                       │
+│                          ▼                                       │
+│   4. Edge function:                                              │
+│      • Fetches template from storage                             │
+│      • Loads report content_json                                 │
+│      • Uses docxtemplater to fill placeholders                   │
+│      • Returns generated DOCX as download                        │
+│                          │                                       │
+│                          ▼                                       │
+│   5. User receives professionally formatted DOCX                 │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-**Fixes needed**:
-- **Logo URL**: Convert `logo_path` (filename) to full public URL in `PdfReportRenderer`
-- **Google Fonts**: Load the selected font before html2canvas capture
-- **Colors**: Already working, but need to ensure they propagate to all elements
+## Implementation Details
 
-**Files to modify**:
-- `src/components/workspace/PdfReportRenderer.tsx`
-- `src/components/workspace/ReportsList.tsx` (add font preloading)
+### Phase 1: Database and Storage Setup
 
-### 2. Implement Proper Page Breaks
+**New storage bucket:**
+- Create `docx-templates` bucket (private)
 
-**Problem**: CSS `page-break-before: always` doesn't work with html2canvas because it captures the entire HTML as a single image then slices it at arbitrary pixel boundaries.
-
-**Solution**: Restructure the PDF generation to render each major section as a separate page element, then slice at section boundaries:
-
-1. Add `data-page-break` attributes to section divs in `PdfReportRenderer`
-2. Modify `generatePdfFromElement` to:
-   - Find all elements with `data-page-break="true"`
-   - Calculate their Y positions
-   - Slice the canvas at those positions instead of at fixed pixel intervals
-3. When `section_page_breaks` is enabled, each section starts on a new page
-
-**Files to modify**:
-- `src/components/workspace/PdfReportRenderer.tsx`
-- `src/lib/generatePdfClient.ts`
-
-### 3. Custom Color Palette System
-
-**Problem**: Users can only modify the default template, no way to save/switch palettes.
-
-**Solution**: 
-1. Add a `color_palettes` table to store reusable palettes
-2. Add a "Save Palette" button in the PDF Template form
-3. Add a palette selector dropdown to quickly apply saved palettes
-4. Include preset palettes (Professional Navy, Modern Green, Academic Burgundy, etc.)
-
-**Database changes**:
+**Database changes:**
 ```sql
-CREATE TABLE color_palettes (
+-- Add DOCX template reference to pdf_templates table
+ALTER TABLE pdf_templates ADD COLUMN docx_template_path TEXT;
+
+-- Or create a separate docx_templates table if you want multiple templates:
+CREATE TABLE docx_templates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
-  primary_color TEXT NOT NULL,
-  secondary_color TEXT NOT NULL,
-  is_preset BOOLEAN DEFAULT false,
-  user_id UUID REFERENCES auth.users,
-  created_at TIMESTAMPTZ DEFAULT now()
+  description TEXT,
+  template_path TEXT NOT NULL,  -- path in docx-templates bucket
+  is_default BOOLEAN DEFAULT false,
+  placeholder_schema_json JSONB,  -- documents expected placeholders
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
 ```
 
-**Files to create/modify**:
-- New migration for `color_palettes` table
-- `src/hooks/useColorPalettes.ts` - CRUD hooks for palettes
-- `src/components/admin/ColorPicker.tsx` - Add palette selector
-- `src/components/admin/PDFTemplateForm.tsx` - Add palette dropdown and save button
+### Phase 2: Admin Template Upload UI
 
-### 4. Cover Page Designer
+**New admin page or section: DOCX Templates**
+- Upload DOCX template file
+- Preview list of detected placeholders (parse the template)
+- Set as default template
+- Download sample template with all supported placeholders
 
-**Problem**: Cover page layout is hardcoded - users can't customize it.
+**Location:** Add to existing PDF Templates page or create `/admin/docx-templates`
 
-**Solution**: Add a cover page design section to the PDF Template admin with:
-- Logo position (top/center/left/right)
-- Title text override (default: "Commercialisation Research Report")
-- Subtitle template (can include {grant_name}, {date}, {version})
-- Background color/gradient option
-- Optional hero banner image
+**UI Components:**
+- File dropzone for .docx upload
+- Template list showing uploaded templates
+- "Set as Default" action
+- "Download Sample" button
 
-**Add new columns to `pdf_templates`**:
-```sql
-ALTER TABLE pdf_templates ADD COLUMN cover_layout_json JSONB DEFAULT '{
-  "logo_position": "center",
-  "title_text": "Commercialisation Research Report",
-  "subtitle_template": "{grant_name}",
-  "show_date": true,
-  "show_version": true,
-  "background_style": "solid"
-}'::jsonb;
-```
+### Phase 3: Edge Function for DOCX Generation
 
-**Files to modify**:
-- New migration for cover_layout_json
-- `src/components/admin/PDFTemplateForm.tsx` - Add cover page design section
-- `src/components/admin/PDFTemplatePreview.tsx` - Update preview to show cover design
-- `src/components/workspace/PdfReportRenderer.tsx` - Use cover layout settings
-
-### 5. Add Report Branding
-
-**Problem**: No branding on generated reports.
-
-**Solution**: Add "Grant Genius" branding and "Powered by Disruptors Co" footer:
-- Header: Optional organization logo (from template) + "Grant Genius" branding
-- Footer: Page numbers + "Powered by Disruptors Co" or custom footer text
-- Option to hide/show Grant Genius branding (for white-label)
-
-**Add columns to `pdf_templates`**:
-```sql
-ALTER TABLE pdf_templates ADD COLUMN show_grant_genius_branding BOOLEAN DEFAULT true;
-ALTER TABLE pdf_templates ADD COLUMN powered_by_text TEXT DEFAULT 'Powered by Disruptors Co';
-```
-
-**Files to modify**:
-- New migration
-- `src/components/workspace/PdfReportRenderer.tsx` - Add branding elements
-- `src/components/admin/PDFTemplateForm.tsx` - Add branding toggles
-- `src/lib/generatePdfClient.ts` - Add branding to footer
-
-## Implementation Order
-
-**Phase 1: Fix What's Broken** (Critical)
-1. Fix logo URL resolution in PdfReportRenderer
-2. Implement Google Font preloading
-3. Fix page breaks with smart slicing algorithm
-
-**Phase 2: Branding** 
-4. Add Grant Genius branding to reports
-5. Add "Powered by Disruptors Co" to footer
-
-**Phase 3: Enhancements**
-6. Custom color palette system
-7. Cover page designer
-
-## Technical Details
-
-### Page Break Algorithm
-
-```text
-Current (broken):
-┌─────────────────────┐
-│ Cover Page          │
-│ TOC                 │  <- html2canvas captures
-│ Section 1           │     entire element
-│ Section 2           │
-│ Section 3           │
-└─────────────────────┘
-        ↓
-    Fixed pixel slicing (ignores section boundaries)
-        ↓
-   Sections get cut in half
-
-Proposed (fixed):
-┌─────────────────────┐
-│ [data-page-break]   │
-│ Cover Page          │
-├─────────────────────┤ <- Slice point
-│ [data-page-break]   │
-│ TOC                 │
-├─────────────────────┤ <- Slice point  
-│ [data-page-break]   │
-│ Section 1           │
-├─────────────────────┤ <- Slice point
-│ Section 2           │
-└─────────────────────┘
-        ↓
-    Slice at data-page-break positions
-        ↓
-   Each section starts on new page
-```
-
-### Font Preloading
+**New edge function:** `supabase/functions/generate-docx/index.ts`
 
 ```typescript
-// Before generating PDF, load the Google Font
-async function preloadGoogleFont(fontFamily: string): Promise<void> {
-  const link = document.createElement('link');
-  link.href = `https://fonts.googleapis.com/css2?family=${fontFamily.replace(' ', '+')}:wght@400;600;700&display=swap`;
-  link.rel = 'stylesheet';
-  document.head.appendChild(link);
+// Uses these ESM-compatible libraries:
+import PizZip from "npm:pizzip";
+import Docxtemplater from "npm:docxtemplater";
+
+// Process:
+// 1. Fetch template from storage
+// 2. Load into PizZip
+// 3. Create Docxtemplater instance
+// 4. Map report content_json to template variables
+// 5. Render and return as blob
+```
+
+**Template placeholder mapping:**
+```typescript
+const templateData = {
+  // Cover page
+  grant_name: grantName,
+  generated_date: formattedDate,
+  version: report.version_number,
   
-  // Wait for font to load
-  await document.fonts.ready;
-}
+  // Content sections
+  research_context: content.researchContext,
+  market_segments: formatMarketSegments(content.marketSegments),
+  competitors: formatCompetitors(content.existingCompetitors),
+  competitor_table: content.competitorTable,
+  tam: formatMarketSize(content.tam),
+  sam: formatMarketSize(content.sam),
+  som: formatMarketSize(content.som),
+  economic_impact: content.economicImpact,
+  partners: formatPartners(content.partners),
+  
+  // Citations/References
+  citations: formatCitations(content.citations),
+  
+  // Branding
+  powered_by: template.powered_by_text,
+};
 ```
 
-### Logo URL Resolution
+### Phase 4: Frontend Integration
 
-```typescript
-// In PdfReportRenderer
-const logoUrl = template.logo_path
-  ? supabase.storage.from('pdf-assets').getPublicUrl(template.logo_path).data.publicUrl
-  : null;
+**Update ReportsList.tsx:**
+- Add "DOCX" download button (always visible, not conditional on docx_path)
+- Call `generate-docx` edge function
+- Download the returned blob
+
+**Update useReportGeneration.ts:**
+- Add `downloadDocx(reportId)` function that calls the edge function
+
+### Phase 5: Sample Template Creation
+
+Create a professionally designed sample template that admins can download and customize:
+- Cover page with logo placeholder and title
+- Table of contents (Word can auto-generate)
+- Each section with proper heading styles
+- Tables for competitor comparison
+- References section
+- Footer with branding
+
+## Template Placeholder Reference
+
+| Placeholder | Description | Type |
+|-------------|-------------|------|
+| `{grant_name}` | Name of the grant | String |
+| `{generated_date}` | Report generation date | String |
+| `{version}` | Report version number | Number |
+| `{research_context}` | Executive summary | String (rich text) |
+| `{#market_segments}...{/market_segments}` | Loop over market segments | Array |
+| `{#competitors}...{/competitors}` | Loop over competitors | Array |
+| `{tam}` | Total Addressable Market | String |
+| `{sam}` | Serviceable Addressable Market | String |
+| `{som}` | Serviceable Obtainable Market | String |
+| `{economic_impact}` | Economic impact analysis | String |
+| `{#partners}...{/partners}` | Loop over partners | Array |
+| `{#citations}...{/citations}` | Loop over citations | Array |
+| `{powered_by}` | Branding text | String |
+
+**Loop example in template:**
+```
+{#market_segments}
+Segment: {name}
+Description: {description}
+Size: {size}
+{/market_segments}
 ```
 
-## Summary of Changes
+## Files to Create/Modify
 
-| File | Changes |
-|------|---------|
-| `src/components/workspace/PdfReportRenderer.tsx` | Fix logo URL, add data-page-break attributes, add branding |
-| `src/lib/generatePdfClient.ts` | Smart page break slicing, font preloading, footer branding |
-| `src/components/workspace/ReportsList.tsx` | Call font preload before PDF generation |
-| `src/components/admin/PDFTemplateForm.tsx` | Add cover designer section, palette selector, branding toggles |
-| `src/hooks/useColorPalettes.ts` | New hook for palette CRUD |
-| `src/hooks/usePdfTemplates.ts` | Add new template fields |
-| Database migration | Add color_palettes table, cover_layout_json, branding columns |
+| File | Action | Purpose |
+|------|--------|---------|
+| `supabase/functions/generate-docx/index.ts` | Create | Edge function for DOCX generation |
+| `src/components/admin/DocxTemplateUploader.tsx` | Create | Admin UI for template upload |
+| `src/pages/admin/DocxTemplates.tsx` | Create | Admin page for managing templates |
+| `src/hooks/useDocxTemplates.ts` | Create | CRUD hooks for DOCX templates |
+| `src/components/workspace/ReportsList.tsx` | Modify | Add DOCX download button |
+| `src/hooks/useReportGeneration.ts` | Modify | Add downloadDocx function |
+| Database migration | Create | Add docx_template_path column or table |
+| Storage bucket creation | Migration | Create docx-templates bucket |
 
-This plan addresses all the issues: fonts/colors not applying, page breaks not working, missing custom palettes, no cover page designer, and missing branding.
+## Technical Considerations
+
+### Deno/Edge Function Compatibility
+- `docxtemplater` and `pizzip` work with Deno via npm: specifier
+- Template binary handling in edge functions (fetch from storage → ArrayBuffer → PizZip)
+
+### Template Validation
+- Parse uploaded template to extract placeholders
+- Warn admin if required placeholders are missing
+- Show placeholder documentation in UI
+
+### Fallback
+- Keep current PDF generation as fallback
+- If no DOCX template configured, generate PDF instead
+- Show both buttons when DOCX template is available
+
+## User Workflow
+
+**Admin:**
+1. Go to Admin → DOCX Templates
+2. Download sample template or upload custom template
+3. Set template as default
+
+**Researcher:**
+1. Generate report (existing flow)
+2. Click "Download DOCX" button
+3. Receive professionally formatted Word document
+4. Edit in Word/Google Docs as needed
+
+## Summary
+
+This approach gives you:
+- Professional-quality output matching your exact template design
+- Native Word formatting (no image-based rendering)
+- Full control over fonts, colors, headers, footers
+- Editable documents for researchers
+- Simple admin workflow for template updates
+- Keeps PDF as fallback option
