@@ -1,178 +1,218 @@
 
 
-# Editable Prompt Bundle Admin Section
+# Add Grant Context Variables to Prompt Bundle System
 
 ## Overview
-Create an admin interface at `/admin/prompt-bundles` that allows administrators to view and edit the AI prompts used in the 10-step report generation pipeline. This moves hardcoded prompts from edge functions into the database, enabling real-time tweaking without code deployments.
+Extend the prompt bundle system to include grant-specific context variables that can be used in prompts. This allows the AI to tailor responses based on the specific grant being applied for, including grant name, version, guidelines excerpt, and assessment rubric.
+
+## New Variables to Support
+
+| Variable | Description |
+|----------|-------------|
+| `{{grantName}}` | Name of the grant (e.g., "AEA Ignite") |
+| `{{grantVersionLabel}}` | Version identifier (e.g., "v1" or "2026 Round 1") |
+| `{{grantGuidelines}}` | Excerpt from the uploaded guidelines document |
+| `{{grantRubric}}` | Structured assessment criteria/rubric in readable format |
+| `{{grantSummary}}` | AI-generated summary of the grant (from ai_suggestions_json) |
 
 ## Current State
 
-The prompts are currently hardcoded in two edge functions:
-- `supabase/functions/generate-report/index.ts` - Step 1 (context extraction)
-- `supabase/functions/resume-report-run/index.ts` - Steps 2-10 (all other research steps)
+- The `grantVersionId` is already passed through the report generation pipeline
+- Grant versions store `guidelines_raw_text`, `rubric_json`, and `ai_suggestions_json` 
+- The `interpolatePrompt` function exists but doesn't have access to grant data
+- The `AVAILABLE_VARIABLES` list in the admin UI doesn't include grant variables
 
-Key components:
-- **System Prompt**: Shared across all steps
-- **Step Prompts**: 10 individual prompts for each research phase
-- **Model Selection**: Different models for different step complexity
+## Implementation Approach
 
-## Implementation Plan
+### 1. Update Edge Functions to Fetch Grant Data
 
-### 1. Database Schema
+Both `generate-report` and `resume-report-run` need to:
+1. Query the `grant_versions` table joined with `grants` to get grant details
+2. Add grant variables to the interpolation context passed to each step
 
-Create a new `prompt_bundles` table to store editable prompts:
-
+The query pattern:
 ```text
-Table: prompt_bundles
-- id (uuid, primary key)
-- name (text) - e.g., "Default Bundle"
-- description (text, nullable)
-- is_active (boolean, default true) - only one bundle active at a time
-- system_prompt (text) - shared system prompt for all steps
-- created_at (timestamp)
-- updated_at (timestamp)
+SELECT 
+  gv.guidelines_raw_text,
+  gv.rubric_json,
+  gv.ai_suggestions_json,
+  gv.version_number,
+  g.name as grant_name
+FROM grant_versions gv
+JOIN grants g ON g.id = gv.grant_id
+WHERE gv.id = $grantVersionId
 ```
 
-Create a `prompt_bundle_steps` table for individual step prompts:
+### 2. Format Rubric for Prompt Inclusion
+
+The rubric is stored as structured JSON but needs to be formatted as readable text for prompts. Create a helper function:
 
 ```text
-Table: prompt_bundle_steps
-- id (uuid, primary key)
-- bundle_id (uuid, FK to prompt_bundles)
-- step_number (integer, 1-10)
-- step_name (text) - e.g., "extract_context"
-- step_description (text) - user-friendly description
-- prompt_template (text) - the actual prompt with {{variable}} placeholders
-- model_override (text, nullable) - optional model override for this step
-- created_at (timestamp)
-- updated_at (timestamp)
-- UNIQUE(bundle_id, step_number)
+function formatRubricForPrompt(rubricJson: object): string
+- Iterates through rubric.sections (from ai_suggestions_json)
+- Formats each section with title, weight, and criteria
+- Returns structured text suitable for AI consumption
 ```
 
-RLS Policies:
-- Admins can view all bundles and steps
-- Only Super Admins can insert/update/delete
-
-### 2. Admin UI Components
-
-#### Navigation Update
-Add "AI Prompts" to the Reports section in AdminSidebar:
+Example output:
 ```text
-Reports:
-- PDF Templates
-- AI Prompts (NEW)
+Assessment Criteria:
+
+1. Project Impact and Alignment (30%)
+   - Clarity and urgency of the problem the project addresses
+   - Alignment with National Reconstruction Fund priority areas
+   - Potential for significant economic or social impact for Australia
+
+2. Technical Merit and Feasibility (30%)
+   - Feasibility of the proposed technical approach
+   - Novelty of the research
+   ...
 ```
 
-#### Main Prompt Bundles Page (`/admin/prompt-bundles`)
+### 3. Update Admin UI Variable Reference
 
-Layout:
-- Header with title "AI Prompt Bundles"
-- Active bundle indicator card
-- List of all bundles with actions (Edit, Clone, Set Active, Delete)
+Add the new grant variables to `AVAILABLE_VARIABLES` in `PromptBundleEdit.tsx`:
+- Group variables into categories (User Inputs, Grant Context, Step Outputs)
+- Add descriptions explaining when each variable is available
 
-Features:
-- Create new bundle (clones from default or starts fresh)
-- Set active bundle (used for all new report generations)
-- View bundle details
+### 4. Limit Guidelines Text Length
 
-#### Bundle Editor Page (`/admin/prompt-bundles/:id`)
+Guidelines can be very long (100K+ characters). Add a configurable limit:
+- Default to first 10,000 characters
+- Include note about truncation if applicable
+- Consider extracting key sections only
 
-Layout:
-- Header with bundle name and status
-- System prompt editor (large textarea)
-- Accordion or tabs for 10 step prompts
-- Each step shows:
-  - Step name and description
-  - Prompt template editor with syntax highlighting for variables
-  - Optional model override selector
-  - Variable reference panel showing available placeholders
-
-Available variables for prompts:
-- `{{summary}}` - User's research summary
-- `{{publicArticleUrl}}` - Article URL
-- `{{articleContent}}` - Scraped article content
-- `{{trl}}` - Technology Readiness Level
-- `{{ipStatus}}` - IP Status
-- `{{previousStepOutputs}}` - Context from prior steps (auto-injected)
-
-### 3. Edge Function Updates
-
-Modify both edge functions to:
-1. Fetch the active prompt bundle from the database
-2. Use database prompts instead of hardcoded ones
-3. Fall back to hardcoded defaults if no active bundle exists
-
-Changes to `generate-report/index.ts`:
-```text
-- Add function to fetch active bundle from database
-- Replace hardcoded SYSTEM_PROMPT with bundle.system_prompt
-- Replace Step 1 prompt with bundle step template
-- Interpolate variables into template
-```
-
-Changes to `resume-report-run/index.ts`:
-```text
-- Fetch active bundle at start
-- For each step (2-10), use the corresponding step prompt from bundle
-- Interpolate variables from checkpoint data and inputs
-```
-
-### 4. Seed Data
-
-Insert a default bundle with current hardcoded prompts as initial data via migration:
-- System prompt (existing)
-- All 10 step prompts (extracted from current code)
-- Marks as active
-
-### 5. File Changes Summary
+## File Changes Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| Database Migration | CREATE | New tables: prompt_bundles, prompt_bundle_steps |
-| `src/components/admin/AdminSidebar.tsx` | MODIFY | Add "AI Prompts" nav item |
-| `src/App.tsx` | MODIFY | Add routes for prompt bundle pages |
-| `src/pages/admin/PromptBundles.tsx` | CREATE | Main listing page |
-| `src/pages/admin/PromptBundleEdit.tsx` | CREATE | Bundle editor page |
-| `src/components/admin/PromptStepEditor.tsx` | CREATE | Reusable step prompt editor |
-| `src/hooks/usePromptBundles.ts` | CREATE | Query hooks for bundles |
-| `supabase/functions/generate-report/index.ts` | MODIFY | Use database prompts |
-| `supabase/functions/resume-report-run/index.ts` | MODIFY | Use database prompts |
+| `supabase/functions/generate-report/index.ts` | MODIFY | Fetch grant data, add to interpolation context |
+| `supabase/functions/resume-report-run/index.ts` | MODIFY | Fetch grant data, add to interpolation context |
+| `src/pages/admin/PromptBundleEdit.tsx` | MODIFY | Add new grant variables to reference panel |
 
-### 6. Security Considerations
+## Technical Details
 
-- Only Admins can view prompt bundles
-- Only Super Admins can modify/activate bundles
-- Prompt changes are logged to audit_logs table
-- Active bundle changes require confirmation dialog
+### Edge Function Changes
 
-### 7. User Experience Flow
-
-1. Admin navigates to `/admin/prompt-bundles`
-2. Sees list of bundles with "Default Bundle" marked as active
-3. Clicks "Edit" to open bundle editor
-4. Expands Step 5 (TAM Calculation) accordion
-5. Modifies the prompt to be more specific about Australian market data
-6. Clicks "Save Changes"
-7. Next report generation uses the updated prompt
-
-### 8. Variable Interpolation Logic
-
-Create a shared utility function for template interpolation:
+In `generate-report/index.ts`, after fetching the application:
 
 ```text
-function interpolatePrompt(template: string, variables: Record<string, string>): string
-- Replace {{variableName}} with variable values
-- Handle missing variables gracefully (leave placeholder or remove)
-- Support nested object paths: {{checkpoint.marketSegments}}
+// Fetch grant details for prompt context
+const grantData = await fetchGrantContext(supabase, application.grant_version_id);
+
+// Add grant variables to interpolation context
+const variables = {
+  summary,
+  publicArticleUrl,
+  articleContent,
+  trl,
+  ipStatus,
+  grantName: grantData.name,
+  grantVersionLabel: `v${grantData.version_number}`,
+  grantGuidelines: grantData.guidelinesExcerpt,
+  grantRubric: grantData.formattedRubric,
+  grantSummary: grantData.summary,
+};
 ```
 
-### 9. Default Prompts (Seed Data)
+In `resume-report-run/index.ts`, same pattern but grant data is fetched once and passed to `processSingleStep`.
 
-The migration will include the current prompts as defaults:
+### Helper Function for Grant Context
 
-**System Prompt:**
-"You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
+```text
+async function fetchGrantContext(supabase, grantVersionId: string): Promise<{
+  name: string;
+  version_number: number;
+  guidelinesExcerpt: string;
+  formattedRubric: string;
+  summary: string;
+}>
+```
 
-**Step Prompts (1-10):**
-Each step's current hardcoded prompt will be converted to a template with appropriate variable placeholders.
+This function:
+1. Queries grant_versions joined with grants
+2. Extracts and truncates guidelines_raw_text
+3. Formats rubric from ai_suggestions_json.rubric.sections
+4. Returns formatted context ready for interpolation
+
+### Rubric Formatting Example
+
+Input (from ai_suggestions_json):
+```json
+{
+  "rubric": {
+    "sections": [
+      {
+        "key": "project_impact",
+        "title": "Project Impact and Alignment",
+        "weight": 30,
+        "criteria": ["Clarity of problem", "Alignment with NRF"]
+      }
+    ]
+  }
+}
+```
+
+Output:
+```text
+Assessment Criteria:
+
+1. Project Impact and Alignment (30%)
+   - Clarity of problem
+   - Alignment with NRF
+```
+
+## Admin UI Updates
+
+Update the variable reference card in `PromptBundleEdit.tsx` to show:
+
+**User Inputs:**
+- `{{summary}}` - User's 100-word research summary
+- `{{publicArticleUrl}}` - URL of the research article
+- `{{articleContent}}` - Scraped content from the article
+- `{{trl}}` - Technology Readiness Level
+- `{{ipStatus}}` - IP Status
+
+**Grant Context:**
+- `{{grantName}}` - Name of the grant being applied for
+- `{{grantVersionLabel}}` - Version label (e.g., "v1")
+- `{{grantGuidelines}}` - Excerpt from grant guidelines (up to 10,000 chars)
+- `{{grantRubric}}` - Formatted assessment criteria
+- `{{grantSummary}}` - AI-generated summary of the grant
+
+**Step Outputs (available in later steps):**
+- `{{marketSegments}}` - Output from market segments step
+- `{{existingCompetitors}}` - Output from competitors step
+- `{{tam}}`, `{{sam}}`, `{{som}}` - Market size calculations
+
+## Usage Example
+
+After implementation, prompt templates can include grant context:
+
+```text
+You are analyzing research for commercialization potential.
+
+Grant: {{grantName}} ({{grantVersionLabel}})
+
+Audience: Grant assessors in Australia
+
+Grant guidelines excerpt:
+{{grantGuidelines}}
+
+Assessment criteria/rubric:
+{{grantRubric}}
+
+Research Summary: {{summary}}
+
+Based on the grant requirements above, extract and summarize:
+1. The core research innovation
+2. How it aligns with the grant's priority areas
+...
+```
+
+## Security Considerations
+
+- Grant data is fetched using service role key (already in use)
+- No new RLS policies needed (grants are publicly readable when published)
+- Guidelines text is truncated to prevent excessively long prompts
 
