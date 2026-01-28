@@ -309,6 +309,18 @@ serve(async (req) => {
 
     // 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10
     const resumeFromStep = reportRun.current_step;
+
+    // Specific error for step 0 (Step 1 never completed)
+    if (resumeFromStep === 0) {
+      return new Response(
+        JSON.stringify({ 
+          error: "No checkpoint available. Step 1 did not complete. Please cancel this run and start a new report.",
+          code: "NO_CHECKPOINT"
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     if (resumeFromStep < 1 || resumeFromStep > 10 || reportRun.status !== "pending") {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
