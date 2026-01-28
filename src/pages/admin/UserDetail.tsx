@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
@@ -21,9 +22,10 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2, Plus } from "lucide-react";
 import { format } from "date-fns";
 import type { Database } from "@/integrations/supabase/types";
+import { GrantCreditDialog } from "@/components/admin/GrantCreditDialog";
 
 type AppRole = Database["public"]["Enums"]["app_role"];
 
@@ -33,6 +35,7 @@ export default function UserDetail() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { isSuperAdmin } = useAdminAuth();
+  const [grantCreditOpen, setGrantCreditOpen] = useState(false);
 
   const { data: user, isLoading } = useQuery({
     queryKey: ["admin-user", id],
@@ -248,9 +251,17 @@ export default function UserDetail() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Entitlements ({user.entitlements.length})</CardTitle>
-            <CardDescription>Report credits and access</CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <div>
+              <CardTitle>Entitlements ({user.entitlements.length})</CardTitle>
+              <CardDescription>Report credits and access</CardDescription>
+            </div>
+            {isSuperAdmin && (
+              <Button size="sm" onClick={() => setGrantCreditOpen(true)}>
+                <Plus className="h-4 w-4 mr-1" />
+                Grant Credit
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {user.entitlements.length === 0 ? (
@@ -279,11 +290,19 @@ export default function UserDetail() {
                     </TableRow>
                   ))}
                 </TableBody>
-              </Table>
+            </Table>
             )}
           </CardContent>
         </Card>
       </div>
+
+      {/* Grant Credit Dialog */}
+      <GrantCreditDialog
+        open={grantCreditOpen}
+        onOpenChange={setGrantCreditOpen}
+        targetUserId={id!}
+        targetUserEmail={user.profile.email}
+      />
     </div>
   );
 }
