@@ -600,6 +600,80 @@ export type Database = {
         }
         Relationships: []
       }
+      prompt_bundle_steps: {
+        Row: {
+          bundle_id: string
+          created_at: string
+          id: string
+          model_override: string | null
+          prompt_template: string
+          step_description: string
+          step_name: string
+          step_number: number
+          updated_at: string
+        }
+        Insert: {
+          bundle_id: string
+          created_at?: string
+          id?: string
+          model_override?: string | null
+          prompt_template: string
+          step_description: string
+          step_name: string
+          step_number: number
+          updated_at?: string
+        }
+        Update: {
+          bundle_id?: string
+          created_at?: string
+          id?: string
+          model_override?: string | null
+          prompt_template?: string
+          step_description?: string
+          step_name?: string
+          step_number?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "prompt_bundle_steps_bundle_id_fkey"
+            columns: ["bundle_id"]
+            isOneToOne: false
+            referencedRelation: "prompt_bundles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      prompt_bundles: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          is_active: boolean
+          name: string
+          system_prompt: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          system_prompt: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          system_prompt?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       report_run_steps: {
         Row: {
           citations_json: Json | null
