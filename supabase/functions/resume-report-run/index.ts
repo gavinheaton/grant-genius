@@ -307,11 +307,11 @@ serve(async (req) => {
       );
     }
 
-    // 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10
-    const resumeFromStep = reportRun.current_step;
+    // 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10, plus recovery for step 11
+    let effectiveResumeFromStep = reportRun.current_step;
 
     // Specific error for step 0 (Step 1 never completed)
-    if (resumeFromStep === 0) {
+    if (effectiveResumeFromStep === 0) {
       return new Response(
         JSON.stringify({ 
           error: "No checkpoint available. Step 1 did not complete. Please cancel this run and start a new report.",
@@ -321,9 +321,67 @@ serve(async (req) => {
       );
     }
 
-    if (resumeFromStep < 1 || resumeFromStep > 10 || reportRun.status !== "pending") {
+    // STEP 11 RECOVERY: Handle case where final step stalled without completing
+    if (effectiveResumeFromStep >= 11) {
+      // Check if a report already exists for this run
+      const { data: existingReport } = await supabaseAdmin
+        .from("reports")
+        .select("id")
+        .eq("report_run_id", reportRunId)
+        .maybeSingle();
+
+      if (existingReport) {
+        // Report already created - just mark run as completed and return success
+        await supabaseAdmin
+          .from("report_runs")
+          .update({
+            status: "completed",
+            completed_at: new Date().toISOString(),
+          })
+          .eq("id", reportRunId);
+
+        return new Response(
+          JSON.stringify({ 
+            success: true, 
+            message: "Report already completed. Please refresh to view.",
+            code: "ALREADY_COMPLETE"
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // No report exists - step 11 stalled. Reset to resume from step 10 (re-run step 11)
+      console.log(`Step 11 recovery: Run ${reportRunId} stuck at step 11 without report. Resetting to resume from step 10.`);
+      
+      // Reset step 11 row so it can be re-run
+      await supabaseAdmin
+        .from("report_run_steps")
+        .update({
+          status: "pending",
+          started_at: null,
+          completed_at: null,
+          error_message: null,
+          outputs_json: {},
+        })
+        .eq("report_run_id", reportRunId)
+        .eq("step_number", 11);
+
+      // Treat as resuming from step 10 so next step executed is 11
+      effectiveResumeFromStep = 10;
+    }
+
+    // Validate checkpoint range (steps 1-10 are valid checkpoints)
+    if (effectiveResumeFromStep < 1 || effectiveResumeFromStep > 10) {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Only accept pending status for resume
+    if (reportRun.status !== "pending") {
+      return new Response(
+        JSON.stringify({ error: "Report run is not in pending status" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -348,14 +406,14 @@ serve(async (req) => {
       inputs || {},
       reportRun.checkpoint_data_json || {},
       reportRun.checkpoint_citations_json || [],
-      resumeFromStep,
+      effectiveResumeFromStep,
       reportRun.email_on_complete ?? false
-    ).catch((e) => console.error(`Step processing error (from step ${resumeFromStep}):`, e));
+    ).catch((e) => console.error(`Step processing error (from step ${effectiveResumeFromStep}):`, e));
 
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: `Report generation resumed from step ${resumeFromStep}, running step ${resumeFromStep + 1}` 
+        message: `Report generation resumed from step ${effectiveResumeFromStep}, running step ${effectiveResumeFromStep + 1}` 
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -840,8 +898,8 @@ async function createFinalReport(
     ? (existingReports[0] as { version_number: number }).version_number + 1 
     : 1;
 
-  // Create the final report
-  const { data: newReport } = await supabase.from("reports").insert({
+  // Create the final report - with explicit error handling
+  const { data: newReport, error: reportInsertError } = await supabase.from("reports").insert({
     application_id: applicationId,
     user_id: userId,
     grant_version_id: grantVersionId,
@@ -853,8 +911,13 @@ async function createFinalReport(
     inputs_snapshot_json: inputs,
   }).select("id").single();
 
-  // Update run as completed
-  await supabase
+  if (reportInsertError) {
+    console.error("Failed to insert report:", reportInsertError);
+    throw new Error(`Failed to save report: ${reportInsertError.message}`);
+  }
+
+  // Update run as completed - with explicit error handling
+  const { error: runUpdateError } = await supabase
     .from("report_runs")
     .update({
       status: "completed",
@@ -863,11 +926,21 @@ async function createFinalReport(
     })
     .eq("id", reportRunId);
 
-  // Update application status
-  await supabase
+  if (runUpdateError) {
+    console.error("Failed to update run status:", runUpdateError);
+    // Don't throw here - report is already saved
+  }
+
+  // Update application status - with explicit error handling
+  const { error: appUpdateError } = await supabase
     .from("applications")
     .update({ status: "ready" })
     .eq("id", applicationId);
+
+  if (appUpdateError) {
+    console.error("Failed to update application status:", appUpdateError);
+    // Don't throw here - report is already saved
+  }
 
   // Send email notification if enabled
   if (emailOnComplete && newReport?.id) {
