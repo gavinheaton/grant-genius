@@ -1,6 +1,22 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import PizZip from "https://esm.sh/pizzip@3.1.7";
-import Docxtemplater from "https://esm.sh/docxtemplater@3.50.0";
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  HeadingLevel,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  AlignmentType,
+  PageBreak,
+  BorderStyle,
+  convertInchesToTwip,
+  LevelFormat,
+  ILevelsOptions,
+  ShadingType,
+} from "https://esm.sh/docx@8.5.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -8,130 +24,645 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Actual report structure from Step 11 assembly
+// Step 11 assembled report structure
 interface AssembledReport {
   title?: string;
   report_markdown: string;
-  tables?: Array<{ title: string; markdown: string; section: string }>;
-  all_sources?: Array<{ id: string; mla: string; url: string }>;
-  data_gaps?: Array<{ gap: string; why_missing: string; needed_source: string }>;
+  tables?: Array<{
+    title: string;
+    section: string;
+    columns: string[];
+    rows: string[][];
+  }>;
+  all_sources?: Array<{
+    id: string;
+    title?: string;
+    publisher?: string;
+    date?: string;
+    url: string;
+    accessed_date?: string;
+    mla: string;
+  }>;
+  data_gaps?: Array<{
+    gap: string;
+    why_missing: string;
+    needed_source: string;
+  }>;
 }
 
 interface ReportContent {
   assembledReport?: AssembledReport;
-  // Legacy fields for backwards compatibility
-  researchContext?: string;
-  marketSegments?: Array<{ name: string; description: string; size?: string }>;
-  existingCompetitors?: Array<{ name: string; description: string; url?: string }>;
-  competitorTable?: string;
-  tam?: { value: string; description: string };
-  sam?: { value: string; description: string };
-  som?: { value: string; description: string };
-  economicImpact?: string;
-  partners?: Array<{ name: string; description: string; website?: string }>;
-  citations?: Array<{ title: string; url: string; accessed?: string }>;
+}
+
+// Document styling constants
+const STYLES = {
+  primaryColor: "1E3A5F", // Navy blue
+  headerColor: "2563EB", // Bright blue for table headers
+  fontFamily: "Calibri",
+  fontSize: {
+    body: 22, // 11pt in half-points
+    h1: 36, // 18pt
+    h2: 28, // 14pt
+    h3: 24, // 12pt
+  },
+};
+
+// Numbering configuration for bullet and numbered lists
+const NUMBERING_CONFIG: ILevelsOptions[] = [
+  {
+    level: 0,
+    format: LevelFormat.BULLET,
+    text: "•",
+    alignment: AlignmentType.LEFT,
+    style: {
+      paragraph: {
+        indent: { left: convertInchesToTwip(0.5), hanging: convertInchesToTwip(0.25) },
+      },
+    },
+  },
+];
+
+const NUMBERED_CONFIG: ILevelsOptions[] = [
+  {
+    level: 0,
+    format: LevelFormat.DECIMAL,
+    text: "%1.",
+    alignment: AlignmentType.LEFT,
+    style: {
+      paragraph: {
+        indent: { left: convertInchesToTwip(0.5), hanging: convertInchesToTwip(0.25) },
+      },
+    },
+  },
+];
+
+// Parse inline formatting (bold, italic) into TextRuns
+function parseInlineFormatting(text: string): TextRun[] {
+  const runs: TextRun[] = [];
+  let remaining = text;
+
+  // Pattern to match bold (**text**) and italic (*text* but not **text**)
+  const inlinePattern = /(\*\*(.+?)\*\*|\*(?!\*)(.+?)(?<!\*)\*|\[([^\]]+)\]\([^)]+\))/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = inlinePattern.exec(text)) !== null) {
+    // Add plain text before this match
+    if (match.index > lastIndex) {
+      const plainText = text.slice(lastIndex, match.index);
+      if (plainText) {
+        runs.push(new TextRun({ text: plainText, size: STYLES.fontSize.body }));
+      }
+    }
+
+    if (match[2]) {
+      // Bold text (**text**)
+      runs.push(new TextRun({ text: match[2], bold: true, size: STYLES.fontSize.body }));
+    } else if (match[3]) {
+      // Italic text (*text*)
+      runs.push(new TextRun({ text: match[3], italics: true, size: STYLES.fontSize.body }));
+    } else if (match[4]) {
+      // Link [text](url) - just extract text
+      runs.push(new TextRun({ text: match[4], size: STYLES.fontSize.body }));
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Add remaining plain text
+  if (lastIndex < text.length) {
+    const plainText = text.slice(lastIndex);
+    if (plainText) {
+      runs.push(new TextRun({ text: plainText, size: STYLES.fontSize.body }));
+    }
+  }
+
+  // If no runs were created, return the original text
+  if (runs.length === 0 && text.trim()) {
+    runs.push(new TextRun({ text, size: STYLES.fontSize.body }));
+  }
+
+  return runs;
+}
+
+// Track section headings for table insertion
+interface ParsedSection {
+  type: "heading" | "paragraph" | "bullet" | "numbered";
+  level?: number;
+  text: string;
+  sectionName?: string; // For headings, the section name for table matching
+}
+
+// Parse markdown into structured sections
+function parseMarkdownStructure(markdown: string): ParsedSection[] {
+  const lines = markdown.split("\n");
+  const sections: ParsedSection[] = [];
+  let inCodeBlock = false;
+  let inTable = false;
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+
+    // Skip empty lines but mark paragraph breaks
+    if (!trimmedLine) {
+      continue;
+    }
+
+    // Skip code fences
+    if (trimmedLine.startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+
+    // Skip markdown tables (we handle tables from structured data)
+    if (trimmedLine.startsWith("|")) {
+      inTable = true;
+      continue;
+    }
+    if (inTable && !trimmedLine.startsWith("|")) {
+      inTable = false;
+    }
+    if (inTable) continue;
+
+    // Skip horizontal rules
+    if (/^[-*_]{3,}$/.test(trimmedLine)) {
+      continue;
+    }
+
+    // Parse headings (## -> H1, ### -> H2, #### -> H3)
+    const h2Match = trimmedLine.match(/^##\s+(?:\d+\.\s*)?(.+)$/);
+    if (h2Match) {
+      sections.push({
+        type: "heading",
+        level: 1,
+        text: h2Match[1].trim(),
+        sectionName: h2Match[1].trim(),
+      });
+      continue;
+    }
+
+    const h3Match = trimmedLine.match(/^###\s+(?:\d+\.\s*)?(.+)$/);
+    if (h3Match) {
+      sections.push({
+        type: "heading",
+        level: 2,
+        text: h3Match[1].trim(),
+        sectionName: h3Match[1].trim(),
+      });
+      continue;
+    }
+
+    const h4Match = trimmedLine.match(/^####\s+(.+)$/);
+    if (h4Match) {
+      sections.push({
+        type: "heading",
+        level: 3,
+        text: h4Match[1].trim(),
+      });
+      continue;
+    }
+
+    // Parse bullet lists
+    const bulletMatch = trimmedLine.match(/^[-*]\s+(.+)$/);
+    if (bulletMatch) {
+      sections.push({
+        type: "bullet",
+        text: bulletMatch[1].trim(),
+      });
+      continue;
+    }
+
+    // Parse numbered lists
+    const numberedMatch = trimmedLine.match(/^\d+\.\s+(.+)$/);
+    if (numberedMatch) {
+      sections.push({
+        type: "numbered",
+        text: numberedMatch[1].trim(),
+      });
+      continue;
+    }
+
+    // Regular paragraph
+    sections.push({
+      type: "paragraph",
+      text: trimmedLine,
+    });
+  }
+
+  return sections;
+}
+
+// Build Word table from structured data
+function buildTable(tableData: { title: string; columns: string[]; rows: string[][] }): (Paragraph | Table)[] {
+  const elements: (Paragraph | Table)[] = [];
+
+  // Table title
+  if (tableData.title) {
+    elements.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: tableData.title,
+            bold: true,
+            size: STYLES.fontSize.h3,
+          }),
+        ],
+        spacing: { before: 240, after: 120 },
+      })
+    );
+  }
+
+  // Build table rows
+  const tableRows: TableRow[] = [];
+
+  // Header row
+  if (tableData.columns && tableData.columns.length > 0) {
+    tableRows.push(
+      new TableRow({
+        tableHeader: true,
+        children: tableData.columns.map(
+          (col) =>
+            new TableCell({
+              children: [
+                new Paragraph({
+                  children: [
+                    new TextRun({
+                      text: col || "",
+                      bold: true,
+                      color: "FFFFFF",
+                      size: STYLES.fontSize.body,
+                    }),
+                  ],
+                }),
+              ],
+              shading: {
+                type: ShadingType.SOLID,
+                fill: STYLES.headerColor,
+              },
+              margins: {
+                top: 100,
+                bottom: 100,
+                left: 100,
+                right: 100,
+              },
+            })
+        ),
+      })
+    );
+  }
+
+  // Data rows
+  if (tableData.rows) {
+    for (const row of tableData.rows) {
+      tableRows.push(
+        new TableRow({
+          children: row.map(
+            (cell, idx) =>
+              new TableCell({
+                children: [
+                  new Paragraph({
+                    children: parseInlineFormatting(
+                      cell || "Unknown (no validated source found)"
+                    ),
+                  }),
+                ],
+                margins: {
+                  top: 80,
+                  bottom: 80,
+                  left: 100,
+                  right: 100,
+                },
+              })
+          ),
+        })
+      );
+    }
+  }
+
+  if (tableRows.length > 0) {
+    elements.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: tableRows,
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          bottom: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          left: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          right: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+          insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        },
+      })
+    );
+  }
+
+  // Add spacing after table
+  elements.push(new Paragraph({ spacing: { after: 200 } }));
+
+  return elements;
+}
+
+// Build references section with hanging indent
+function buildReferences(sources: AssembledReport["all_sources"]): Paragraph[] {
+  if (!sources || sources.length === 0) return [];
+
+  const paragraphs: Paragraph[] = [];
+
+  for (const source of sources) {
+    paragraphs.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: `[${source.id}] `,
+            bold: true,
+            size: STYLES.fontSize.body,
+          }),
+          new TextRun({
+            text: source.mla,
+            size: STYLES.fontSize.body,
+          }),
+        ],
+        indent: {
+          left: convertInchesToTwip(0.5),
+          hanging: convertInchesToTwip(0.5),
+        },
+        spacing: { after: 120 },
+      })
+    );
+
+    // Add URL on separate line if present
+    if (source.url) {
+      paragraphs.push(
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: source.url,
+              size: STYLES.fontSize.body - 2,
+              color: "666666",
+            }),
+          ],
+          indent: { left: convertInchesToTwip(0.5) },
+          spacing: { after: 160 },
+        })
+      );
+    }
+  }
+
+  return paragraphs;
+}
+
+// Build data gaps section as bullet list
+function buildDataGaps(dataGaps: AssembledReport["data_gaps"]): Paragraph[] {
+  if (!dataGaps || dataGaps.length === 0) return [];
+
+  return dataGaps.map(
+    (gap) =>
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: gap.gap,
+            bold: true,
+            size: STYLES.fontSize.body,
+          }),
+          new TextRun({
+            text: ` — ${gap.why_missing}`,
+            size: STYLES.fontSize.body,
+          }),
+          new TextRun({
+            text: ` (Needed: ${gap.needed_source})`,
+            italics: true,
+            size: STYLES.fontSize.body,
+            color: "666666",
+          }),
+        ],
+        bullet: { level: 0 },
+        spacing: { after: 80 },
+      })
+  );
+}
+
+// Match table section to heading (fuzzy match)
+function sectionMatchesHeading(sectionName: string, headingText: string): boolean {
+  const normalize = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return normalize(headingText).includes(normalize(sectionName)) ||
+    normalize(sectionName).includes(normalize(headingText));
+}
+
+// Main document builder
+function buildDocument(
+  assembledReport: AssembledReport,
+  metadata: { grantName: string; reportTitle: string; generatedDate: string; version: number }
+): Document {
+  const sections = parseMarkdownStructure(assembledReport.report_markdown);
+  const tables = assembledReport.tables || [];
+  const dataGaps = assembledReport.data_gaps || [];
+  const sources = assembledReport.all_sources || [];
+
+  // Track which tables have been inserted
+  const insertedTables = new Set<number>();
+
+  // Build document children
+  const children: (Paragraph | Table)[] = [];
+
+  // Cover page
+  children.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: metadata.reportTitle,
+          bold: true,
+          size: 48, // 24pt
+          color: STYLES.primaryColor,
+        }),
+      ],
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 1200, after: 400 },
+    })
+  );
+
+  children.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: `Prepared for: ${metadata.grantName}`,
+          size: STYLES.fontSize.h2,
+        }),
+      ],
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+    })
+  );
+
+  children.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: `Date: ${metadata.generatedDate}  |  Version ${metadata.version}`,
+          size: STYLES.fontSize.body,
+          color: "666666",
+        }),
+      ],
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 600 },
+    })
+  );
+
+  // Page break after cover
+  children.push(new Paragraph({ children: [new PageBreak()] }));
+
+  // Track current section for table insertion
+  let currentSectionName = "";
+
+  // Process markdown sections
+  for (const section of sections) {
+    if (section.type === "heading") {
+      currentSectionName = section.sectionName || section.text;
+
+      const headingLevel =
+        section.level === 1
+          ? HeadingLevel.HEADING_1
+          : section.level === 2
+          ? HeadingLevel.HEADING_2
+          : HeadingLevel.HEADING_3;
+
+      const fontSize =
+        section.level === 1
+          ? STYLES.fontSize.h1
+          : section.level === 2
+          ? STYLES.fontSize.h2
+          : STYLES.fontSize.h3;
+
+      children.push(
+        new Paragraph({
+          text: section.text,
+          heading: headingLevel,
+          spacing: { before: 360, after: 160 },
+        })
+      );
+
+      // Insert any tables that match this section
+      for (let i = 0; i < tables.length; i++) {
+        if (!insertedTables.has(i)) {
+          const table = tables[i];
+          if (sectionMatchesHeading(table.section, currentSectionName)) {
+            children.push(...buildTable(table));
+            insertedTables.add(i);
+          }
+        }
+      }
+    } else if (section.type === "bullet") {
+      children.push(
+        new Paragraph({
+          children: parseInlineFormatting(section.text),
+          bullet: { level: 0 },
+          spacing: { after: 80 },
+        })
+      );
+    } else if (section.type === "numbered") {
+      children.push(
+        new Paragraph({
+          children: parseInlineFormatting(section.text),
+          numbering: { reference: "numbered-list", level: 0 },
+          spacing: { after: 80 },
+        })
+      );
+    } else if (section.type === "paragraph") {
+      children.push(
+        new Paragraph({
+          children: parseInlineFormatting(section.text),
+          spacing: { after: 120 },
+        })
+      );
+    }
+  }
+
+  // Insert any remaining tables that weren't matched to sections
+  for (let i = 0; i < tables.length; i++) {
+    if (!insertedTables.has(i)) {
+      children.push(...buildTable(tables[i]));
+    }
+  }
+
+  // Add data gaps if they exist and weren't in markdown
+  if (dataGaps.length > 0) {
+    const hasDataGapsSection = sections.some(
+      (s) => s.type === "heading" && s.text.toLowerCase().includes("data gap")
+    );
+
+    if (!hasDataGapsSection) {
+      children.push(
+        new Paragraph({
+          text: "Data Gaps and Validation Needs",
+          heading: HeadingLevel.HEADING_1,
+          spacing: { before: 360, after: 160 },
+        })
+      );
+    }
+
+    children.push(...buildDataGaps(dataGaps));
+  }
+
+  // Page break before references
+  if (sources.length > 0) {
+    children.push(new Paragraph({ children: [new PageBreak()] }));
+
+    children.push(
+      new Paragraph({
+        text: "References",
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 200, after: 240 },
+      })
+    );
+
+    children.push(...buildReferences(sources));
+  }
+
+  // Footer branding
+  children.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Powered by Disruptors Co",
+          size: STYLES.fontSize.body - 2,
+          color: "999999",
+          italics: true,
+        }),
+      ],
+      alignment: AlignmentType.CENTER,
+      spacing: { before: 600 },
+    })
+  );
+
+  return new Document({
+    numbering: {
+      config: [
+        {
+          reference: "bullet-list",
+          levels: NUMBERING_CONFIG,
+        },
+        {
+          reference: "numbered-list",
+          levels: NUMBERED_CONFIG,
+        },
+      ],
+    },
+    sections: [
+      {
+        children,
+      },
+    ],
+  });
 }
 
 function formatDate(dateString: string): string {
   const date = new Date(dateString);
-  const months = ["January", "February", "March", "April", "May", "June", 
-                  "July", "August", "September", "October", "November", "December"];
+  const months = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
   return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-}
-
-function ensureArray<T>(data: T[] | undefined): T[] {
-  return Array.isArray(data) ? data : [];
-}
-
-// Clean markdown formatting to produce readable plain text for DOCX
-function cleanMarkdown(text: string): string {
-  if (!text) return "";
-  
-  return text
-    // Remove heading prefixes (## 1. Title -> Title)
-    .replace(/^#{1,6}\s*\d*\.?\s*/gm, '')
-    // Convert bold markers to plain text (**text** -> text)
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    // Convert italic markers to plain text (*text* -> text)
-    .replace(/(?<!\*)\*(?!\*)(.*?)\*(?!\*)/g, '$1')
-    // Convert markdown links to text with URL ([text](url) -> text (url))
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
-    // Convert bullet markers to bullet character (- item -> • item)
-    .replace(/^[-*]\s+/gm, '• ')
-    // Convert numbered lists to clean format (1. item -> 1. item) - keep as is
-    // Remove inline code backticks (`code` -> code)
-    .replace(/`([^`]+)`/g, '$1')
-    // Remove horizontal rules (--- or ***)
-    .replace(/^[-*]{3,}$/gm, '')
-    // Clean up multiple blank lines
-    .replace(/\n{3,}/g, '\n\n')
-    // Trim each line
-    .split('\n')
-    .map(line => line.trim())
-    .join('\n')
-    .trim();
-}
-
-// Convert markdown table to plain text format
-function cleanMarkdownTable(markdown: string): string {
-  if (!markdown) return "";
-  
-  const lines = markdown.split('\n').filter(l => l.trim());
-  const result: string[] = [];
-  
-  for (const line of lines) {
-    // Skip separator lines (|---|---|)
-    if (/^\|[-:\s|]+\|$/.test(line)) continue;
-    
-    // Parse table row
-    const cells = line
-      .split('|')
-      .map(cell => cell.trim())
-      .filter(cell => cell.length > 0);
-    
-    if (cells.length > 0) {
-      result.push(cells.join(' | '));
-    }
-  }
-  
-  return result.join('\n');
-}
-
-// Extract a section from markdown by its title pattern (e.g., "## 1. Executive Summary")
-function extractSection(markdown: string, sectionNumber: number, sectionTitle: string): string {
-  if (!markdown) return "";
-  
-  // Match section header and content until next section or end
-  const regex = new RegExp(
-    `##\\s*${sectionNumber}\\.\\s*${sectionTitle}[\\s\\S]*?(?=##\\s*\\d+\\.|$)`,
-    'i'
-  );
-  const match = markdown.match(regex);
-  return match ? match[0].trim() : "";
-}
-
-// Extract all 11 sections from the report markdown and clean for DOCX
-function extractAllSectionsClean(markdown: string): Record<string, string> {
-  const sections = {
-    executive_summary: extractSection(markdown, 1, "Executive Summary"),
-    research_context: extractSection(markdown, 2, "Research Context and Innovation"),
-    unmet_need: extractSection(markdown, 3, "Unmet Need and Australian Relevance"),
-    commercialisation_pathways: extractSection(markdown, 4, "Commercialisation Pathways"),
-    competitive_landscape: extractSection(markdown, 5, "Competitive Landscape"),
-    market_sizing: extractSection(markdown, 6, "Market Sizing"),
-    economic_impact: extractSection(markdown, 7, "Economic Impact|Indicative Economic Impact"),
-    australian_partners: extractSection(markdown, 8, "Potential Australian Partners"),
-    risks_mitigations: extractSection(markdown, 9, "Key Risks and Mitigations"),
-    data_gaps_section: extractSection(markdown, 10, "Data Gaps and Validation Needs"),
-    references_section: extractSection(markdown, 11, "References"),
-  };
-  
-  // Clean each section from markdown to plain text
-  const cleanSections: Record<string, string> = {};
-  for (const [key, value] of Object.entries(sections)) {
-    cleanSections[key] = cleanMarkdown(value);
-  }
-  return cleanSections;
 }
 
 Deno.serve(async (req) => {
@@ -179,7 +710,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Fetch report and verify ownership
+    // Fetch report and verify ownership (or admin access)
     const { data: report, error: reportError } = await supabase
       .from("reports")
       .select(`
@@ -187,8 +718,6 @@ Deno.serve(async (req) => {
         version_number,
         created_at,
         content_json,
-        citations_json,
-        application_id,
         user_id,
         applications!inner(
           id,
@@ -206,220 +735,85 @@ Deno.serve(async (req) => {
 
     if (reportError || !report) {
       console.error("Report fetch error:", reportError);
-      return new Response(JSON.stringify({ error: "Report not found or access denied" }), {
-        status: 404,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "Report not found or access denied" }),
+        {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
-    // Get default DOCX template
-    const { data: template, error: templateError } = await supabase
-      .from("docx_templates")
-      .select("*")
-      .eq("is_default", true)
-      .maybeSingle();
+    // Validate Step 11 JSON exists
+    const content = (report.content_json || {}) as ReportContent;
+    const assembledReport = content.assembledReport;
 
-    if (templateError) {
-      console.error("Template fetch error:", templateError);
-      return new Response(JSON.stringify({ error: "Failed to fetch template" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (!assembledReport?.report_markdown) {
+      console.error("Missing assembledReport in content_json");
+      return new Response(
+        JSON.stringify({
+          error: "Report content not found. Please regenerate the report.",
+          details: "The report is missing the assembled content (Step 11 output).",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
-
-    if (!template) {
-      return new Response(JSON.stringify({ error: "No default DOCX template configured. Please ask an admin to upload one." }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Download template from storage
-    const { data: templateFile, error: downloadError } = await supabaseService.storage
-      .from("docx-templates")
-      .download(template.template_path);
-
-    if (downloadError || !templateFile) {
-      console.error("Template download error:", downloadError);
-      return new Response(JSON.stringify({ error: "Failed to download template file" }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Parse template with PizZip and Docxtemplater
-    const templateBuffer = await templateFile.arrayBuffer();
-    const zip = new PizZip(templateBuffer);
-    const doc = new Docxtemplater(zip, {
-      paragraphLoop: true,
-      linebreaks: true,
-      delimiters: { start: "{", end: "}" },
-    });
 
     // Extract grant name from nested relations
-    const grantName = (report.applications as any)?.grant_versions?.grants?.name || "Research Report";
-    const content = (report.content_json || {}) as ReportContent;
-    const citations = (report.citations_json || []) as Array<{ title: string; url: string; accessed?: string }>;
+    const grantName =
+      (report.applications as any)?.grant_versions?.grants?.name || "Research Report";
 
-    // Check if we have the new assembled report structure
-    const assembledReport = content.assembledReport;
-    
-    let templateData: Record<string, any>;
-
-    if (assembledReport?.report_markdown) {
-      // New structure: use assembledReport with cleaned markdown
-      const cleanSections = extractAllSectionsClean(assembledReport.report_markdown);
-      
-      templateData = {
-        // Cover page / header info (plain text)
-        grant_name: grantName,
-        application_title: (report.applications as any)?.title || grantName,
-        report_title: assembledReport.title || `${grantName} Research Report`,
-        generated_date: formatDate(report.created_at),
-        version: report.version_number,
-
-        // Full report content (cleaned markdown)
-        report_content: cleanMarkdown(assembledReport.report_markdown),
-
-        // Individual sections (cleaned markdown)
-        ...cleanSections,
-
-        // Tables (loop) - cleaned for readability
-        tables: ensureArray(assembledReport.tables).map((table, idx) => ({
-          index: idx + 1,
-          title: table.title,
-          markdown: cleanMarkdownTable(table.markdown),
-          section: table.section,
-        })),
-        has_tables: ensureArray(assembledReport.tables).length > 0,
-
-        // Sources/Citations (loop)
-        sources: ensureArray(assembledReport.all_sources).map((source, idx) => ({
-          index: idx + 1,
-          id: source.id,
-          mla: source.mla,
-          url: source.url,
-        })),
-        has_sources: ensureArray(assembledReport.all_sources).length > 0,
-
-        // Data gaps (loop)
-        data_gaps: ensureArray(assembledReport.data_gaps).map((gap, idx) => ({
-          index: idx + 1,
-          gap: gap.gap,
-          why_missing: gap.why_missing,
-          needed_source: gap.needed_source,
-        })),
-        has_data_gaps: ensureArray(assembledReport.data_gaps).length > 0,
-
-        // Branding
-        powered_by: "Powered by Disruptors Co",
-      };
-    } else {
-      // Legacy structure: use old field mappings for backwards compatibility
-      templateData = {
-        // Cover page / header info
-        grant_name: grantName,
-        application_title: (report.applications as any)?.title || grantName,
-        report_title: `${grantName} Research Report`,
-        generated_date: formatDate(report.created_at),
-        version: report.version_number,
-
-        // Legacy content sections
-        report_content: content.researchContext || "No report content available.",
-        research_context: content.researchContext || "No research context available.",
-        
-        // Market segments (array for loops)
-        market_segments: ensureArray(content.marketSegments).map((seg, idx) => ({
-          index: idx + 1,
-          name: seg.name,
-          description: seg.description,
-          size: seg.size || "Size not specified",
-        })),
-        has_market_segments: ensureArray(content.marketSegments).length > 0,
-
-        // Competitors (array for loops)
-        competitors: ensureArray(content.existingCompetitors).map((comp, idx) => ({
-          index: idx + 1,
-          name: comp.name,
-          description: comp.description,
-          url: comp.url || "",
-        })),
-        has_competitors: ensureArray(content.existingCompetitors).length > 0,
-        competitor_table: content.competitorTable || "",
-
-        // Market sizing
-        tam: content.tam?.value || "N/A",
-        tam_description: content.tam?.description || "",
-        sam: content.sam?.value || "N/A",
-        sam_description: content.sam?.description || "",
-        som: content.som?.value || "N/A",
-        som_description: content.som?.description || "",
-
-        // Economic impact
-        economic_impact: content.economicImpact || "Economic impact analysis not available.",
-
-        // Partners (array for loops)
-        partners: ensureArray(content.partners).map((partner, idx) => ({
-          index: idx + 1,
-          name: partner.name,
-          description: partner.description,
-          website: partner.website || "",
-        })),
-        has_partners: ensureArray(content.partners).length > 0,
-
-        // Legacy citations
-        sources: (citations.length > 0 ? citations : ensureArray(content.citations)).map((cit, idx) => ({
-          index: idx + 1,
-          id: `S${idx + 1}`,
-          mla: cit.title,
-          url: cit.url,
-        })),
-        has_sources: citations.length > 0 || ensureArray(content.citations).length > 0,
-
-        // Empty arrays for new fields
-        tables: [],
-        has_tables: false,
-        data_gaps: [],
-        has_data_gaps: false,
-
-        // Empty sections for legacy reports
-        executive_summary: "",
-        unmet_need: "",
-        commercialisation_pathways: "",
-        competitive_landscape: "",
-        market_sizing: "",
-        australian_partners: "",
-        risks_mitigations: "",
-        data_gaps_section: "",
-        references_section: "",
-
-        // Branding
-        powered_by: "Powered by Disruptors Co",
-      };
-    }
-
-    // Render the document
-    doc.render(templateData);
-
-    // Generate output
-    const outputBuffer = doc.getZip().generate({
-      type: "arraybuffer",
-      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    // Build document
+    const doc = buildDocument(assembledReport, {
+      grantName,
+      reportTitle: assembledReport.title || `${grantName} Commercialisation Analysis`,
+      generatedDate: formatDate(report.created_at),
+      version: report.version_number,
     });
 
+    // Generate buffer
+    const buffer = await Packer.toBuffer(doc);
+
+    // Save to storage (non-blocking)
+    const storagePath = `${report.user_id}/${report.id}.docx`;
+    try {
+      await supabaseService.storage.from("reports").upload(storagePath, buffer, {
+        contentType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        upsert: true,
+      });
+
+      // Update docx_path in database
+      await supabaseService
+        .from("reports")
+        .update({ docx_path: storagePath })
+        .eq("id", report.id);
+
+      console.log("DOCX saved to storage:", storagePath);
+    } catch (storageError) {
+      // Non-blocking - still return the DOCX even if storage fails
+      console.error("Storage upload failed (non-blocking):", storageError);
+    }
+
+    // Return DOCX for download
     const filename = `${grantName.replace(/[^a-zA-Z0-9]/g, "_")}_Report_v${report.version_number}.docx`;
 
-    return new Response(outputBuffer, {
+    return new Response(buffer, {
       status: 200,
       headers: {
         ...corsHeaders,
-        "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "Content-Type":
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
   } catch (error: unknown) {
     console.error("DOCX generation error:", error);
-    const errorMessage = error instanceof Error ? error.message : "Failed to generate DOCX";
+    const errorMessage =
+      error instanceof Error ? error.message : "Failed to generate DOCX";
     return new Response(JSON.stringify({ error: errorMessage }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
