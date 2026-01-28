@@ -1,136 +1,154 @@
 
-# Fix DOCX Generation: Handle Nested JSON in report_markdown
 
-## Problem Identified
+# Admin Credit Granting Feature
 
-The Step 11 output stores the `report_markdown` field incorrectly. Instead of containing clean markdown like:
+## Overview
 
-```markdown
-## 1. Executive Summary
-- Market opportunity is...
+Add the ability for Super Admins to manually grant report credits to users directly from the User Detail page in the Admin Console. This is essential for testing, customer support refunds, and promotional credits.
+
+## Current State
+
+- Entitlements are only created via the Stripe webhook (server-side)
+- The `entitlements` table has no INSERT policy for authenticated users
+- The UserDetail page already displays entitlements but has no way to add them
+- Super Admins can already change user roles, so this follows the same pattern
+
+## Solution Architecture
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│                     ADMIN CREDIT GRANTING FLOW                     │
+└────────────────────────────────────────────────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  1. Super Admin views UserDetail page               │
+    │     (sees existing entitlements table)              │
+    └──────────────────────────┬──────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  2. Clicks "Grant Credit" button                    │
+    │     (only visible to Super Admins)                  │
+    └──────────────────────────┬──────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  3. Modal dialog opens:                             │
+    │     - Credit type (REPORT_ONE_OFF)                  │
+    │     - Quantity (default 1)                          │
+    │     - Reason/note (for audit)                       │
+    └──────────────────────────┬──────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  4. Calls Edge Function: grant-credit               │
+    │     (uses service role key)                         │
+    └──────────────────────────┬──────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  5. Edge Function:                                  │
+    │     - Verifies caller is Super Admin                │
+    │     - Creates entitlement row                       │
+    │     - Logs action to audit_logs                     │
+    └──────────────────────────┬──────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────┐
+    │  6. UI refreshes, shows new entitlement             │
+    └─────────────────────────────────────────────────────┘
 ```
 
-It contains a JSON code block wrapping the entire report structure:
+## Implementation Plan
 
-```
-```json
-{
-  "title": "...",
-  "report_markdown": "## 1. Executive Summary...",
-  "tables": [...],
-  "all_sources": [...]
-}
-```
-```
+### 1. Create Edge Function: `grant-credit`
 
-When the markdown parser encounters this, it sees:
-1. Line starting with ` ``` ` → enters code block mode, skips everything
-2. Code block ends at closing ` ``` ` 
-3. No actual content gets parsed
-4. Result: Only cover page + footer appear in DOCX
+**File:** `supabase/functions/grant-credit/index.ts`
 
-## Solution
+The edge function will:
+- Verify the caller has Super Admin role (query `user_roles` table)
+- Accept: `target_user_id`, `entitlement_type`, `quantity`, `reason`
+- Insert into `entitlements` table using service role
+- Insert audit log entry for accountability
+- Return the created entitlement
 
-Update the `generate-docx` edge function to:
+### 2. Update UserDetail Page UI
 
-1. **Detect JSON wrapper** in `report_markdown`
-2. **Parse the nested JSON** to extract the actual markdown content
-3. **Use the correctly extracted data** for document generation
+**File:** `src/pages/admin/UserDetail.tsx`
 
-## Technical Changes
+Add to the Entitlements card:
+- "Grant Credit" button (only for Super Admins)
+- Dialog component for the grant form
+- Mutation hook to call the edge function
+- Success/error toast notifications
 
-### File: `supabase/functions/generate-docx/index.ts`
+### 3. Create Grant Credit Dialog Component
 
-Add a function to handle the nested JSON case:
+**File:** `src/components/admin/GrantCreditDialog.tsx`
+
+A modal dialog containing:
+- Select for entitlement type (currently only REPORT_ONE_OFF)
+- Number input for quantity (1-10)
+- Text input for reason/note
+- Cancel and Confirm buttons
+
+### 4. Configure Edge Function
+
+**File:** `supabase/config.toml`
+
+Add configuration for the new function with `verify_jwt = false` (we'll verify manually).
+
+## Technical Details
+
+### Edge Function: `grant-credit`
 
 ```typescript
-// Extract assembled report from potentially nested JSON
-function extractAssembledReport(content: ReportContent): AssembledReport | null {
-  const assembledReport = content.assembledReport;
-  if (!assembledReport) return null;
-
-  // Check if report_markdown contains a JSON code block
-  const markdownContent = assembledReport.report_markdown;
-  if (!markdownContent) return null;
-
-  // Pattern: ```json\n{...}\n```
-  const jsonBlockMatch = markdownContent.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
-  
-  if (jsonBlockMatch) {
-    try {
-      const nestedJson = JSON.parse(jsonBlockMatch[1]);
-      // Merge the nested structure with the outer structure
-      return {
-        title: nestedJson.title || assembledReport.title,
-        report_markdown: nestedJson.report_markdown || "",
-        tables: nestedJson.tables || assembledReport.tables || [],
-        all_sources: nestedJson.all_sources || assembledReport.all_sources || [],
-        data_gaps: nestedJson.data_gaps || assembledReport.data_gaps || [],
-      };
-    } catch (e) {
-      console.error("Failed to parse nested JSON in report_markdown:", e);
-      // Fall back to original structure
-      return assembledReport;
-    }
-  }
-
-  // No nested JSON, use as-is
-  return assembledReport;
-}
+// Key logic:
+// 1. Extract and verify JWT from Authorization header
+// 2. Query user_roles to confirm caller is super_admin
+// 3. Insert entitlement (no order_id - it's a manual grant)
+// 4. Insert audit_log entry
+// 5. Return success with new entitlement ID
 ```
 
-Then update the main handler to use this extraction:
+### UI Component Changes
 
-```typescript
-// Replace this:
-const content = (report.content_json || {}) as ReportContent;
-const assembledReport = content.assembledReport;
+The UserDetail page Entitlements card will be enhanced:
 
-// With this:
-const content = (report.content_json || {}) as ReportContent;
-const assembledReport = extractAssembledReport(content);
-```
+| Current | After |
+|---------|-------|
+| Shows entitlements list | Shows entitlements list |
+| No actions | "Grant Credit" button for Super Admins |
+| - | Dialog for granting credits |
 
-## Expected Outcome
+### Audit Trail
 
-After this fix:
+Every manual credit grant will be logged to `audit_logs` with:
+- `entity_type`: "entitlements"
+- `entity_id`: new entitlement ID
+- `action`: "MANUAL_GRANT"
+- `user_id`: granting admin's ID
+- `new_value_json`: includes reason and target user
 
-1. The edge function will detect the ` ```json ``` ` wrapper
-2. Parse the nested JSON to extract the real `report_markdown` (the actual markdown content starting with `# Commercialisation Assessment...`)
-3. Also extract `tables` and `all_sources` from the nested structure
-4. Generate a complete DOCX with all 11 sections, tables, and references
+## Files to Create/Modify
 
-## Files to Modify
+| File | Action | Description |
+|------|--------|-------------|
+| `supabase/functions/grant-credit/index.ts` | **Create** | New edge function for granting credits |
+| `supabase/config.toml` | **Update** | Add grant-credit function config |
+| `src/components/admin/GrantCreditDialog.tsx` | **Create** | Dialog component for grant form |
+| `src/pages/admin/UserDetail.tsx` | **Update** | Add button and dialog integration |
 
-| File | Changes |
-|------|---------|
-| `supabase/functions/generate-docx/index.ts` | Add `extractAssembledReport()` function and update main handler |
+## Security Considerations
 
-## Additional Logging
-
-Add diagnostic logging to help troubleshoot future issues:
-
-```typescript
-console.log("Raw report_markdown length:", assembledReport.report_markdown.length);
-console.log("report_markdown starts with:", assembledReport.report_markdown.substring(0, 100));
-console.log("Extracted sections count:", sections.length);
-console.log("Tables count:", tables.length);
-console.log("Sources count:", sources.length);
-```
-
-## Long-term Fix (Separate Task)
-
-The root cause is that Step 11 is outputting the wrong format. Ideally, `content_json.assembledReport` should already contain:
-- `report_markdown` as clean markdown text
-- `tables` as a proper array
-- `all_sources` as a proper array
-
-This should be fixed at the Step 11 prompt/processing level to avoid this workaround. However, the edge function fix handles the current data gracefully.
+- Only Super Admins can grant credits (verified server-side)
+- All grants are logged to audit_logs for accountability
+- No direct RLS policy change needed - uses service role key
+- Rate limiting: edge function can add basic protection if needed
 
 ## Testing
 
-After deployment:
-1. Download DOCX for the existing report
-2. Verify all 11 sections appear
-3. Verify tables are rendered (Table 1: Partners, Table 2: SOM Breakdown)
-4. Verify References section appears with all sources
+After implementation:
+1. Navigate to Admin → Users → Select a user
+2. Click "Grant Credit" button
+3. Fill in quantity and reason
+4. Confirm and verify:
+   - New entitlement appears in the list
+   - User's credit count increases on their dashboard
+   - Audit log entry is created
+
