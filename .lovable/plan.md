@@ -1,218 +1,229 @@
 
-
-# Add Grant Context Variables to Prompt Bundle System
+# Step 11: Assemble Final Grant Report (AEA Ignite-ready)
 
 ## Overview
-Extend the prompt bundle system to include grant-specific context variables that can be used in prompts. This allows the AI to tailor responses based on the specific grant being applied for, including grant name, version, guidelines excerpt, and assessment rubric.
+Add a new final pipeline step (Step 11) that takes all JSON outputs from Steps 1-10 and assembles them into a single, assessor-ready grant report following the exact AEA Ignite structure with proper citations, tables, and data gap tracking.
 
-## New Variables to Support
+## Current State Analysis
 
-| Variable | Description |
-|----------|-------------|
-| `{{grantName}}` | Name of the grant (e.g., "AEA Ignite") |
-| `{{grantVersionLabel}}` | Version identifier (e.g., "v1" or "2026 Round 1") |
-| `{{grantGuidelines}}` | Excerpt from the uploaded guidelines document |
-| `{{grantRubric}}` | Structured assessment criteria/rubric in readable format |
-| `{{grantSummary}}` | AI-generated summary of the grant (from ai_suggestions_json) |
+The pipeline currently:
+- Runs 10 steps via `generate-report` (Step 1) and `resume-report-run` (Steps 2-10)
+- Step 10 (Partner Businesses) triggers `createFinalReport()` which saves raw step outputs to `content_json`
+- No post-processing step exists to format outputs into a coherent narrative
+- Each step stores unstructured text in checkpoint data (e.g., `researchContext`, `tam`, `som`)
 
-## Current State
+## Changes Required
 
-- The `grantVersionId` is already passed through the report generation pipeline
-- Grant versions store `guidelines_raw_text`, `rubric_json`, and `ai_suggestions_json` 
-- The `interpolatePrompt` function exists but doesn't have access to grant data
-- The `AVAILABLE_VARIABLES` list in the admin UI doesn't include grant variables
+### 1. Database Schema Update
 
-## Implementation Approach
+Update the `total_steps` constant from 10 to 11 in both edge functions and add Step 11 to the seed data.
 
-### 1. Update Edge Functions to Fetch Grant Data
+**Migration**: Add Step 11 to existing prompt bundles:
+- Insert new `prompt_bundle_steps` record for step_number = 11
+- Set step_name = "assemble_report"
+- Set step_description = "Assemble Final Grant Report"
+- Include the detailed prompt template from user requirements
 
-Both `generate-report` and `resume-report-run` need to:
-1. Query the `grant_versions` table joined with `grants` to get grant details
-2. Add grant variables to the interpolation context passed to each step
+### 2. Edge Function Changes
 
-The query pattern:
+**File: `supabase/functions/generate-report/index.ts`**
+- Update `RESEARCH_STEPS` array to include Step 11
+- Change `total_steps: RESEARCH_STEPS.length` (now 11)
+
+**File: `supabase/functions/resume-report-run/index.ts`**
+- Update `RESEARCH_STEPS` array to include Step 11
+- Add `case 11:` block for the final assembly step
+- Move `createFinalReport()` call from Step 10 to Step 11
+- Step 10 now checkpoints instead of completing
+- Step 11 parses all step outputs, calls AI with assembly prompt, then calls `createFinalReport()`
+- Update checkpoint validation to allow steps 1-10 (was 1-9)
+
+### 3. Variable Interpolation Updates
+
+Add new variables for Step 11 interpolation:
+- `{{step1}}` through `{{step10}}` - Raw JSON string outputs from each step
+- `{{partnerBusinesses}}` - Output from Step 10 (was the final step)
+- `{{reportTemplateName}}` - Optional template name if available
+
+**Update `getBaseVariables()` function** to include:
 ```text
-SELECT 
-  gv.guidelines_raw_text,
-  gv.rubric_json,
-  gv.ai_suggestions_json,
-  gv.version_number,
-  g.name as grant_name
-FROM grant_versions gv
-JOIN grants g ON g.id = gv.grant_id
-WHERE gv.id = $grantVersionId
+step1: JSON.stringify(reportContent.researchContext || {}),
+step2: JSON.stringify(reportContent.competitorResearch || {}),
+...
+step10: JSON.stringify(reportContent.partnerBusinesses || {}),
 ```
 
-### 2. Format Rubric for Prompt Inclusion
+### 4. Admin UI Updates
 
-The rubric is stored as structured JSON but needs to be formatted as readable text for prompts. Create a helper function:
+**File: `src/pages/admin/PromptBundleEdit.tsx`**
+- Add `{{partnerBusinesses}}` to Step Outputs category
+- Add new "Assembly Variables" category with `{{step1}}` through `{{step10}}`
+- Note that Step 11 has access to all previous outputs
+
+### 5. Frontend Hook Update
+
+**File: `src/hooks/useReportGeneration.ts`**
+- Update checkpoint detection from steps 1-9 to steps 1-10
+- Step 11 completes the report (no checkpoint)
+
+## Technical Implementation Details
+
+### Step 11 Prompt Template (for seed data)
+
+The prompt will be stored in the database with the exact format specified by the user:
 
 ```text
-function formatRubricForPrompt(rubricJson: object): string
-- Iterates through rubric.sections (from ai_suggestions_json)
-- Formats each section with title, weight, and criteria
-- Returns structured text suitable for AI consumption
+You are assembling a final grant report for Australian government assessors.
+
+Grant: {{grantName}} ({{grantVersionLabel}})
+
+## STEP OUTPUTS (raw JSON from research pipeline)
+
+Step 1 - Research Context: {{step1}}
+Step 2 - Competitor Research: {{step2}}
+Step 3 - Market Segments: {{step3}}
+Step 4 - Existing Competitors: {{step4}}
+Step 5 - TAM: {{step5}}
+Step 6 - SAM: {{step6}}
+Step 7 - SOM: {{step7}}
+Step 8 - Economic Impact: {{step8}}
+Step 9 - Competitor Table: {{step9}}
+Step 10 - Partner Businesses: {{step10}}
+
+## TASK
+
+Parse and merge these outputs into ONE coherent report for Australian government grant assessors.
+
+RULES:
+- Use ONLY validated facts from step outputs
+- Every numeric claim must have a citation marker [S#]
+- If an output contains an assumption, label it (High/Med/Low confidence)
+- Remove internal process phrasing ("in Step X", "your instructions")
+- Eliminate placeholders - add missing items to Data Gaps section
+
+## MANDATORY REPORT STRUCTURE
+
+1. Executive Summary (8-12 bullets, each with [S#] citation)
+2. Research Context and Innovation
+3. Unmet Need and Australian Relevance
+4. Commercialisation Pathways (3 Segments: product, customer, value prop, AU angle, GTM hypothesis)
+5. Competitive Landscape and Differentiation (2-5 comparators per segment with evidence)
+6. Market Sizing (TAM/SAM/SOM consolidated table + Assumptions table)
+7. Indicative Economic Impact to Australia (2+ quantified pathways)
+8. Potential Australian Partners (ANZSIC mapping + candidates table)
+9. Key Risks and Mitigations
+10. Data Gaps and Validation Needs
+11. References (MLA, deduplicated by URL, with Accessed date)
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON with this schema:
+{
+  "title": string,
+  "report_markdown": string,
+  "tables": [{"title": string, "markdown": string, "section": string}],
+  "all_sources": [{"id": "S1", "mla": string, "url": string}],
+  "data_gaps": [{"gap": string, "why_missing": string, "needed_source": string}]
+}
+
+STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.
 ```
 
-Example output:
+### Step 11 Processing Logic
+
 ```text
-Assessment Criteria:
+case 11:
+  // Step 11: Assemble Final Report
+  await executeStep(supabase, reportRunId, 11, async () => {
+    // Build step output variables
+    const stepVariables = {
+      step1: JSON.stringify(reportContent.researchContext || ""),
+      step2: JSON.stringify(reportContent.competitorResearch || ""),
+      step3: JSON.stringify(reportContent.marketSegments || ""),
+      step4: JSON.stringify(reportContent.existingCompetitors || ""),
+      step5: JSON.stringify(reportContent.tam || ""),
+      step6: JSON.stringify(reportContent.sam || ""),
+      step7: JSON.stringify(reportContent.som || ""),
+      step8: JSON.stringify(reportContent.economicImpact || ""),
+      step9: JSON.stringify(reportContent.competitorTable || ""),
+      step10: JSON.stringify(reportContent.partnerBusinesses || ""),
+    };
 
-1. Project Impact and Alignment (30%)
-   - Clarity and urgency of the problem the project addresses
-   - Alignment with National Reconstruction Fund priority areas
-   - Potential for significant economic or social impact for Australia
+    // Get Step 11 prompt from bundle or use default
+    const assemblyPrompt = getStepPrompt(11, DEFAULT_STEP_11_PROMPT);
+    
+    // Use the most capable model for final assembly
+    const result = await callAIWithRetry(assemblyPrompt, 11, systemPrompt, getStepModel(11));
+    
+    // Parse the JSON response
+    let parsedReport;
+    try {
+      parsedReport = JSON.parse(result);
+    } catch {
+      // If JSON parsing fails, store raw output
+      parsedReport = { report_markdown: result, tables: [], all_sources: [], data_gaps: [] };
+    }
+    
+    reportContent.assembledReport = parsedReport;
+    return { assembledReport: parsedReport };
+  });
 
-2. Technical Merit and Feasibility (30%)
-   - Feasibility of the proposed technical approach
-   - Novelty of the research
-   ...
+  // FINAL STEP: Create the report and mark as complete
+  await createFinalReport(
+    supabase,
+    reportRunId,
+    applicationId,
+    grantVersionId,
+    templateVersionId,
+    userId,
+    inputs,
+    reportContent,
+    citations,
+    emailOnComplete
+  );
+  
+  console.log(`11-PHASE: Report run ${reportRunId} completed successfully`);
+  return;
 ```
 
-### 3. Update Admin UI Variable Reference
+### Model Selection for Step 11
 
-Add the new grant variables to `AVAILABLE_VARIABLES` in `PromptBundleEdit.tsx`:
-- Group variables into categories (User Inputs, Grant Context, Step Outputs)
-- Add descriptions explaining when each variable is available
+Step 11 requires the most capable model since it:
+- Processes large amounts of data from all previous steps
+- Must produce perfectly structured JSON output
+- Handles complex formatting and citation tracking
 
-### 4. Limit Guidelines Text Length
+Recommended: `google/gemini-3-pro-preview` (or allow override via admin UI)
 
-Guidelines can be very long (100K+ characters). Add a configurable limit:
-- Default to first 10,000 characters
-- Include note about truncation if applicable
-- Consider extracting key sections only
+Update `getModelForStep()`:
+```text
+function getModelForStep(stepNumber: number): string {
+  if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
+  if (stepNumber <= 7) return "google/gemini-3-flash-preview";
+  if (stepNumber === 11) return "google/gemini-3-pro-preview"; // Most capable for assembly
+  return "google/gemini-2.5-flash-lite";
+}
+```
 
 ## File Changes Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| `supabase/functions/generate-report/index.ts` | MODIFY | Fetch grant data, add to interpolation context |
-| `supabase/functions/resume-report-run/index.ts` | MODIFY | Fetch grant data, add to interpolation context |
-| `src/pages/admin/PromptBundleEdit.tsx` | MODIFY | Add new grant variables to reference panel |
+| Database Migration | CREATE | Add Step 11 to existing prompt bundles |
+| `supabase/functions/generate-report/index.ts` | MODIFY | Add Step 11 to RESEARCH_STEPS array |
+| `supabase/functions/resume-report-run/index.ts` | MODIFY | Add case 11 logic, move completion to Step 11, update checkpoint range |
+| `src/hooks/useReportGeneration.ts` | MODIFY | Update checkpoint detection range from 1-9 to 1-10 |
+| `src/pages/admin/PromptBundleEdit.tsx` | MODIFY | Add new variables for Step 11 ({{step1}}-{{step10}}, {{partnerBusinesses}}) |
 
-## Technical Details
+## Testing Considerations
 
-### Edge Function Changes
+1. **Backward Compatibility**: Existing in-progress reports at Step 10 will complete normally (they'll use old logic)
+2. **New Reports**: Will run through all 11 steps
+3. **JSON Parsing**: Step 11 includes fallback for non-JSON AI responses
+4. **Timeout Risk**: Step 11 processes more data - use 60s timeout and most capable model
 
-In `generate-report/index.ts`, after fetching the application:
+## Security Notes
 
-```text
-// Fetch grant details for prompt context
-const grantData = await fetchGrantContext(supabase, application.grant_version_id);
-
-// Add grant variables to interpolation context
-const variables = {
-  summary,
-  publicArticleUrl,
-  articleContent,
-  trl,
-  ipStatus,
-  grantName: grantData.name,
-  grantVersionLabel: `v${grantData.version_number}`,
-  grantGuidelines: grantData.guidelinesExcerpt,
-  grantRubric: grantData.formattedRubric,
-  grantSummary: grantData.summary,
-};
-```
-
-In `resume-report-run/index.ts`, same pattern but grant data is fetched once and passed to `processSingleStep`.
-
-### Helper Function for Grant Context
-
-```text
-async function fetchGrantContext(supabase, grantVersionId: string): Promise<{
-  name: string;
-  version_number: number;
-  guidelinesExcerpt: string;
-  formattedRubric: string;
-  summary: string;
-}>
-```
-
-This function:
-1. Queries grant_versions joined with grants
-2. Extracts and truncates guidelines_raw_text
-3. Formats rubric from ai_suggestions_json.rubric.sections
-4. Returns formatted context ready for interpolation
-
-### Rubric Formatting Example
-
-Input (from ai_suggestions_json):
-```json
-{
-  "rubric": {
-    "sections": [
-      {
-        "key": "project_impact",
-        "title": "Project Impact and Alignment",
-        "weight": 30,
-        "criteria": ["Clarity of problem", "Alignment with NRF"]
-      }
-    ]
-  }
-}
-```
-
-Output:
-```text
-Assessment Criteria:
-
-1. Project Impact and Alignment (30%)
-   - Clarity of problem
-   - Alignment with NRF
-```
-
-## Admin UI Updates
-
-Update the variable reference card in `PromptBundleEdit.tsx` to show:
-
-**User Inputs:**
-- `{{summary}}` - User's 100-word research summary
-- `{{publicArticleUrl}}` - URL of the research article
-- `{{articleContent}}` - Scraped content from the article
-- `{{trl}}` - Technology Readiness Level
-- `{{ipStatus}}` - IP Status
-
-**Grant Context:**
-- `{{grantName}}` - Name of the grant being applied for
-- `{{grantVersionLabel}}` - Version label (e.g., "v1")
-- `{{grantGuidelines}}` - Excerpt from grant guidelines (up to 10,000 chars)
-- `{{grantRubric}}` - Formatted assessment criteria
-- `{{grantSummary}}` - AI-generated summary of the grant
-
-**Step Outputs (available in later steps):**
-- `{{marketSegments}}` - Output from market segments step
-- `{{existingCompetitors}}` - Output from competitors step
-- `{{tam}}`, `{{sam}}`, `{{som}}` - Market size calculations
-
-## Usage Example
-
-After implementation, prompt templates can include grant context:
-
-```text
-You are analyzing research for commercialization potential.
-
-Grant: {{grantName}} ({{grantVersionLabel}})
-
-Audience: Grant assessors in Australia
-
-Grant guidelines excerpt:
-{{grantGuidelines}}
-
-Assessment criteria/rubric:
-{{grantRubric}}
-
-Research Summary: {{summary}}
-
-Based on the grant requirements above, extract and summarize:
-1. The core research innovation
-2. How it aligns with the grant's priority areas
-...
-```
-
-## Security Considerations
-
-- Grant data is fetched using service role key (already in use)
-- No new RLS policies needed (grants are publicly readable when published)
-- Guidelines text is truncated to prevent excessively long prompts
-
+- No new RLS policies needed
+- Step 11 prompt is editable via existing Super Admin controls
+- Audit logging already captures prompt changes
