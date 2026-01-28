@@ -6,7 +6,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
 
+// 12-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-10 (research) + Step 11 (assembly)
 const RESEARCH_STEPS = [
+  "Building Australia-first source pack",
   "Extracting research context from article",
   "Searching for competing research",
   "Identifying market segments",
@@ -84,9 +86,12 @@ export function GenerationProgress({
     onRestart?.();
   }, [onRestart]);
 
-  const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
-  const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
-    ? RESEARCH_STEPS[currentStep - 1] + (currentStep === 11 ? " (this step takes longer)" : "")
+  // Progress is based on completed steps (currentStep represents last completed step, 0-11)
+  // Total steps is 12 (0-11), so we calculate progress as (currentStep + 1) / 12 when running
+  const progressPercent = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;
+  // currentStep is 0-indexed (0-11), map to RESEARCH_STEPS array
+  const currentStepName = currentStep >= 0 && currentStep < RESEARCH_STEPS.length 
+    ? RESEARCH_STEPS[currentStep] + (currentStep === 11 ? " (this step takes longer)" : "")
     : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending";

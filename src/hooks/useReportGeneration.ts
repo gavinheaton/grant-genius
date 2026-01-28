@@ -298,7 +298,7 @@ export function useReportGeneration(
   // Track resume attempts to prevent infinite loops
   const resumeAttemptedRef = useRef<Set<string>>(new Set());
 
-  // 11-PHASE ARCHITECTURE: Detect checkpoint at any step 1-10 and auto-resume
+  // 12-PHASE ARCHITECTURE: Detect checkpoint at any step 0-10 and auto-resume
   useEffect(() => {
     if (activeRun && activeRun.status === "pending") {
       // Create a unique key for this checkpoint attempt
@@ -306,7 +306,8 @@ export function useReportGeneration(
       
       // Only resume if we haven't already attempted this specific checkpoint
       if (!resumeAttemptedRef.current.has(attemptKey)) {
-        if (activeRun.current_step >= 1 && activeRun.current_step <= 11) {
+        // Steps 0-10 are valid checkpoints (step 11 is final assembly)
+        if (activeRun.current_step >= 0 && activeRun.current_step <= 10) {
           resumeAttemptedRef.current.add(attemptKey);
           resumeFromCheckpoint(activeRun.id);
         }
