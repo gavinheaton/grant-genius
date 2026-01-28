@@ -170,7 +170,7 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
   }, [toast]);
 
-  // Retry from failed step - either restart fresh (step 0) or resume from checkpoint (step 1-10)
+  // Retry from failed step - restart fresh (step 0), resume from checkpoint (step 1-10), or recover step 11
   const retryFromFailedStep = useCallback(async (runId: string) => {
     try {
       console.log("Retrying from failed step...");
@@ -187,9 +187,13 @@ export function useReportGeneration(applicationId: string | undefined) {
         throw new Error("Could not find report run");
       }
 
-      // If Step 1 never completed, we need to start fresh
+      // CASE 1: Step 1 never completed - cancel and start fresh
       if (run.current_step === 0) {
         console.log("Step 1 never completed, cancelling and restarting...");
+        
+        // Clear resume tracking to prevent stale state
+        resumeAttemptedRef.current.clear();
+        setActiveRun(null);
         
         // Cancel the stuck run (this refunds the credit)
         await supabase.functions.invoke("cancel-report-run", {
@@ -201,7 +205,38 @@ export function useReportGeneration(applicationId: string | undefined) {
         return;
       }
 
-      // Otherwise, resume from checkpoint (steps 1-10)
+      // CASE 2: Step 11 stuck (final assembly failed) - backend will handle recovery
+      if (run.current_step >= 11) {
+        console.log("Step 11 stuck, triggering final step recovery...");
+        
+        // Set status to pending so backend accepts the resume
+        const { error: updateError } = await supabase
+          .from("report_runs")
+          .update({ status: "pending" })
+          .eq("id", runId);
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        const { error } = await supabase.functions.invoke("resume-report-run", {
+          body: { reportRunId: runId },
+        });
+
+        if (error) {
+          throw error;
+        }
+
+        toast({
+          title: "Retrying final assembly",
+          description: "Re-running the final report assembly step.",
+        });
+
+        checkActiveRun();
+        return;
+      }
+
+      // CASE 3: Steps 1-10 - normal resume from checkpoint
       const { error: updateError } = await supabase
         .from("report_runs")
         .update({ status: "pending" })
