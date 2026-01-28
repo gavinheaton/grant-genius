@@ -1,241 +1,270 @@
 
-# DOCX Template-Based Report Generation Plan
+# Fix DOCX Template Placeholder Mapping
 
-## Overview
+## Problem Identified
 
-Replace the current html2canvas → PDF approach with a DOCX template-based system where:
-1. Admin uploads a professionally designed DOCX template
-2. The template uses placeholder tags (e.g., `{grant_name}`, `{research_context}`)
-3. Server-side edge function fills the template with report data using **docxtemplater**
-4. Users can download a high-quality DOCX that preserves the original template's fonts, styles, and layout
+The current `generate-docx` edge function uses placeholder mappings that don't match the actual report data structure. 
 
-## Why This Is Better
-
-| Current Approach | DOCX Template Approach |
-|-----------------|------------------------|
-| html2canvas captures HTML → pixelated images | Native Word formatting → crisp text |
-| Fonts must be preloaded, often fail | Template fonts embedded in DOCX |
-| Page breaks are complex workarounds | Word handles page breaks natively |
-| Users can't edit the output easily | Users can edit in Word/Google Docs |
-| No professional formatting control | Full control via Word template design |
-
-## Architecture
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                        DOCX Template Flow                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   1. Admin uploads template.docx                                 │
-│      ┌──────────────────────────────────────────┐               │
-│      │  Template with placeholders:              │               │
-│      │  • {grant_name}                           │               │
-│      │  • {research_context}                     │               │
-│      │  • {#market_segments}...{/market_segments}│               │
-│      │  • {tam}, {sam}, {som}                    │               │
-│      │  • {#citations}...{/citations}            │               │
-│      └──────────────────────────────────────────┘               │
-│                          │                                       │
-│                          ▼                                       │
-│   2. Template stored in Storage (docx-templates bucket)          │
-│                          │                                       │
-│                          ▼                                       │
-│   3. User clicks "Download DOCX"                                 │
-│      └── Frontend calls generate-docx edge function              │
-│                          │                                       │
-│                          ▼                                       │
-│   4. Edge function:                                              │
-│      • Fetches template from storage                             │
-│      • Loads report content_json                                 │
-│      • Uses docxtemplater to fill placeholders                   │
-│      • Returns generated DOCX as download                        │
-│                          │                                       │
-│                          ▼                                       │
-│   5. User receives professionally formatted DOCX                 │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+**What the function expects:**
+```typescript
+{
+  researchContext: string,
+  marketSegments: Array<{name, description, size}>,
+  existingCompetitors: Array<{name, description, url}>,
+  tam: {value, description},
+  sam: {value, description},
+  som: {value, description},
+  economicImpact: string,
+  partners: Array<{name, description, website}>,
+}
 ```
 
-## Implementation Details
-
-### Phase 1: Database and Storage Setup
-
-**New storage bucket:**
-- Create `docx-templates` bucket (private)
-
-**Database changes:**
-```sql
--- Add DOCX template reference to pdf_templates table
-ALTER TABLE pdf_templates ADD COLUMN docx_template_path TEXT;
-
--- Or create a separate docx_templates table if you want multiple templates:
-CREATE TABLE docx_templates (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL,
-  description TEXT,
-  template_path TEXT NOT NULL,  -- path in docx-templates bucket
-  is_default BOOLEAN DEFAULT false,
-  placeholder_schema_json JSONB,  -- documents expected placeholders
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
+**What the report actually contains (from Step 11 assembly):**
+```typescript
+{
+  assembledReport: {
+    title: string,
+    report_markdown: string,  // The FULL formatted report with all sections
+    tables: Array<{title, markdown, section}>,
+    all_sources: Array<{id, mla, url}>,
+    data_gaps: Array<{gap, why_missing, needed_source}>
+  }
+}
 ```
 
-### Phase 2: Admin Template Upload UI
+The `report_markdown` field already contains the **complete formatted report** with all 11 sections:
+1. Executive Summary
+2. Research Context and Innovation  
+3. Unmet Need and Australian Relevance
+4. Commercialisation Pathways
+5. Competitive Landscape and Differentiation
+6. Market Sizing (TAM/SAM/SOM)
+7. Indicative Economic Impact to Australia
+8. Potential Australian Partners
+9. Key Risks and Mitigations
+10. Data Gaps and Validation Needs
+11. References
 
-**New admin page or section: DOCX Templates**
-- Upload DOCX template file
-- Preview list of detected placeholders (parse the template)
-- Set as default template
-- Download sample template with all supported placeholders
+---
 
-**Location:** Add to existing PDF Templates page or create `/admin/docx-templates`
+## Solution
 
-**UI Components:**
-- File dropzone for .docx upload
-- Template list showing uploaded templates
-- "Set as Default" action
-- "Download Sample" button
+Update the `generate-docx` function to use the actual report structure with these new placeholders:
 
-### Phase 3: Edge Function for DOCX Generation
+| Placeholder | Description | Source |
+|-------------|-------------|--------|
+| `{report_title}` | Report title from assembly | `assembledReport.title` |
+| `{report_content}` | Full markdown report | `assembledReport.report_markdown` |
+| `{#tables}...{/tables}` | Loop over tables | `assembledReport.tables` |
+| `{#sources}...{/sources}` | Loop over citations | `assembledReport.all_sources` |
+| `{#data_gaps}...{/data_gaps}` | Loop over data gaps | `assembledReport.data_gaps` |
 
-**New edge function:** `supabase/functions/generate-docx/index.ts`
+**For template flexibility**, we can also extract sections from the markdown to allow individual section placeholders:
+- `{executive_summary}` - Extracted from markdown
+- `{research_context}` - Extracted from markdown  
+- `{market_sizing}` - Extracted from markdown
+- etc.
+
+---
+
+## Implementation Plan
+
+### 1. Update generate-docx Edge Function
+
+**File:** `supabase/functions/generate-docx/index.ts`
+
+**Changes:**
+- Update `ReportContent` interface to match actual structure
+- Add markdown section extraction utility
+- Map both full report and individual sections to placeholders
+- Support both simple template (just `{report_content}`) and advanced template (individual sections)
 
 ```typescript
-// Uses these ESM-compatible libraries:
-import PizZip from "npm:pizzip";
-import Docxtemplater from "npm:docxtemplater";
+interface AssembledReport {
+  title?: string;
+  report_markdown: string;
+  tables?: Array<{ title: string; markdown: string; section: string }>;
+  all_sources?: Array<{ id: string; mla: string; url: string }>;
+  data_gaps?: Array<{ gap: string; why_missing: string; needed_source: string }>;
+}
 
-// Process:
-// 1. Fetch template from storage
-// 2. Load into PizZip
-// 3. Create Docxtemplater instance
-// 4. Map report content_json to template variables
-// 5. Render and return as blob
+interface ReportContent {
+  assembledReport?: AssembledReport;
+  // Legacy fields for backwards compatibility
+  researchContext?: string;
+  // ...
+}
+
+// Extract section from markdown
+function extractSection(markdown: string, sectionTitle: string): string {
+  const regex = new RegExp(`## \\d+\\. ${sectionTitle}[\\s\\S]*?(?=## \\d+\\.|$)`, 'i');
+  const match = markdown.match(regex);
+  return match ? match[0] : '';
+}
 ```
 
-**Template placeholder mapping:**
-```typescript
-const templateData = {
-  // Cover page
-  grant_name: grantName,
-  generated_date: formattedDate,
-  version: report.version_number,
-  
-  // Content sections
-  research_context: content.researchContext,
-  market_segments: formatMarketSegments(content.marketSegments),
-  competitors: formatCompetitors(content.existingCompetitors),
-  competitor_table: content.competitorTable,
-  tam: formatMarketSize(content.tam),
-  sam: formatMarketSize(content.sam),
-  som: formatMarketSize(content.som),
-  economic_impact: content.economicImpact,
-  partners: formatPartners(content.partners),
-  
-  // Citations/References
-  citations: formatCitations(content.citations),
-  
-  // Branding
-  powered_by: template.powered_by_text,
-};
+### 2. Update Placeholder Documentation
+
+**File:** `src/components/admin/DocxTemplateUploader.tsx`
+
+Update the placeholder reference to show the correct placeholders:
+
+**Simple Template Approach:**
+```
+{grant_name}
+{application_title}
+{generated_date}
+{version}
+
+{report_content}   <- The entire formatted report
+
+{#sources}
+[{id}] {mla}
+{url}
+{/sources}
+
+{powered_by}
 ```
 
-### Phase 4: Frontend Integration
-
-**Update ReportsList.tsx:**
-- Add "DOCX" download button (always visible, not conditional on docx_path)
-- Call `generate-docx` edge function
-- Download the returned blob
-
-**Update useReportGeneration.ts:**
-- Add `downloadDocx(reportId)` function that calls the edge function
-
-### Phase 5: Sample Template Creation
-
-Create a professionally designed sample template that admins can download and customize:
-- Cover page with logo placeholder and title
-- Table of contents (Word can auto-generate)
-- Each section with proper heading styles
-- Tables for competitor comparison
-- References section
-- Footer with branding
-
-## Template Placeholder Reference
-
-| Placeholder | Description | Type |
-|-------------|-------------|------|
-| `{grant_name}` | Name of the grant | String |
-| `{generated_date}` | Report generation date | String |
-| `{version}` | Report version number | Number |
-| `{research_context}` | Executive summary | String (rich text) |
-| `{#market_segments}...{/market_segments}` | Loop over market segments | Array |
-| `{#competitors}...{/competitors}` | Loop over competitors | Array |
-| `{tam}` | Total Addressable Market | String |
-| `{sam}` | Serviceable Addressable Market | String |
-| `{som}` | Serviceable Obtainable Market | String |
-| `{economic_impact}` | Economic impact analysis | String |
-| `{#partners}...{/partners}` | Loop over partners | Array |
-| `{#citations}...{/citations}` | Loop over citations | Array |
-| `{powered_by}` | Branding text | String |
-
-**Loop example in template:**
+**Advanced Template Approach (optional):**
 ```
-{#market_segments}
-Segment: {name}
-Description: {description}
-Size: {size}
-{/market_segments}
+{executive_summary}
+{research_context}
+{unmet_need}
+{commercialisation_pathways}
+{competitive_landscape}
+{market_sizing}
+{economic_impact}
+{australian_partners}
+{risks_mitigations}
+{data_gaps_section}
+{references}
 ```
 
-## Files to Create/Modify
+### 3. Handle Markdown to DOCX Conversion
 
-| File | Action | Purpose |
-|------|--------|---------|
-| `supabase/functions/generate-docx/index.ts` | Create | Edge function for DOCX generation |
-| `src/components/admin/DocxTemplateUploader.tsx` | Create | Admin UI for template upload |
-| `src/pages/admin/DocxTemplates.tsx` | Create | Admin page for managing templates |
-| `src/hooks/useDocxTemplates.ts` | Create | CRUD hooks for DOCX templates |
-| `src/components/workspace/ReportsList.tsx` | Modify | Add DOCX download button |
-| `src/hooks/useReportGeneration.ts` | Modify | Add downloadDocx function |
-| Database migration | Create | Add docx_template_path column or table |
-| Storage bucket creation | Migration | Create docx-templates bucket |
+Since `report_markdown` is markdown format, we need to handle this properly. Options:
 
-## Technical Considerations
+**Option A: Simple text insertion** (current approach)
+- Just insert the markdown as plain text
+- User designs their template assuming text content
 
-### Deno/Edge Function Compatibility
-- `docxtemplater` and `pizzip` work with Deno via npm: specifier
-- Template binary handling in edge functions (fetch from storage → ArrayBuffer → PizZip)
+**Option B: Use docxtemplater-html-module** (better)
+- Convert markdown to HTML
+- Use HTML module to insert formatted content
+- Preserves headings, bold, lists, tables
 
-### Template Validation
-- Parse uploaded template to extract placeholders
-- Warn admin if required placeholders are missing
-- Show placeholder documentation in UI
+**Recommendation:** Start with Option A (simple) since users can design their templates accordingly, then optionally add HTML module support later.
 
-### Fallback
-- Keep current PDF generation as fallback
-- If no DOCX template configured, generate PDF instead
-- Show both buttons when DOCX template is available
+---
 
-## User Workflow
+## Files to Modify
 
-**Admin:**
-1. Go to Admin → DOCX Templates
-2. Download sample template or upload custom template
-3. Set template as default
+| File | Changes |
+|------|---------|
+| `supabase/functions/generate-docx/index.ts` | Update content interface, add section extraction, fix placeholder mapping |
+| `src/components/admin/DocxTemplateUploader.tsx` | Update placeholder documentation |
 
-**Researcher:**
-1. Generate report (existing flow)
-2. Click "Download DOCX" button
-3. Receive professionally formatted Word document
-4. Edit in Word/Google Docs as needed
+---
+
+## Updated Placeholder Reference
+
+### Cover Page / Metadata
+- `{grant_name}` - Name of the grant
+- `{application_title}` - Application title
+- `{report_title}` - Generated report title
+- `{generated_date}` - Report generation date
+- `{version}` - Report version number
+
+### Full Report Content
+- `{report_content}` - The entire formatted report (markdown as text)
+
+### Individual Sections (extracted from report_markdown)
+- `{executive_summary}` - Section 1: Executive Summary
+- `{research_context}` - Section 2: Research Context and Innovation
+- `{unmet_need}` - Section 3: Unmet Need and Australian Relevance
+- `{commercialisation_pathways}` - Section 4: Commercialisation Pathways
+- `{competitive_landscape}` - Section 5: Competitive Landscape
+- `{market_sizing}` - Section 6: Market Sizing (TAM/SAM/SOM)
+- `{economic_impact}` - Section 7: Economic Impact to Australia
+- `{australian_partners}` - Section 8: Potential Australian Partners
+- `{risks_mitigations}` - Section 9: Key Risks and Mitigations
+- `{data_gaps_section}` - Section 10: Data Gaps and Validation Needs
+- `{references_section}` - Section 11: References
+
+### Tables (loop)
+```
+{#tables}
+Table: {title}
+{markdown}
+{/tables}
+```
+
+### Citations (loop)
+```
+{#sources}
+[{id}] {mla}
+{url}
+{/sources}
+```
+
+### Data Gaps (loop)
+```
+{#data_gaps}
+Gap: {gap}
+Why: {why_missing}
+Needed: {needed_source}
+{/data_gaps}
+```
+
+### Branding
+- `{powered_by}` - Footer branding text (default: "Powered by Disruptors Co")
+
+---
+
+## Example Template Approaches
+
+### Minimal Template
+Just insert the full report:
+```
+{grant_name}
+Generated: {generated_date}
+
+{report_content}
+
+{powered_by}
+```
+
+### Structured Template  
+Use individual sections with custom formatting:
+```
+COVER PAGE
+{grant_name}
+{application_title}
+
+EXECUTIVE SUMMARY
+{executive_summary}
+
+RESEARCH CONTEXT
+{research_context}
+
+... etc ...
+
+REFERENCES
+{#sources}
+[{id}] {mla}
+{/sources}
+```
+
+---
 
 ## Summary
 
-This approach gives you:
-- Professional-quality output matching your exact template design
-- Native Word formatting (no image-based rendering)
-- Full control over fonts, colors, headers, footers
-- Editable documents for researchers
-- Simple admin workflow for template updates
-- Keeps PDF as fallback option
+The fix involves:
+1. Reading the actual `assembledReport` object from `content_json`
+2. Extracting the `report_markdown` as the main content
+3. Optionally parsing individual sections from the markdown
+4. Mapping `all_sources` to the citations loop
+5. Updating the admin documentation to show correct placeholders
+
+This ensures your DOCX templates will work with the actual report data structure.
