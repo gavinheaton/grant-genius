@@ -54,6 +54,41 @@ interface ReportContent {
   assembledReport?: AssembledReport;
 }
 
+// Extract assembled report from potentially nested JSON wrapper
+// Step 11 sometimes outputs a ```json code block containing the actual data
+function extractAssembledReport(content: ReportContent): AssembledReport | null {
+  const assembledReport = content.assembledReport;
+  if (!assembledReport) return null;
+
+  const markdownContent = assembledReport.report_markdown;
+  if (!markdownContent) return null;
+
+  // Pattern: ```json\n{...}\n``` (the entire content is wrapped)
+  const jsonBlockMatch = markdownContent.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
+  
+  if (jsonBlockMatch) {
+    console.log("Detected nested JSON wrapper in report_markdown, extracting...");
+    try {
+      const nestedJson = JSON.parse(jsonBlockMatch[1]);
+      // Merge the nested structure with the outer structure
+      return {
+        title: nestedJson.title || assembledReport.title,
+        report_markdown: nestedJson.report_markdown || "",
+        tables: nestedJson.tables || assembledReport.tables || [],
+        all_sources: nestedJson.all_sources || assembledReport.all_sources || [],
+        data_gaps: nestedJson.data_gaps || assembledReport.data_gaps || [],
+      };
+    } catch (e) {
+      console.error("Failed to parse nested JSON in report_markdown:", e);
+      // Fall back to original structure
+      return assembledReport;
+    }
+  }
+
+  // No nested JSON, use as-is
+  return assembledReport;
+}
+
 // Document styling constants
 const STYLES = {
   primaryColor: "1E3A5F", // Navy blue
@@ -744,12 +779,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Validate Step 11 JSON exists
+    // Validate Step 11 JSON exists and extract from potential JSON wrapper
     const content = (report.content_json || {}) as ReportContent;
-    const assembledReport = content.assembledReport;
+    const assembledReport = extractAssembledReport(content);
+
+    // Diagnostic logging
+    if (assembledReport) {
+      console.log("Extracted report_markdown length:", assembledReport.report_markdown?.length || 0);
+      console.log("report_markdown starts with:", assembledReport.report_markdown?.substring(0, 100) || "empty");
+      console.log("Tables count:", assembledReport.tables?.length || 0);
+      console.log("Sources count:", assembledReport.all_sources?.length || 0);
+    }
 
     if (!assembledReport?.report_markdown) {
-      console.error("Missing assembledReport in content_json");
+      console.error("Missing assembledReport in content_json after extraction");
       return new Response(
         JSON.stringify({
           error: "Report content not found. Please regenerate the report.",
