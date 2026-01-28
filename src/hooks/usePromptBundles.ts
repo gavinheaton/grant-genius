@@ -214,10 +214,11 @@ export function useSetActiveBundle() {
   return useMutation({
     mutationFn: async (bundleId: string) => {
       // Deactivate all bundles first
+      // Deactivate all bundles except the one we're activating
       const { error: deactivateError } = await supabase
         .from("prompt_bundles")
         .update({ is_active: false })
-        .neq("id", "placeholder"); // Update all
+        .neq("id", bundleId);
 
       if (deactivateError) throw deactivateError;
 
