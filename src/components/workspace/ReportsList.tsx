@@ -91,17 +91,34 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
     setGeneratingDocx(report.id);
 
     try {
-      const response = await supabase.functions.invoke("generate-docx", {
-        body: { reportId: report.id },
-      });
-
-      if (response.error) {
-        throw new Error(response.error.message || "Failed to generate DOCX");
+      // Get current session for auth header
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        throw new Error("Not authenticated");
       }
 
-      // The response.data should be the binary blob
-      const blob = response.data;
-      
+      // Use fetch directly to get binary response as blob
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-docx`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${sessionData.session.access_token}`,
+            "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({ reportId: report.id }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate DOCX");
+      }
+
+      // Get response as blob
+      const blob = await response.blob();
+
       // Create download link
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
