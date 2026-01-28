@@ -1,111 +1,178 @@
 
 
-# Add Admin User Functionality
+# Editable Prompt Bundle Admin Section
 
 ## Overview
-Enable Super Admins to add new admin users directly from the Admin Console. This allows inviting administrators without requiring them to first sign up as researchers.
+Create an admin interface at `/admin/prompt-bundles` that allows administrators to view and edit the AI prompts used in the 10-step report generation pipeline. This moves hardcoded prompts from edge functions into the database, enabling real-time tweaking without code deployments.
 
-## Approach
+## Current State
 
-There are two ways to add admin users:
+The prompts are currently hardcoded in two edge functions:
+- `supabase/functions/generate-report/index.ts` - Step 1 (context extraction)
+- `supabase/functions/resume-report-run/index.ts` - Steps 2-10 (all other research steps)
 
-**Option A: Promote Existing Users (Already Implemented)**
-The current system allows Super Admins to change a user's role from Researcher to Admin via the UserDetail page. This works for users who have already signed up.
+Key components:
+- **System Prompt**: Shared across all steps
+- **Step Prompts**: 10 individual prompts for each research phase
+- **Model Selection**: Different models for different step complexity
 
-**Option B: Add New Admin Users (To Be Implemented)**
-Add an "Add Admin" button on the Users page that allows inviting a new user by email. This creates a profile and assigns an admin role immediately, then sends them a magic link to access the system.
+## Implementation Plan
 
-## Implementation Details
+### 1. Database Schema
 
-### 1. Add "Add Admin" Button to Users Page
-
-Update `src/pages/admin/Users.tsx` to include:
-- An "Add Admin" button (visible only to Super Admins)
-- A dialog/modal for entering the new admin's details
-
-### 2. Create Add Admin Dialog Component
-
-Create a new component `src/components/admin/AddAdminDialog.tsx`:
-- Form with email input (required)
-- Optional full name field
-- Role selection (Admin or Super Admin) - restricted to Super Admins
-- Submit triggers the invitation process
-
-### 3. Create Edge Function for Admin Invitation
-
-Create `supabase/functions/invite-admin/index.ts`:
-- Validates the requesting user is a Super Admin
-- Uses Supabase Admin API to create a new user
-- Creates profile record with provided details
-- Creates user_roles record with selected role
-- Triggers magic link email for the new admin
-
-This requires using the Supabase service role key to create users programmatically.
-
-### 4. Update Users Page with Dialog Integration
+Create a new `prompt_bundles` table to store editable prompts:
 
 ```text
-Changes to src/pages/admin/Users.tsx:
-- Import AddAdminDialog component
-- Add state for dialog open/close
-- Add "Add Admin" button in the header (Super Admin only)
-- Handle successful invitation with toast and list refresh
+Table: prompt_bundles
+- id (uuid, primary key)
+- name (text) - e.g., "Default Bundle"
+- description (text, nullable)
+- is_active (boolean, default true) - only one bundle active at a time
+- system_prompt (text) - shared system prompt for all steps
+- created_at (timestamp)
+- updated_at (timestamp)
 ```
 
-## Security Considerations
+Create a `prompt_bundle_steps` table for individual step prompts:
 
-- Only Super Admins can add new admin users (enforced in edge function)
-- Edge function validates caller's role before proceeding
-- New admins receive a magic link - they still need to verify their email
-- All actions are logged to audit_logs table
+```text
+Table: prompt_bundle_steps
+- id (uuid, primary key)
+- bundle_id (uuid, FK to prompt_bundles)
+- step_number (integer, 1-10)
+- step_name (text) - e.g., "extract_context"
+- step_description (text) - user-friendly description
+- prompt_template (text) - the actual prompt with {{variable}} placeholders
+- model_override (text, nullable) - optional model override for this step
+- created_at (timestamp)
+- updated_at (timestamp)
+- UNIQUE(bundle_id, step_number)
+```
 
-## User Flow
+RLS Policies:
+- Admins can view all bundles and steps
+- Only Super Admins can insert/update/delete
 
-1. Super Admin clicks "Add Admin" button on Users page
-2. Dialog opens with email and role selection
-3. Super Admin enters details and submits
-4. Edge function:
-   - Validates Super Admin permission
-   - Creates user in auth.users
-   - Creates profile record
-   - Creates user_roles record with selected role
-   - Sends magic link email
-5. New admin receives email, clicks link, gains access
-6. Users list refreshes to show new admin
+### 2. Admin UI Components
 
-## File Changes Summary
+#### Navigation Update
+Add "AI Prompts" to the Reports section in AdminSidebar:
+```text
+Reports:
+- PDF Templates
+- AI Prompts (NEW)
+```
+
+#### Main Prompt Bundles Page (`/admin/prompt-bundles`)
+
+Layout:
+- Header with title "AI Prompt Bundles"
+- Active bundle indicator card
+- List of all bundles with actions (Edit, Clone, Set Active, Delete)
+
+Features:
+- Create new bundle (clones from default or starts fresh)
+- Set active bundle (used for all new report generations)
+- View bundle details
+
+#### Bundle Editor Page (`/admin/prompt-bundles/:id`)
+
+Layout:
+- Header with bundle name and status
+- System prompt editor (large textarea)
+- Accordion or tabs for 10 step prompts
+- Each step shows:
+  - Step name and description
+  - Prompt template editor with syntax highlighting for variables
+  - Optional model override selector
+  - Variable reference panel showing available placeholders
+
+Available variables for prompts:
+- `{{summary}}` - User's research summary
+- `{{publicArticleUrl}}` - Article URL
+- `{{articleContent}}` - Scraped article content
+- `{{trl}}` - Technology Readiness Level
+- `{{ipStatus}}` - IP Status
+- `{{previousStepOutputs}}` - Context from prior steps (auto-injected)
+
+### 3. Edge Function Updates
+
+Modify both edge functions to:
+1. Fetch the active prompt bundle from the database
+2. Use database prompts instead of hardcoded ones
+3. Fall back to hardcoded defaults if no active bundle exists
+
+Changes to `generate-report/index.ts`:
+```text
+- Add function to fetch active bundle from database
+- Replace hardcoded SYSTEM_PROMPT with bundle.system_prompt
+- Replace Step 1 prompt with bundle step template
+- Interpolate variables into template
+```
+
+Changes to `resume-report-run/index.ts`:
+```text
+- Fetch active bundle at start
+- For each step (2-10), use the corresponding step prompt from bundle
+- Interpolate variables from checkpoint data and inputs
+```
+
+### 4. Seed Data
+
+Insert a default bundle with current hardcoded prompts as initial data via migration:
+- System prompt (existing)
+- All 10 step prompts (extracted from current code)
+- Marks as active
+
+### 5. File Changes Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| `src/components/admin/AddAdminDialog.tsx` | CREATE | Dialog component for adding admin users |
-| `src/pages/admin/Users.tsx` | MODIFY | Add button and dialog integration |
-| `supabase/functions/invite-admin/index.ts` | CREATE | Edge function for secure user creation |
+| Database Migration | CREATE | New tables: prompt_bundles, prompt_bundle_steps |
+| `src/components/admin/AdminSidebar.tsx` | MODIFY | Add "AI Prompts" nav item |
+| `src/App.tsx` | MODIFY | Add routes for prompt bundle pages |
+| `src/pages/admin/PromptBundles.tsx` | CREATE | Main listing page |
+| `src/pages/admin/PromptBundleEdit.tsx` | CREATE | Bundle editor page |
+| `src/components/admin/PromptStepEditor.tsx` | CREATE | Reusable step prompt editor |
+| `src/hooks/usePromptBundles.ts` | CREATE | Query hooks for bundles |
+| `supabase/functions/generate-report/index.ts` | MODIFY | Use database prompts |
+| `supabase/functions/resume-report-run/index.ts` | MODIFY | Use database prompts |
 
-## Technical Details
+### 6. Security Considerations
 
-### Edge Function Implementation
+- Only Admins can view prompt bundles
+- Only Super Admins can modify/activate bundles
+- Prompt changes are logged to audit_logs table
+- Active bundle changes require confirmation dialog
+
+### 7. User Experience Flow
+
+1. Admin navigates to `/admin/prompt-bundles`
+2. Sees list of bundles with "Default Bundle" marked as active
+3. Clicks "Edit" to open bundle editor
+4. Expands Step 5 (TAM Calculation) accordion
+5. Modifies the prompt to be more specific about Australian market data
+6. Clicks "Save Changes"
+7. Next report generation uses the updated prompt
+
+### 8. Variable Interpolation Logic
+
+Create a shared utility function for template interpolation:
 
 ```text
-invite-admin/index.ts:
-1. Verify auth header and extract user from JWT
-2. Check if requester has super_admin role using service client
-3. Validate email format
-4. Create user using supabase.auth.admin.createUser()
-5. Insert profile record
-6. Insert user_roles record with specified role
-7. Generate and send magic link
-8. Return success response with new user data
+function interpolatePrompt(template: string, variables: Record<string, string>): string
+- Replace {{variableName}} with variable values
+- Handle missing variables gracefully (leave placeholder or remove)
+- Support nested object paths: {{checkpoint.marketSegments}}
 ```
 
-### Dialog Form Fields
+### 9. Default Prompts (Seed Data)
 
-```text
-- Email (required, email validation)
-- Full Name (optional)
-- Role (select: Admin, Super Admin)
-```
+The migration will include the current prompts as defaults:
 
-### Button Placement
+**System Prompt:**
+"You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this."
 
-The "Add Admin" button will be placed in the Users page header, next to the search and filter controls, visible only when `isSuperAdmin` is true.
+**Step Prompts (1-10):**
+Each step's current hardcoded prompt will be converted to a template with appropriate variable placeholders.
 
