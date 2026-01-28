@@ -8,7 +8,6 @@ import { ReportViewer } from "./ReportViewer";
 import { PdfReportRenderer } from "./PdfReportRenderer";
 import { type Report } from "@/hooks/useReportGeneration";
 import { useDefaultPdfTemplate } from "@/hooks/usePdfTemplates";
-import { useDefaultDocxTemplate } from "@/hooks/useDocxTemplates";
 import { generatePdfFromElement, downloadPdf } from "@/lib/generatePdfClient";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
@@ -28,7 +27,6 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
   const pdfRenderRef = useRef<HTMLDivElement>(null);
   
   const { data: pdfTemplate } = useDefaultPdfTemplate();
-  const { data: docxTemplate } = useDefaultDocxTemplate();
 
   const handleGeneratePdf = useCallback(async (report: Report) => {
     if (!pdfTemplate) {
@@ -79,15 +77,6 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
   }, [pdfTemplate, grantName]);
 
   const handleGenerateDocx = useCallback(async (report: Report) => {
-    if (!docxTemplate) {
-      toast({
-        title: "No DOCX template",
-        description: "Please ask an admin to upload a DOCX template first.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setGeneratingDocx(report.id);
 
     try {
@@ -143,7 +132,7 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
     } finally {
       setGeneratingDocx(null);
     }
-  }, [docxTemplate, grantName]);
+  }, [grantName]);
 
   if (isLoading) {
     return (
@@ -195,22 +184,20 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
                     View
                   </Button>
                   
-                  {/* Generate/Download DOCX button - primary when available */}
-                  {docxTemplate && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => handleGenerateDocx(report)}
-                      disabled={generatingDocx === report.id}
-                    >
-                      {generatingDocx === report.id ? (
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      ) : (
-                        <FileType className="h-4 w-4 mr-1" />
-                      )}
-                      DOCX
-                    </Button>
-                  )}
+                  {/* Generate/Download DOCX button - always available (programmatic generation) */}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => handleGenerateDocx(report)}
+                    disabled={generatingDocx === report.id}
+                  >
+                    {generatingDocx === report.id ? (
+                      <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                    ) : (
+                      <FileType className="h-4 w-4 mr-1" />
+                    )}
+                    DOCX
+                  </Button>
                   
                   {/* Generate/Download PDF button */}
                   <Button
