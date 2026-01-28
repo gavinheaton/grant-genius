@@ -8,7 +8,18 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+// Actual report structure from Step 11 assembly
+interface AssembledReport {
+  title?: string;
+  report_markdown: string;
+  tables?: Array<{ title: string; markdown: string; section: string }>;
+  all_sources?: Array<{ id: string; mla: string; url: string }>;
+  data_gaps?: Array<{ gap: string; why_missing: string; needed_source: string }>;
+}
+
 interface ReportContent {
+  assembledReport?: AssembledReport;
+  // Legacy fields for backwards compatibility
   researchContext?: string;
   marketSegments?: Array<{ name: string; description: string; size?: string }>;
   existingCompetitors?: Array<{ name: string; description: string; url?: string }>;
@@ -28,13 +39,38 @@ function formatDate(dateString: string): string {
   return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
-function formatMarketSize(market: { value: string; description: string } | undefined): string {
-  if (!market) return "Not available";
-  return `${market.value}\n${market.description}`;
-}
-
 function ensureArray<T>(data: T[] | undefined): T[] {
   return Array.isArray(data) ? data : [];
+}
+
+// Extract a section from markdown by its title pattern (e.g., "## 1. Executive Summary")
+function extractSection(markdown: string, sectionNumber: number, sectionTitle: string): string {
+  if (!markdown) return "";
+  
+  // Match section header and content until next section or end
+  const regex = new RegExp(
+    `##\\s*${sectionNumber}\\.\\s*${sectionTitle}[\\s\\S]*?(?=##\\s*\\d+\\.|$)`,
+    'i'
+  );
+  const match = markdown.match(regex);
+  return match ? match[0].trim() : "";
+}
+
+// Extract all 11 sections from the report markdown
+function extractAllSections(markdown: string): Record<string, string> {
+  return {
+    executive_summary: extractSection(markdown, 1, "Executive Summary"),
+    research_context: extractSection(markdown, 2, "Research Context and Innovation"),
+    unmet_need: extractSection(markdown, 3, "Unmet Need and Australian Relevance"),
+    commercialisation_pathways: extractSection(markdown, 4, "Commercialisation Pathways"),
+    competitive_landscape: extractSection(markdown, 5, "Competitive Landscape"),
+    market_sizing: extractSection(markdown, 6, "Market Sizing"),
+    economic_impact: extractSection(markdown, 7, "Economic Impact|Indicative Economic Impact"),
+    australian_partners: extractSection(markdown, 8, "Potential Australian Partners"),
+    risks_mitigations: extractSection(markdown, 9, "Key Risks and Mitigations"),
+    data_gaps_section: extractSection(markdown, 10, "Data Gaps and Validation Needs"),
+    references_section: extractSection(markdown, 11, "References"),
+  };
 }
 
 Deno.serve(async (req) => {
@@ -163,76 +199,133 @@ Deno.serve(async (req) => {
     const grantName = (report.applications as any)?.grant_versions?.grants?.name || "Research Report";
     const content = (report.content_json || {}) as ReportContent;
     const citations = (report.citations_json || []) as Array<{ title: string; url: string; accessed?: string }>;
-
     const todayFormatted = formatDate(new Date().toISOString());
 
-    // Build template data
-    const templateData = {
-      // Cover page / header info
-      grant_name: grantName,
-      application_title: (report.applications as any)?.title || grantName,
-      generated_date: formatDate(report.created_at),
-      version: report.version_number,
+    // Check if we have the new assembled report structure
+    const assembledReport = content.assembledReport;
+    
+    let templateData: Record<string, any>;
 
-      // Main content sections
-      research_context: content.researchContext || "No research context available.",
+    if (assembledReport?.report_markdown) {
+      // New structure: use assembledReport
+      const sections = extractAllSections(assembledReport.report_markdown);
       
-      // Market segments (array for loops)
-      market_segments: ensureArray(content.marketSegments).map((seg, idx) => ({
-        index: idx + 1,
-        name: seg.name,
-        description: seg.description,
-        size: seg.size || "Size not specified",
-      })),
-      has_market_segments: ensureArray(content.marketSegments).length > 0,
+      templateData = {
+        // Cover page / header info
+        grant_name: grantName,
+        application_title: (report.applications as any)?.title || grantName,
+        report_title: assembledReport.title || `${grantName} Research Report`,
+        generated_date: formatDate(report.created_at),
+        version: report.version_number,
 
-      // Competitors (array for loops)
-      competitors: ensureArray(content.existingCompetitors).map((comp, idx) => ({
-        index: idx + 1,
-        name: comp.name,
-        description: comp.description,
-        url: comp.url || "",
-      })),
-      has_competitors: ensureArray(content.existingCompetitors).length > 0,
-      competitor_table: content.competitorTable || "",
+        // Full report content (markdown as text)
+        report_content: assembledReport.report_markdown,
 
-      // Market sizing
-      tam: content.tam ? formatMarketSize(content.tam) : "Not available",
-      tam_value: content.tam?.value || "N/A",
-      tam_description: content.tam?.description || "",
-      
-      sam: content.sam ? formatMarketSize(content.sam) : "Not available",
-      sam_value: content.sam?.value || "N/A",
-      sam_description: content.sam?.description || "",
-      
-      som: content.som ? formatMarketSize(content.som) : "Not available",
-      som_value: content.som?.value || "N/A",
-      som_description: content.som?.description || "",
+        // Individual sections extracted from markdown
+        ...sections,
 
-      // Economic impact
-      economic_impact: content.economicImpact || "Economic impact analysis not available.",
+        // Tables (loop)
+        tables: ensureArray(assembledReport.tables).map((table, idx) => ({
+          index: idx + 1,
+          title: table.title,
+          markdown: table.markdown,
+          section: table.section,
+        })),
+        has_tables: ensureArray(assembledReport.tables).length > 0,
 
-      // Partners (array for loops)
-      partners: ensureArray(content.partners).map((partner, idx) => ({
-        index: idx + 1,
-        name: partner.name,
-        description: partner.description,
-        website: partner.website || "",
-      })),
-      has_partners: ensureArray(content.partners).length > 0,
+        // Sources/Citations (loop) - from assembled report
+        sources: ensureArray(assembledReport.all_sources).map((source, idx) => ({
+          index: idx + 1,
+          id: source.id,
+          mla: source.mla,
+          url: source.url,
+        })),
+        has_sources: ensureArray(assembledReport.all_sources).length > 0,
 
-      // Citations (array for loops)
-      citations: (citations.length > 0 ? citations : ensureArray(content.citations)).map((cit, idx) => ({
-        index: idx + 1,
-        title: cit.title,
-        url: cit.url,
-        accessed: cit.accessed || todayFormatted,
-      })),
-      has_citations: citations.length > 0 || ensureArray(content.citations).length > 0,
+        // Data gaps (loop)
+        data_gaps: ensureArray(assembledReport.data_gaps).map((gap, idx) => ({
+          index: idx + 1,
+          gap: gap.gap,
+          why_missing: gap.why_missing,
+          needed_source: gap.needed_source,
+        })),
+        has_data_gaps: ensureArray(assembledReport.data_gaps).length > 0,
 
-      // Branding
-      powered_by: "Powered by Disruptors Co",
-    };
+        // Branding
+        powered_by: "Powered by Disruptors Co",
+      };
+    } else {
+      // Legacy structure: use old field mappings for backwards compatibility
+      templateData = {
+        // Cover page / header info
+        grant_name: grantName,
+        application_title: (report.applications as any)?.title || grantName,
+        report_title: `${grantName} Research Report`,
+        generated_date: formatDate(report.created_at),
+        version: report.version_number,
+
+        // Legacy content sections
+        report_content: content.researchContext || "No report content available.",
+        research_context: content.researchContext || "No research context available.",
+        
+        // Market segments (array for loops)
+        market_segments: ensureArray(content.marketSegments).map((seg, idx) => ({
+          index: idx + 1,
+          name: seg.name,
+          description: seg.description,
+          size: seg.size || "Size not specified",
+        })),
+        has_market_segments: ensureArray(content.marketSegments).length > 0,
+
+        // Competitors (array for loops)
+        competitors: ensureArray(content.existingCompetitors).map((comp, idx) => ({
+          index: idx + 1,
+          name: comp.name,
+          description: comp.description,
+          url: comp.url || "",
+        })),
+        has_competitors: ensureArray(content.existingCompetitors).length > 0,
+        competitor_table: content.competitorTable || "",
+
+        // Market sizing
+        tam: content.tam?.value || "N/A",
+        tam_description: content.tam?.description || "",
+        sam: content.sam?.value || "N/A",
+        sam_description: content.sam?.description || "",
+        som: content.som?.value || "N/A",
+        som_description: content.som?.description || "",
+
+        // Economic impact
+        economic_impact: content.economicImpact || "Economic impact analysis not available.",
+
+        // Partners (array for loops)
+        partners: ensureArray(content.partners).map((partner, idx) => ({
+          index: idx + 1,
+          name: partner.name,
+          description: partner.description,
+          website: partner.website || "",
+        })),
+        has_partners: ensureArray(content.partners).length > 0,
+
+        // Legacy citations
+        sources: (citations.length > 0 ? citations : ensureArray(content.citations)).map((cit, idx) => ({
+          index: idx + 1,
+          id: `S${idx + 1}`,
+          mla: cit.title,
+          url: cit.url,
+        })),
+        has_sources: citations.length > 0 || ensureArray(content.citations).length > 0,
+
+        // Empty arrays for new fields
+        tables: [],
+        has_tables: false,
+        data_gaps: [],
+        has_data_gaps: false,
+
+        // Branding
+        powered_by: "Powered by Disruptors Co",
+      };
+    }
 
     // Render the document
     doc.render(templateData);

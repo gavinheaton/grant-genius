@@ -40,60 +40,99 @@ import { format } from "date-fns";
 const PLACEHOLDER_DOCS = `
 ## Supported Placeholders
 
-### Simple Values
+### Cover Page / Metadata
 - \`{grant_name}\` - Name of the grant
 - \`{application_title}\` - Application title
+- \`{report_title}\` - Generated report title
 - \`{generated_date}\` - Report generation date
 - \`{version}\` - Report version number
-- \`{research_context}\` - Executive summary/research context
-- \`{tam}\` / \`{tam_value}\` / \`{tam_description}\` - Total Addressable Market
-- \`{sam}\` / \`{sam_value}\` / \`{sam_description}\` - Serviceable Addressable Market
-- \`{som}\` / \`{som_value}\` / \`{som_description}\` - Serviceable Obtainable Market
-- \`{economic_impact}\` - Economic impact analysis
-- \`{competitor_table}\` - Pre-formatted competitor comparison
-- \`{powered_by}\` - Branding text
+- \`{powered_by}\` - Branding text (default: "Powered by Disruptors Co")
+
+### Full Report Content
+- \`{report_content}\` - The entire formatted report (all 11 sections)
+
+### Individual Sections (extracted from report)
+- \`{executive_summary}\` - Section 1: Executive Summary
+- \`{research_context}\` - Section 2: Research Context and Innovation
+- \`{unmet_need}\` - Section 3: Unmet Need and Australian Relevance
+- \`{commercialisation_pathways}\` - Section 4: Commercialisation Pathways
+- \`{competitive_landscape}\` - Section 5: Competitive Landscape
+- \`{market_sizing}\` - Section 6: Market Sizing (TAM/SAM/SOM)
+- \`{economic_impact}\` - Section 7: Economic Impact to Australia
+- \`{australian_partners}\` - Section 8: Potential Australian Partners
+- \`{risks_mitigations}\` - Section 9: Key Risks and Mitigations
+- \`{data_gaps_section}\` - Section 10: Data Gaps and Validation Needs
+- \`{references_section}\` - Section 11: References
 
 ### Loop Structures
-#### Market Segments
-\`\`\`
-{#market_segments}
-{index}. {name}
-{description}
-Size: {size}
-{/market_segments}
-\`\`\`
 
-#### Competitors
+#### Citations/Sources
 \`\`\`
-{#competitors}
-{index}. {name} - {url}
-{description}
-{/competitors}
-\`\`\`
-
-#### Partners
-\`\`\`
-{#partners}
-{index}. {name}
-{description}
-Website: {website}
-{/partners}
-\`\`\`
-
-#### Citations
-\`\`\`
-{#citations}
-[{index}] {title}
+{#sources}
+[{id}] {mla}
 {url}
-Accessed: {accessed}
-{/citations}
+{/sources}
+\`\`\`
+
+#### Tables
+\`\`\`
+{#tables}
+{title}
+{markdown}
+{/tables}
+\`\`\`
+
+#### Data Gaps
+\`\`\`
+{#data_gaps}
+Gap: {gap}
+Why: {why_missing}
+Needed: {needed_source}
+{/data_gaps}
 \`\`\`
 
 ### Conditional Blocks
-- \`{#has_market_segments}...{/has_market_segments}\`
-- \`{#has_competitors}...{/has_competitors}\`
-- \`{#has_partners}...{/has_partners}\`
-- \`{#has_citations}...{/has_citations}\`
+- \`{#has_sources}...{/has_sources}\`
+- \`{#has_tables}...{/has_tables}\`
+- \`{#has_data_gaps}...{/has_data_gaps}\`
+
+---
+
+## Example Templates
+
+### Minimal Template
+\`\`\`
+{grant_name}
+Generated: {generated_date} | Version {version}
+
+{report_content}
+
+{powered_by}
+\`\`\`
+
+### Structured Template
+\`\`\`
+{grant_name}
+{application_title}
+
+EXECUTIVE SUMMARY
+{executive_summary}
+
+RESEARCH CONTEXT
+{research_context}
+
+MARKET SIZING
+{market_sizing}
+
+... (other sections) ...
+
+REFERENCES
+{#sources}
+[{id}] {mla}
+{/sources}
+
+{powered_by}
+\`\`\`
 `;
 
 export function DocxTemplateUploader() {
