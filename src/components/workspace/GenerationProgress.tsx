@@ -1,9 +1,10 @@
+import { useState, useEffect, useCallback } from "react";
 import { Progress } from "@/components/ui/progress";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
 
 const RESEARCH_STEPS = [
   "Extracting research context from article",
@@ -17,6 +18,8 @@ const RESEARCH_STEPS = [
   "Building competitor comparison",
   "Finding Australian partner businesses",
 ];
+
+const AUTO_RETRY_SECONDS = 30;
 
 interface GenerationProgressProps {
   currentStep: number;
@@ -39,6 +42,47 @@ export function GenerationProgress({
   emailOnComplete = false,
   onToggleEmailOnComplete,
 }: GenerationProgressProps) {
+  const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
+  const [isPaused, setIsPaused] = useState(false);
+  const [hasAutoRetried, setHasAutoRetried] = useState(false);
+
+  const shouldShowAutoRetry = (status === "failed" || status === "stalled") && onRestart && !hasAutoRetried;
+
+  // Reset countdown when status changes to failed/stalled
+  useEffect(() => {
+    if (status === "failed" || status === "stalled") {
+      setCountdown(AUTO_RETRY_SECONDS);
+      setIsPaused(false);
+      setHasAutoRetried(false);
+    }
+  }, [status]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (!shouldShowAutoRetry || isPaused) return;
+
+    if (countdown <= 0) {
+      setHasAutoRetried(true);
+      onRestart?.();
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => prev - 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [countdown, isPaused, shouldShowAutoRetry, onRestart]);
+
+  const handlePauseToggle = useCallback(() => {
+    setIsPaused((prev) => !prev);
+  }, []);
+
+  const handleManualRetry = useCallback(() => {
+    setHasAutoRetried(true);
+    onRestart?.();
+  }, [onRestart]);
+
   const progressPercent = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const currentStepName = currentStep > 0 && currentStep <= RESEARCH_STEPS.length 
     ? RESEARCH_STEPS[currentStep - 1] 
@@ -78,13 +122,34 @@ export function GenerationProgress({
             {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
             {onRestart && (
               <>
-                <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
-                  <RefreshCw className="h-4 w-4" />
-                  Try Again
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Your credit was refunded. You can try again now.
-                </p>
+                {/* Auto-retry countdown */}
+                {shouldShowAutoRetry && (
+                  <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">
+                        {isPaused ? "Auto-retry paused" : `Retrying automatically in ${countdown}s...`}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Your credit was refunded. The system will retry automatically.
+                      </p>
+                    </div>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={handlePauseToggle}
+                      className="gap-1"
+                    >
+                      {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                      {isPaused ? "Resume" : "Pause"}
+                    </Button>
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <Button variant="default" size="sm" onClick={handleManualRetry} className="gap-2">
+                    <RefreshCw className="h-4 w-4" />
+                    Try Again Now
+                  </Button>
+                </div>
               </>
             )}
           </div>
@@ -95,11 +160,30 @@ export function GenerationProgress({
             <p className="text-sm text-warning">
               Generation appears to have stalled. This can happen due to high demand or network issues.
             </p>
+            {/* Auto-retry countdown */}
+            {shouldShowAutoRetry && (
+              <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
+                <div className="flex-1">
+                  <p className="text-sm font-medium">
+                    {isPaused ? "Auto-retry paused" : `Retrying automatically in ${countdown}s...`}
+                  </p>
+                </div>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handlePauseToggle}
+                  className="gap-1"
+                >
+                  {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                  {isPaused ? "Resume" : "Pause"}
+                </Button>
+              </div>
+            )}
             <div className="flex gap-2">
               {onRestart && (
-                <Button variant="default" size="sm" onClick={onRestart} className="gap-2">
+                <Button variant="default" size="sm" onClick={handleManualRetry} className="gap-2">
                   <RefreshCw className="h-4 w-4" />
-                  Try Again
+                  Try Again Now
                 </Button>
               )}
               {onCancel && (
