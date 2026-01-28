@@ -38,20 +38,32 @@ import {
 import { format } from "date-fns";
 
 const PLACEHOLDER_DOCS = `
-## Supported Placeholders
+## DOCX Template Placeholders
+
+Markdown formatting is automatically cleaned for professional Word output.
+Headings become plain text (style them in your template), bullets become • characters,
+and bold/italic markers are removed while keeping the text.
+
+---
 
 ### Cover Page / Metadata
 - \`{grant_name}\` - Name of the grant
 - \`{application_title}\` - Application title
 - \`{report_title}\` - Generated report title
-- \`{generated_date}\` - Report generation date
+- \`{generated_date}\` - Report generation date (e.g., "January 28, 2026")
 - \`{version}\` - Report version number
-- \`{powered_by}\` - Branding text (default: "Powered by Disruptors Co")
+- \`{powered_by}\` - Branding text ("Powered by Disruptors Co")
+
+---
 
 ### Full Report Content
-- \`{report_content}\` - The entire formatted report (all 11 sections)
+- \`{report_content}\` - The entire report with cleaned formatting
 
-### Individual Sections (extracted from report)
+---
+
+### Individual Sections
+Each section has markdown cleaned for Word:
+
 - \`{executive_summary}\` - Section 1: Executive Summary
 - \`{research_context}\` - Section 2: Research Context and Innovation
 - \`{unmet_need}\` - Section 3: Unmet Need and Australian Relevance
@@ -64,6 +76,8 @@ const PLACEHOLDER_DOCS = `
 - \`{data_gaps_section}\` - Section 10: Data Gaps and Validation Needs
 - \`{references_section}\` - Section 11: References
 
+---
+
 ### Loop Structures
 
 #### Citations/Sources
@@ -74,7 +88,7 @@ const PLACEHOLDER_DOCS = `
 {/sources}
 \`\`\`
 
-#### Tables
+#### Tables (cleaned text format)
 \`\`\`
 {#tables}
 {title}
@@ -91,6 +105,8 @@ Needed: {needed_source}
 {/data_gaps}
 \`\`\`
 
+---
+
 ### Conditional Blocks
 - \`{#has_sources}...{/has_sources}\`
 - \`{#has_tables}...{/has_tables}\`
@@ -102,8 +118,9 @@ Needed: {needed_source}
 
 ### Minimal Template
 \`\`\`
-{grant_name}
-Generated: {generated_date} | Version {version}
+{report_title}
+Prepared for: {grant_name}
+Date: {generated_date} | Version {version}
 
 {report_content}
 
@@ -112,13 +129,13 @@ Generated: {generated_date} | Version {version}
 
 ### Structured Template
 \`\`\`
-{grant_name}
+{report_title}
 {application_title}
 
 EXECUTIVE SUMMARY
 {executive_summary}
 
-RESEARCH CONTEXT
+RESEARCH CONTEXT AND INNOVATION
 {research_context}
 
 MARKET SIZING
@@ -133,8 +150,18 @@ REFERENCES
 
 {powered_by}
 \`\`\`
-`;
 
+---
+
+## Formatting Notes
+
+• Markdown headings (## 1. Title) are stripped - add your own styled headings in Word
+• **Bold** and *italic* markers are removed, text is kept
+• Bullets (- item) become • item
+• Links [text](url) become text (url)
+• Tables are converted to pipe-separated text for clean display
+• Design your Word template with proper heading styles for best results
+`;
 export function DocxTemplateUploader() {
   const { data: templates, isLoading } = useDocxTemplates();
   const uploadMutation = useUploadDocxTemplate();

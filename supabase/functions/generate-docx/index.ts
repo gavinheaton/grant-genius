@@ -43,6 +43,60 @@ function ensureArray<T>(data: T[] | undefined): T[] {
   return Array.isArray(data) ? data : [];
 }
 
+// Clean markdown formatting to produce readable plain text for DOCX
+function cleanMarkdown(text: string): string {
+  if (!text) return "";
+  
+  return text
+    // Remove heading prefixes (## 1. Title -> Title)
+    .replace(/^#{1,6}\s*\d*\.?\s*/gm, '')
+    // Convert bold markers to plain text (**text** -> text)
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    // Convert italic markers to plain text (*text* -> text)
+    .replace(/(?<!\*)\*(?!\*)(.*?)\*(?!\*)/g, '$1')
+    // Convert markdown links to text with URL ([text](url) -> text (url))
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+    // Convert bullet markers to bullet character (- item -> • item)
+    .replace(/^[-*]\s+/gm, '• ')
+    // Convert numbered lists to clean format (1. item -> 1. item) - keep as is
+    // Remove inline code backticks (`code` -> code)
+    .replace(/`([^`]+)`/g, '$1')
+    // Remove horizontal rules (--- or ***)
+    .replace(/^[-*]{3,}$/gm, '')
+    // Clean up multiple blank lines
+    .replace(/\n{3,}/g, '\n\n')
+    // Trim each line
+    .split('\n')
+    .map(line => line.trim())
+    .join('\n')
+    .trim();
+}
+
+// Convert markdown table to plain text format
+function cleanMarkdownTable(markdown: string): string {
+  if (!markdown) return "";
+  
+  const lines = markdown.split('\n').filter(l => l.trim());
+  const result: string[] = [];
+  
+  for (const line of lines) {
+    // Skip separator lines (|---|---|)
+    if (/^\|[-:\s|]+\|$/.test(line)) continue;
+    
+    // Parse table row
+    const cells = line
+      .split('|')
+      .map(cell => cell.trim())
+      .filter(cell => cell.length > 0);
+    
+    if (cells.length > 0) {
+      result.push(cells.join(' | '));
+    }
+  }
+  
+  return result.join('\n');
+}
+
 // Extract a section from markdown by its title pattern (e.g., "## 1. Executive Summary")
 function extractSection(markdown: string, sectionNumber: number, sectionTitle: string): string {
   if (!markdown) return "";
@@ -56,9 +110,9 @@ function extractSection(markdown: string, sectionNumber: number, sectionTitle: s
   return match ? match[0].trim() : "";
 }
 
-// Extract all 11 sections from the report markdown
-function extractAllSections(markdown: string): Record<string, string> {
-  return {
+// Extract all 11 sections from the report markdown and clean for DOCX
+function extractAllSectionsClean(markdown: string): Record<string, string> {
+  const sections = {
     executive_summary: extractSection(markdown, 1, "Executive Summary"),
     research_context: extractSection(markdown, 2, "Research Context and Innovation"),
     unmet_need: extractSection(markdown, 3, "Unmet Need and Australian Relevance"),
@@ -71,6 +125,13 @@ function extractAllSections(markdown: string): Record<string, string> {
     data_gaps_section: extractSection(markdown, 10, "Data Gaps and Validation Needs"),
     references_section: extractSection(markdown, 11, "References"),
   };
+  
+  // Clean each section from markdown to plain text
+  const cleanSections: Record<string, string> = {};
+  for (const [key, value] of Object.entries(sections)) {
+    cleanSections[key] = cleanMarkdown(value);
+  }
+  return cleanSections;
 }
 
 Deno.serve(async (req) => {
@@ -199,7 +260,6 @@ Deno.serve(async (req) => {
     const grantName = (report.applications as any)?.grant_versions?.grants?.name || "Research Report";
     const content = (report.content_json || {}) as ReportContent;
     const citations = (report.citations_json || []) as Array<{ title: string; url: string; accessed?: string }>;
-    const todayFormatted = formatDate(new Date().toISOString());
 
     // Check if we have the new assembled report structure
     const assembledReport = content.assembledReport;
@@ -207,33 +267,33 @@ Deno.serve(async (req) => {
     let templateData: Record<string, any>;
 
     if (assembledReport?.report_markdown) {
-      // New structure: use assembledReport
-      const sections = extractAllSections(assembledReport.report_markdown);
+      // New structure: use assembledReport with cleaned markdown
+      const cleanSections = extractAllSectionsClean(assembledReport.report_markdown);
       
       templateData = {
-        // Cover page / header info
+        // Cover page / header info (plain text)
         grant_name: grantName,
         application_title: (report.applications as any)?.title || grantName,
         report_title: assembledReport.title || `${grantName} Research Report`,
         generated_date: formatDate(report.created_at),
         version: report.version_number,
 
-        // Full report content (markdown as text)
-        report_content: assembledReport.report_markdown,
+        // Full report content (cleaned markdown)
+        report_content: cleanMarkdown(assembledReport.report_markdown),
 
-        // Individual sections extracted from markdown
-        ...sections,
+        // Individual sections (cleaned markdown)
+        ...cleanSections,
 
-        // Tables (loop)
+        // Tables (loop) - cleaned for readability
         tables: ensureArray(assembledReport.tables).map((table, idx) => ({
           index: idx + 1,
           title: table.title,
-          markdown: table.markdown,
+          markdown: cleanMarkdownTable(table.markdown),
           section: table.section,
         })),
         has_tables: ensureArray(assembledReport.tables).length > 0,
 
-        // Sources/Citations (loop) - from assembled report
+        // Sources/Citations (loop)
         sources: ensureArray(assembledReport.all_sources).map((source, idx) => ({
           index: idx + 1,
           id: source.id,
@@ -321,6 +381,17 @@ Deno.serve(async (req) => {
         has_tables: false,
         data_gaps: [],
         has_data_gaps: false,
+
+        // Empty sections for legacy reports
+        executive_summary: "",
+        unmet_need: "",
+        commercialisation_pathways: "",
+        competitive_landscape: "",
+        market_sizing: "",
+        australian_partners: "",
+        risks_mitigations: "",
+        data_gaps_section: "",
+        references_section: "",
 
         // Branding
         powered_by: "Powered by Disruptors Co",
