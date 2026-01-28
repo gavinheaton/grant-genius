@@ -13,11 +13,15 @@ function getModelForStep(stepNumber: number): string {
   // Steps 1-3: Context extraction, basic search - use lighter model
   // Steps 4-7: Complex market analysis - use heavier model
   // Steps 8-10: Summary and formatting - use lighter model
+  // Step 11: Final assembly - use most capable model
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
   if (stepNumber <= 7) {
     return "google/gemini-3-flash-preview";
+  }
+  if (stepNumber === 11) {
+    return "google/gemini-3-pro-preview";
   }
   return "google/gemini-2.5-flash-lite";
 }
@@ -303,9 +307,9 @@ serve(async (req) => {
       );
     }
 
-    // 10-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-9
+    // 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10
     const resumeFromStep = reportRun.current_step;
-    if (resumeFromStep < 1 || resumeFromStep > 9 || reportRun.status !== "pending") {
+    if (resumeFromStep < 1 || resumeFromStep > 10 || reportRun.status !== "pending") {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -353,9 +357,9 @@ serve(async (req) => {
 });
 
 /**
- * 10-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
- * This function is called for steps 2-10.
- * Step 10 completes the report instead of checkpointing.
+ * 11-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
+ * This function is called for steps 2-11.
+ * Step 11 completes the report instead of checkpointing.
  */
 async function processSingleStep(
   reportRunId: string,
@@ -414,6 +418,17 @@ async function processSingleStep(
     economicImpact: String(reportContent.economicImpact || ""),
     competitorTable: String(reportContent.competitorTable || ""),
     partnerBusinesses: String(reportContent.partnerBusinesses || ""),
+    // Assembly variables (JSON stringified for Step 11)
+    step1: JSON.stringify(reportContent.researchContext || {}),
+    step2: JSON.stringify(reportContent.competitorResearch || {}),
+    step3: JSON.stringify(reportContent.marketSegments || {}),
+    step4: JSON.stringify(reportContent.existingCompetitors || {}),
+    step5: JSON.stringify(reportContent.tam || {}),
+    step6: JSON.stringify(reportContent.sam || {}),
+    step7: JSON.stringify(reportContent.som || {}),
+    step8: JSON.stringify(reportContent.economicImpact || {}),
+    step9: JSON.stringify(reportContent.competitorTable || {}),
+    step10: JSON.stringify(reportContent.partnerBusinesses || {}),
   });
 
   // Helper function to get prompt for a step
@@ -612,9 +627,9 @@ Fill in with specific comparisons.`;
         break;
 
       case 10:
-        // Step 10: Partner Businesses - FINAL STEP
+        // Step 10: Partner Businesses
         await executeStep(supabase, reportRunId, 10, async () => {
-          const partnerPrompt = `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
+          const partnerPrompt = getStepPrompt(10, `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
 
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
@@ -628,11 +643,91 @@ Market Segments: ${reportContent.marketSegments}
    - License the technology
    - Invest in the venture
 
-Use the ANZSIC hierarchy for classification.`;
+Use the ANZSIC hierarchy for classification.`);
 
           const partnerResult = await callAIWithRetry(partnerPrompt, 10, systemPrompt, getStepModel(10));
           reportContent.partnerBusinesses = partnerResult;
           return { partners: partnerResult };
+        });
+        break;
+
+      case 11:
+        // Step 11: Assemble Final Report - FINAL STEP
+        await executeStep(supabase, reportRunId, 11, async () => {
+          const defaultAssemblyPrompt = `You are assembling a final grant report for Australian government assessors.
+
+Grant: {{grantName}} ({{grantVersionLabel}})
+
+## STEP OUTPUTS (raw JSON from research pipeline)
+
+Step 1 - Research Context: {{step1}}
+Step 2 - Competitor Research: {{step2}}
+Step 3 - Market Segments: {{step3}}
+Step 4 - Existing Competitors: {{step4}}
+Step 5 - TAM: {{step5}}
+Step 6 - SAM: {{step6}}
+Step 7 - SOM: {{step7}}
+Step 8 - Economic Impact: {{step8}}
+Step 9 - Competitor Table: {{step9}}
+Step 10 - Partner Businesses: {{step10}}
+
+## TASK
+
+Parse and merge these outputs into ONE coherent report for Australian government grant assessors.
+
+RULES:
+- Use ONLY validated facts from step outputs
+- Every numeric claim must have a citation marker [S#]
+- If an output contains an assumption, label it (High/Med/Low confidence)
+- Remove internal process phrasing ("in Step X", "your instructions")
+- Eliminate placeholders - add missing items to Data Gaps section
+
+## MANDATORY REPORT STRUCTURE
+
+1. Executive Summary (8-12 bullets, each with [S#] citation)
+2. Research Context and Innovation
+3. Unmet Need and Australian Relevance
+4. Commercialisation Pathways (3 Segments: product, customer, value prop, AU angle, GTM hypothesis)
+5. Competitive Landscape and Differentiation (2-5 comparators per segment with evidence)
+6. Market Sizing (TAM/SAM/SOM consolidated table + Assumptions table)
+7. Indicative Economic Impact to Australia (2+ quantified pathways)
+8. Potential Australian Partners (ANZSIC mapping + candidates table)
+9. Key Risks and Mitigations
+10. Data Gaps and Validation Needs
+11. References (MLA, deduplicated by URL, with Accessed date)
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON with this schema:
+{
+  "title": string,
+  "report_markdown": string,
+  "tables": [{"title": string, "markdown": string, "section": string}],
+  "all_sources": [{"id": "S1", "mla": string, "url": string}],
+  "data_gaps": [{"gap": string, "why_missing": string, "needed_source": string}]
+}
+
+STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.`;
+
+          const assemblyPrompt = getStepPrompt(11, defaultAssemblyPrompt);
+          const assemblyResult = await callAIWithRetry(assemblyPrompt, 11, systemPrompt, getStepModel(11));
+          
+          // Parse the JSON response
+          let parsedReport;
+          try {
+            parsedReport = JSON.parse(assemblyResult);
+          } catch {
+            // If JSON parsing fails, store raw output
+            parsedReport = { 
+              report_markdown: assemblyResult, 
+              tables: [], 
+              all_sources: [], 
+              data_gaps: [] 
+            };
+          }
+          
+          reportContent.assembledReport = parsedReport;
+          return { assembledReport: parsedReport };
         });
 
         // FINAL STEP: Create the report and mark as complete
@@ -649,11 +744,11 @@ Use the ANZSIC hierarchy for classification.`;
           emailOnComplete
         );
         
-        console.log(`10-PHASE: Report run ${reportRunId} completed successfully`);
+        console.log(`11-PHASE: Report run ${reportRunId} completed successfully`);
         return; // No checkpoint needed - we're done
     }
 
-    // For steps 2-9: Save checkpoint and exit
+    // For steps 2-10: Save checkpoint and exit
     // Frontend will detect pending status and call resume-report-run again
     await supabase
       .from("report_runs")
@@ -665,10 +760,10 @@ Use the ANZSIC hierarchy for classification.`;
       })
       .eq("id", reportRunId);
 
-    console.log(`10-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
+    console.log(`11-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
 
   } catch (error) {
-    console.error(`10-PHASE: Step ${nextStep} failed:`, error);
+    console.error(`11-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
     
@@ -751,7 +846,7 @@ async function createFinalReport(
     .from("report_runs")
     .update({
       status: "completed",
-      current_step: 10,
+      current_step: 11,
       completed_at: new Date().toISOString(),
     })
     .eq("id", reportRunId);
