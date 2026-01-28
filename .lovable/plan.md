@@ -1,184 +1,105 @@
 
-# Fix: Report Generation Fails at Step 0 Cannot Restart
+Goal
+- Fix the “generation timed out and would not restart” loop where the run gets stuck at the final stage and clicking “Try Again” causes repeated `resume-report-run` 400 errors.
 
-## Problem Summary
+What’s happening (confirmed by backend data)
+- There is an active report run for your application with:
+  - `status = pending`
+  - `current_step = 11`
+  - no `reports` row created for that `report_run_id`
+- `report_run_steps.step_number = 11` is `running` and never completed.
+- When you click “Try Again”, the frontend calls `resume-report-run`, but that function only allows `current_step` in `1..10` (because it treats `current_step` as “checkpoint step”, and the next executed step is `current_step + 1`).
+- Result: 400 “not a valid checkpoint” and the UI can’t recover.
 
-When report generation fails during the initial Step 1 (before any checkpoint is saved), the database state shows:
-- `current_step: 0`
-- `status: pending` (or failed/stalled)
+Root cause (code-level)
+- Step 11 is “special”: it runs and then should create a final report + mark the run completed.
+- Step 11 can stall/timeout (edge runtime shutdown / long model call / network), leaving:
+  - report_runs.current_step updated to 11 (because executeStep updates it when a step starts/runs/completes)
+  - report_runs.status sometimes still pending (because status updates aren’t consistently checked/handled)
+  - report_run_steps step 11 stuck in “running”
+  - no report created
+- The retry logic doesn’t have a branch for “final step got stuck”.
 
-Clicking "Try Again" calls `retryFromFailedStep`, which invokes `resume-report-run`. However, the backend validation at line 312 rejects any request where `current_step < 1`:
+Solution overview
+A) Backend: make `resume-report-run` able to recover “stuck at step 11 but not completed”
+- Add “final-step recovery” logic before the existing validation:
+  1) Detect “final step stuck” state:
+     - report_run.current_step >= 11 AND (no report exists for this report_run_id)
+  2) Convert that state into a resumable checkpoint:
+     - treat it as “resume from step 10” (so the next step executed is step 11 again)
+  3) Clean up the step 11 record so the UI + backend aren’t stuck in “running” forever:
+     - set report_run_steps(step_number=11) back to pending (or failed then pending) and clear started/completed/error fields if appropriate
+  4) Ensure the report run status is set to “running” (and this time handle errors properly), then start processing step 11 again.
 
-```javascript
-if (resumeFromStep < 1 || resumeFromStep > 10 || reportRun.status !== "pending") {
-  return 400 error; // "Report run is not at a valid checkpoint"
-}
-```
+B) Frontend: handle “step 11 stuck” in Try Again and avoid auto-resume spam
+- Update `retryFromFailedStep` in `src/hooks/useReportGeneration.ts` to add a third branch:
+  - If `current_step === 0`: cancel + restart (already implemented)
+  - If `1 <= current_step <= 10`: resume from checkpoint (existing behavior)
+  - If `current_step >= 11`:
+    - call `resume-report-run` directly (after we implement backend recovery), OR set status to pending then call resume
+    - show a toast like “Retrying final assembly…” instead of “Resuming from last checkpoint”
+- Additionally, after cancel+restart, explicitly clear `resumeAttemptedRef` and reset `activeRun` locally to prevent lingering state from triggering resume calls tied to the old run.
 
-This creates an infinite retry loop because the frontend keeps trying to resume from an invalid checkpoint.
+C) Hardening: ensure step 11 can’t silently fail to finalize
+- In `createFinalReport()` inside `resume-report-run`:
+  - explicitly check `{ error }` responses for:
+    - inserting `reports`
+    - updating `report_runs` to completed
+    - updating `applications` status
+  - if any of those fail, throw so the outer try/catch marks the run failed (and refunds appropriately).
+- Add a “max wall-clock” protection:
+  - if step 11 is “running” for > X minutes, treat it as stalled and allow re-run; log a clear message.
 
-## Solution
+Implementation steps (exact files)
+1) Backend function changes
+- File: `supabase/functions/resume-report-run/index.ts`
+  - Add logic near the top (right after fetching reportRun) to:
+    - if `reportRun.current_step >= 11`:
+      - check if a `reports` row exists for `report_run_id = reportRunId`
+      - if no report exists:
+        - set `effectiveResumeFromStep = 10` (instead of rejecting)
+        - reset step 11 row in `report_run_steps` (status -> pending, clear timestamps/error)
+        - proceed as if resuming from step 10
+      - if a report exists:
+        - return success response advising frontend to refresh (run is already done) OR mark run completed if needed
+  - Change validation to use `effectiveResumeFromStep` (not raw `reportRun.current_step`)
+  - Improve safety: check and handle errors on the “set status running” update.
 
-The fix requires changes in both the frontend and backend to properly handle the `current_step: 0` case:
+2) Frontend retry improvements
+- File: `src/hooks/useReportGeneration.ts`
+  - In `retryFromFailedStep`, extend to handle `current_step >= 11`:
+    - Don’t attempt “resume from checkpoint” in the old meaning; instead:
+      - call `resume-report-run` and let backend re-run final step
+      - optionally reset run status to pending first (only if needed)
+    - show an appropriate toast (“Retrying final report assembly…”)
+  - After the “cancel & restart” branch:
+    - clear `resumeAttemptedRef.current`
+    - setActiveRun(null) before calling `startGeneration()` to prevent any transient “pending” state from triggering resume logic against the old run id.
 
-### 1. Frontend: Differentiate Between "Restart" and "Resume"
+3) Verification / testing (in Test environment)
+- Create a report run and let it progress to step 11.
+- Simulate a stall (or use an already-stuck run).
+- Click “Try Again”.
+Expected:
+  - No repeated “Resuming report generation…” spam
+  - No 400 from `resume-report-run`
+  - Step 11 restarts and completes
+  - A `reports` row is created for the run
+  - `report_runs.status` becomes `completed`
+- Regression checks:
+  - Step 0 failure still cancels + restarts cleanly.
+  - Step 2-10 failures still resume from the last checkpoint.
+  - A fully completed run doesn’t restart; it just shows the report.
 
-When `current_step === 0`, the system should start a **new** report generation rather than try to resume. The `retryFromFailedStep` function needs to:
+Why this is the best fix
+- It preserves user progress (steps 1–10) and only re-runs the final assembly.
+- It resolves the current invalid state (`current_step = 11`, no report) without requiring manual backend intervention.
+- It closes the gap between “checkpoint model” (1–10) and “finalization step” (11).
 
-- If `current_step > 0`: Call `resume-report-run` (existing behavior)
-- If `current_step === 0`: Cancel the stuck run, refund the credit, then call `generate-report` again
+Notes / edge cases handled
+- If step 11 succeeded but the final report insert failed, we will now fail loudly and mark the run failed (instead of leaving it half-finished).
+- If multiple resume calls happen concurrently, step 11 reset + “running” status update will reduce duplicate work; we can also add a simple “lock” check later if needed.
 
-**File: `src/hooks/useReportGeneration.ts`**
-
-Modify the `retryFromFailedStep` function to check the current step and either:
-1. Cancel the old run and start fresh (for step 0)
-2. Resume from checkpoint (for step 1-10)
-
-### 2. Backend: Better Error Messaging
-
-Update `resume-report-run` to return a more specific error message when `current_step === 0`, indicating that a fresh start is required rather than a resume.
-
-**File: `supabase/functions/resume-report-run/index.ts`**
-
-Add a specific check before the general validation:
-```typescript
-if (resumeFromStep === 0) {
-  return new Response(
-    JSON.stringify({ 
-      error: "No checkpoint available", 
-      code: "NO_CHECKPOINT",
-      message: "Step 1 did not complete. Please cancel this run and start a new report."
-    }),
-    { status: 400 }
-  );
-}
-```
-
-### 3. Prevent Auto-Resume Loop
-
-The frontend auto-resume logic in `useReportGeneration.ts` line 239 already handles this correctly (only auto-resumes if `current_step >= 1`), but the user can manually trigger `retryFromFailedStep` which causes the loop.
-
-## Detailed Implementation
-
-### File: `src/hooks/useReportGeneration.ts`
-
-Update the `retryFromFailedStep` function:
-
-```typescript
-const retryFromFailedStep = useCallback(async (runId: string) => {
-  try {
-    console.log("Retrying from failed step...");
-    setIsGenerating(true);
-
-    // Fetch the current run to check the step
-    const { data: run, error: fetchError } = await supabase
-      .from("report_runs")
-      .select("current_step")
-      .eq("id", runId)
-      .single();
-
-    if (fetchError || !run) {
-      throw new Error("Could not find report run");
-    }
-
-    // If Step 1 never completed, we need to start fresh
-    if (run.current_step === 0) {
-      console.log("Step 1 never completed, cancelling and restarting...");
-      
-      // Cancel the stuck run (this refunds the credit)
-      await supabase.functions.invoke("cancel-report-run", {
-        body: { reportRunId: runId },
-      });
-
-      // Start a fresh generation
-      await startGeneration();
-      return;
-    }
-
-    // Otherwise, resume from checkpoint (existing logic)
-    const { error: updateError } = await supabase
-      .from("report_runs")
-      .update({ status: "pending" })
-      .eq("id", runId);
-
-    if (updateError) {
-      throw updateError;
-    }
-
-    const { error } = await supabase.functions.invoke("resume-report-run", {
-      body: { reportRunId: runId },
-    });
-
-    if (error) {
-      throw error;
-    }
-
-    toast({
-      title: "Resuming generation",
-      description: "Continuing from the last successful step.",
-    });
-
-    checkActiveRun();
-  } catch (error) {
-    console.error("Error retrying from failed step:", error);
-    setIsGenerating(false);
-    toast({
-      title: "Retry failed",
-      description: "Failed to resume report generation. Please try again.",
-      variant: "destructive",
-    });
-  }
-}, [toast, checkActiveRun, startGeneration]);
-```
-
-### File: `supabase/functions/resume-report-run/index.ts`
-
-Update the validation section (around line 310-317) for better error messaging:
-
-```typescript
-// 11-PHASE ARCHITECTURE: Accept any checkpoint from steps 1-10
-const resumeFromStep = reportRun.current_step;
-
-// Specific error for step 0 (Step 1 never completed)
-if (resumeFromStep === 0) {
-  return new Response(
-    JSON.stringify({ 
-      error: "No checkpoint available. Step 1 did not complete. Please cancel this run and start a new report.",
-      code: "NO_CHECKPOINT"
-    }),
-    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
-}
-
-if (resumeFromStep < 1 || resumeFromStep > 10 || reportRun.status !== "pending") {
-  return new Response(
-    JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
-    { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
-}
-```
-
-## Testing Plan
-
-1. **Test Step 0 Failure Recovery**:
-   - Create a new report
-   - Simulate Step 1 failure (network timeout, etc.)
-   - Click "Try Again"
-   - Verify: Old run is cancelled, new run starts successfully
-
-2. **Test Normal Resume (Step 1+)**:
-   - Create a report that completes Step 1 then fails at Step 3
-   - Click "Try Again"
-   - Verify: Generation resumes from Step 3 checkpoint
-
-3. **Test No Infinite Loop**:
-   - Ensure clicking "Try Again" when at Step 0 does NOT result in repeated 400 errors
-
-## Summary of Changes
-
-| File | Change |
-|------|--------|
-| `src/hooks/useReportGeneration.ts` | Add logic to detect step 0 and restart fresh instead of resume |
-| `supabase/functions/resume-report-run/index.ts` | Add specific error message for step 0 case |
-
-This fix ensures users can always recover from a failed generation, whether it failed at Step 1 or any later step.
+Scope
+- No database schema changes required.
+- Only code changes to the backend function and the retry logic on the frontend.
