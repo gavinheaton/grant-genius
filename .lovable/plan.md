@@ -1,136 +1,111 @@
 
-# Fix AI-Generated Table Layout in Reports
 
-## Problem Identified
+# Add Admin User Functionality
 
-When the AI generates tables (particularly in the competitor comparison step), they are output as **markdown table syntax**:
+## Overview
+Enable Super Admins to add new admin users directly from the Admin Console. This allows inviting administrators without requiring them to first sign up as researchers.
 
-```
-| Feature | Our Solution | Competitor 1 | Competitor 2 |
-|---------|--------------|--------------|--------------|
-| Price   | $100         | $150         | $200         |
-```
+## Approach
 
-However, both the **ReportViewer** (in-app view) and **PdfReportRenderer** (PDF export) display this as raw text with `whitespace-pre-wrap`, resulting in poorly formatted, hard-to-read tables.
+There are two ways to add admin users:
 
-## Solution Overview
+**Option A: Promote Existing Users (Already Implemented)**
+The current system allows Super Admins to change a user's role from Researcher to Admin via the UserDetail page. This works for users who have already signed up.
 
-Add markdown table parsing to convert table syntax into proper HTML `<table>` elements for both viewing contexts.
+**Option B: Add New Admin Users (To Be Implemented)**
+Add an "Add Admin" button on the Users page that allows inviting a new user by email. This creates a profile and assigns an admin role immediately, then sends them a magic link to access the system.
 
 ## Implementation Details
 
-### 1. Create a Markdown Table Parser Utility
+### 1. Add "Add Admin" Button to Users Page
 
-Create a shared utility function that detects and parses markdown tables:
+Update `src/pages/admin/Users.tsx` to include:
+- An "Add Admin" button (visible only to Super Admins)
+- A dialog/modal for entering the new admin's details
 
-```text
-Location: src/lib/markdownUtils.ts (new file)
+### 2. Create Add Admin Dialog Component
 
-Function: parseMarkdownTables(content: string): string
-- Detect markdown table patterns using regex
-- Parse header row, separator row, and data rows
-- Generate styled HTML <table> with proper <thead> and <tbody>
-- Handle alignment indicators (:--- left, :--: center, ---: right)
-- Return content with tables converted to HTML
-```
+Create a new component `src/components/admin/AddAdminDialog.tsx`:
+- Form with email input (required)
+- Optional full name field
+- Role selection (Admin or Super Admin) - restricted to Super Admins
+- Submit triggers the invitation process
 
-### 2. Update ReportViewer Component
+### 3. Create Edge Function for Admin Invitation
 
-Modify `src/components/workspace/ReportViewer.tsx`:
+Create `supabase/functions/invite-admin/index.ts`:
+- Validates the requesting user is a Super Admin
+- Uses Supabase Admin API to create a new user
+- Creates profile record with provided details
+- Creates user_roles record with selected role
+- Triggers magic link email for the new admin
 
-```text
-Changes to TextContent component:
-- Import the parseMarkdownTables utility
-- Apply table parsing before rendering
-- Add CSS styles for rendered tables within prose container
-```
+This requires using the Supabase service role key to create users programmatically.
 
-The TextContent component will transform markdown tables into styled HTML tables that match the application's design system.
-
-### 3. Update PdfReportRenderer Component
-
-Modify `src/components/workspace/PdfReportRenderer.tsx`:
+### 4. Update Users Page with Dialog Integration
 
 ```text
-Changes to formatContent function:
-- Import/include the table parsing logic
-- Convert markdown tables to styled HTML tables before other transformations
-- Apply inline styles for PDF compatibility (borders, padding, colors)
+Changes to src/pages/admin/Users.tsx:
+- Import AddAdminDialog component
+- Add state for dialog open/close
+- Add "Add Admin" button in the header (Super Admin only)
+- Handle successful invitation with toast and list refresh
 ```
 
-### 4. Table Styling Approach
+## Security Considerations
 
-For in-app viewing (ReportViewer):
-```text
-- Use Tailwind/shadcn table styles
-- Responsive with horizontal scroll on small screens
-- Alternating row colors for readability
-- Sticky headers for long tables
-```
+- Only Super Admins can add new admin users (enforced in edge function)
+- Edge function validates caller's role before proceeding
+- New admins receive a magic link - they still need to verify their email
+- All actions are logged to audit_logs table
 
-For PDF export (PdfReportRenderer):
-```text
-- Inline styles for html2canvas compatibility
-- Clear borders and cell padding
-- Primary color for header background
-- Sufficient contrast for print
-```
+## User Flow
 
-## Technical Implementation
+1. Super Admin clicks "Add Admin" button on Users page
+2. Dialog opens with email and role selection
+3. Super Admin enters details and submits
+4. Edge function:
+   - Validates Super Admin permission
+   - Creates user in auth.users
+   - Creates profile record
+   - Creates user_roles record with selected role
+   - Sends magic link email
+5. New admin receives email, clicks link, gains access
+6. Users list refreshes to show new admin
 
-### Markdown Table Parser Logic
-
-```text
-Pattern to match:
-1. Header row: | Column1 | Column2 | Column3 |
-2. Separator:  |---------|---------|---------|
-3. Data rows:  | Data1   | Data2   | Data3   |
-
-Algorithm:
-1. Split content by lines
-2. Identify table blocks (consecutive lines starting with |)
-3. Parse header from first line
-4. Skip separator line (contains only |, -, :, spaces)
-5. Parse data rows
-6. Generate HTML table structure
-7. Replace original markdown with HTML
-```
-
-### File Changes Summary
+## File Changes Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| `src/lib/markdownUtils.ts` | CREATE | Markdown table parser utility |
-| `src/components/workspace/ReportViewer.tsx` | MODIFY | Apply table parsing to TextContent |
-| `src/components/workspace/PdfReportRenderer.tsx` | MODIFY | Add table parsing to formatContent |
+| `src/components/admin/AddAdminDialog.tsx` | CREATE | Dialog component for adding admin users |
+| `src/pages/admin/Users.tsx` | MODIFY | Add button and dialog integration |
+| `supabase/functions/invite-admin/index.ts` | CREATE | Edge function for secure user creation |
 
-### Sample Output
+## Technical Details
 
-Before (raw markdown in UI):
+### Edge Function Implementation
+
+```text
+invite-admin/index.ts:
+1. Verify auth header and extract user from JWT
+2. Check if requester has super_admin role using service client
+3. Validate email format
+4. Create user using supabase.auth.admin.createUser()
+5. Insert profile record
+6. Insert user_roles record with specified role
+7. Generate and send magic link
+8. Return success response with new user data
 ```
-| Feature | Our Solution | Competitor A |
-|---------|--------------|--------------|
-| Price   | $100         | $150         |
+
+### Dialog Form Fields
+
+```text
+- Email (required, email validation)
+- Full Name (optional)
+- Role (select: Admin, Super Admin)
 ```
 
-After (rendered HTML table):
+### Button Placement
 
-| Feature | Our Solution | Competitor A |
-|---------|--------------|--------------|
-| Price   | $100         | $150         |
+The "Add Admin" button will be placed in the Users page header, next to the search and filter controls, visible only when `isSuperAdmin` is true.
 
-## Edge Cases to Handle
-
-1. **Tables with alignment markers** (`:---`, `:---:`, `---:`)
-2. **Tables embedded in paragraphs** (text before/after)
-3. **Empty cells** in tables
-4. **Bold/italic text inside cells** (`**bold**`, `*italic*`)
-5. **Multiple tables in same content block**
-6. **Malformed tables** (uneven columns) - graceful fallback
-
-## Additional Improvements
-
-1. **Better visual hierarchy** for complex tables
-2. **Zebra striping** for easier row scanning
-3. **Responsive design** with horizontal scroll wrapper
-4. **Header highlighting** using template colors in PDF
