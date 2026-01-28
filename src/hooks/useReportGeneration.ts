@@ -306,7 +306,7 @@ export function useReportGeneration(
       
       // Only resume if we haven't already attempted this specific checkpoint
       if (!resumeAttemptedRef.current.has(attemptKey)) {
-        if (activeRun.current_step >= 1 && activeRun.current_step <= 10) {
+        if (activeRun.current_step >= 1 && activeRun.current_step <= 11) {
           resumeAttemptedRef.current.add(attemptKey);
           resumeFromCheckpoint(activeRun.id);
         }
