@@ -71,6 +71,22 @@ const VARIABLE_CATEGORIES = [
       { name: "{{som}}", description: "Output from SOM calculation (Step 7)" },
       { name: "{{economicImpact}}", description: "Output from economic impact (Step 8)" },
       { name: "{{competitorTable}}", description: "Output from competitor table (Step 9)" },
+      { name: "{{partnerBusinesses}}", description: "Output from partner businesses (Step 10)" },
+    ],
+  },
+  {
+    name: "Assembly Variables (Step 11 only - JSON stringified)",
+    variables: [
+      { name: "{{step1}}", description: "JSON from Step 1 (Research Context)" },
+      { name: "{{step2}}", description: "JSON from Step 2 (Competitor Research)" },
+      { name: "{{step3}}", description: "JSON from Step 3 (Market Segments)" },
+      { name: "{{step4}}", description: "JSON from Step 4 (Existing Competitors)" },
+      { name: "{{step5}}", description: "JSON from Step 5 (TAM)" },
+      { name: "{{step6}}", description: "JSON from Step 6 (SAM)" },
+      { name: "{{step7}}", description: "JSON from Step 7 (SOM)" },
+      { name: "{{step8}}", description: "JSON from Step 8 (Economic Impact)" },
+      { name: "{{step9}}", description: "JSON from Step 9 (Competitor Table)" },
+      { name: "{{step10}}", description: "JSON from Step 10 (Partner Businesses)" },
     ],
   },
 ];
@@ -289,7 +305,7 @@ export default function PromptBundleEdit() {
         <CardHeader>
           <CardTitle>Step Prompts</CardTitle>
           <CardDescription>
-            Configure the prompt for each of the 10 research steps.
+            Configure the prompt for each of the 11 research steps.
           </CardDescription>
         </CardHeader>
         <CardContent>

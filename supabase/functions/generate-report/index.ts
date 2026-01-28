@@ -18,6 +18,7 @@ const RESEARCH_STEPS = [
   { name: "economic_impact", description: "Analyzing Australian economic impact" },
   { name: "competitor_table", description: "Building competitor comparison" },
   { name: "partner_businesses", description: "Finding Australian partner businesses" },
+  { name: "assemble_report", description: "Assembling final grant report" },
 ];
 
 // Model selection based on step complexity
@@ -26,11 +27,15 @@ function getModelForStep(stepNumber: number): string {
   // Steps 1-3: Context extraction, basic search - use lighter model
   // Steps 4-7: Complex market analysis - use heavier model
   // Steps 8-10: Summary and formatting - use lighter model
+  // Step 11: Final assembly - use most capable model
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
   if (stepNumber <= 7) {
     return "google/gemini-3-flash-preview";
+  }
+  if (stepNumber === 11) {
+    return "google/gemini-3-pro-preview";
   }
   return "google/gemini-2.5-flash-lite";
 }

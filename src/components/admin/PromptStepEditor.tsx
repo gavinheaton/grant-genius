@@ -56,6 +56,7 @@ export function PromptStepEditor({
   const getDefaultModel = (stepNumber: number) => {
     if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
     if (stepNumber <= 7) return "google/gemini-3-flash-preview";
+    if (stepNumber === 11) return "google/gemini-3-pro-preview";
     return "google/gemini-2.5-flash-lite";
   };
 
