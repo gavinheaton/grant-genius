@@ -25,7 +25,14 @@ export interface Report {
 // 5 minutes stale threshold
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
-export function useReportGeneration(applicationId: string | undefined) {
+interface UseReportGenerationOptions {
+  onNoCredits?: () => void;
+}
+
+export function useReportGeneration(
+  applicationId: string | undefined,
+  options?: UseReportGenerationOptions
+) {
   const { toast } = useToast();
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeRun, setActiveRun] = useState<ReportRun | null>(null);
@@ -133,12 +140,17 @@ export function useReportGeneration(applicationId: string | undefined) {
           description: "The AI service is busy. Please wait a minute and try again.",
           variant: "destructive",
         });
-      } else if (errorMessage.includes("402")) {
+      } else if (
+        errorMessage.includes("402") || 
+        errorMessage.toLowerCase().includes("no report credits")
+      ) {
         toast({
-          title: "Service unavailable",
-          description: "Please add credits to your workspace and try again.",
+          title: "Report credits needed",
+          description: "You're out of credits! Purchase more to generate your report.",
           variant: "destructive",
         });
+        // Trigger purchase modal via callback
+        options?.onNoCredits?.();
       } else {
         toast({
           title: "Generation failed",
