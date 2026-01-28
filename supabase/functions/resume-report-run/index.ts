@@ -86,6 +86,93 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
   }
 }
 
+// Fetch grant context for prompt interpolation
+// deno-lint-ignore no-explicit-any
+async function fetchGrantContext(supabase: any, grantVersionId: string): Promise<{
+  name: string;
+  versionLabel: string;
+  guidelinesExcerpt: string;
+  formattedRubric: string;
+  summary: string;
+}> {
+  const MAX_GUIDELINES_LENGTH = 10000;
+  
+  try {
+    const { data, error } = await supabase
+      .from("grant_versions")
+      .select(`
+        version_number,
+        guidelines_raw_text,
+        ai_suggestions_json,
+        grant:grants!inner(name)
+      `)
+      .eq("id", grantVersionId)
+      .maybeSingle();
+
+    if (error || !data) {
+      console.log("Grant context not found for version:", grantVersionId);
+      return {
+        name: "",
+        versionLabel: "",
+        guidelinesExcerpt: "",
+        formattedRubric: "",
+        summary: "",
+      };
+    }
+
+    // Extract grant name
+    // deno-lint-ignore no-explicit-any
+    const grantData = data.grant as any;
+    const grantName = Array.isArray(grantData) ? grantData[0]?.name : grantData?.name || "";
+    const versionLabel = `v${data.version_number}`;
+
+    // Truncate guidelines
+    let guidelinesExcerpt = data.guidelines_raw_text || "";
+    if (guidelinesExcerpt.length > MAX_GUIDELINES_LENGTH) {
+      guidelinesExcerpt = guidelinesExcerpt.slice(0, MAX_GUIDELINES_LENGTH) + "\n\n[Guidelines truncated...]";
+    }
+
+    // Format rubric from ai_suggestions_json
+    let formattedRubric = "";
+    // deno-lint-ignore no-explicit-any
+    const suggestions = data.ai_suggestions_json as any;
+    if (suggestions?.rubric?.sections && Array.isArray(suggestions.rubric.sections)) {
+      formattedRubric = "Assessment Criteria:\n\n";
+      // deno-lint-ignore no-explicit-any
+      suggestions.rubric.sections.forEach((section: any, index: number) => {
+        const weight = section.weight ? ` (${section.weight}%)` : "";
+        formattedRubric += `${index + 1}. ${section.title || section.key}${weight}\n`;
+        if (Array.isArray(section.criteria)) {
+          section.criteria.forEach((criterion: string) => {
+            formattedRubric += `   - ${criterion}\n`;
+          });
+        }
+        formattedRubric += "\n";
+      });
+    }
+
+    // Get summary from ai_suggestions_json
+    const summary = suggestions?.summary || "";
+
+    return {
+      name: grantName,
+      versionLabel,
+      guidelinesExcerpt,
+      formattedRubric: formattedRubric.trim(),
+      summary,
+    };
+  } catch (e) {
+    console.error("Error fetching grant context:", e);
+    return {
+      name: "",
+      versionLabel: "",
+      guidelinesExcerpt: "",
+      formattedRubric: "",
+      summary: "",
+    };
+  }
+}
+
 // Interpolate variables in prompt template
 function interpolatePrompt(template: string, variables: Record<string, string>): string {
   let result = template;
@@ -292,17 +379,48 @@ async function processSingleStep(
   const systemPrompt = bundle?.system_prompt || DEFAULT_SYSTEM_PROMPT;
 
   const summary = inputs.summary as string || "";
+  const publicArticleUrl = inputs.publicArticleUrl as string || "";
+  const trl = inputs.trl as string || "";
+  const ipStatus = inputs.ipStatus as string || "";
+  
   const reportContent: Record<string, unknown> = { ...checkpointData };
   const citations = [...checkpointCitations];
   
   const nextStep = resumeFromStep + 1;
   console.log(`10-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
 
+  // Fetch grant context for prompt interpolation
+  const grantContext = await fetchGrantContext(supabase, grantVersionId);
+
+  // Build base interpolation variables including grant context
+  const getBaseVariables = (): Record<string, string> => ({
+    summary,
+    publicArticleUrl,
+    trl,
+    ipStatus,
+    grantName: grantContext.name,
+    grantVersionLabel: grantContext.versionLabel,
+    grantGuidelines: grantContext.guidelinesExcerpt,
+    grantRubric: grantContext.formattedRubric,
+    grantSummary: grantContext.summary,
+    // Step outputs (from checkpoint data)
+    researchContext: String(reportContent.researchContext || ""),
+    competitorResearch: String(reportContent.competitorResearch || ""),
+    marketSegments: String(reportContent.marketSegments || ""),
+    existingCompetitors: String(reportContent.existingCompetitors || ""),
+    tam: String(reportContent.tam || ""),
+    sam: String(reportContent.sam || ""),
+    som: String(reportContent.som || ""),
+    economicImpact: String(reportContent.economicImpact || ""),
+    competitorTable: String(reportContent.competitorTable || ""),
+    partnerBusinesses: String(reportContent.partnerBusinesses || ""),
+  });
+
   // Helper function to get prompt for a step
-  const getStepPrompt = (stepNum: number, defaultPrompt: string, variables: Record<string, string>) => {
+  const getStepPrompt = (stepNum: number, defaultPrompt: string) => {
     const stepConfig = bundle?.steps.get(stepNum);
     if (stepConfig?.prompt_template) {
-      return interpolatePrompt(stepConfig.prompt_template, variables);
+      return interpolatePrompt(stepConfig.prompt_template, getBaseVariables());
     }
     return defaultPrompt;
   };

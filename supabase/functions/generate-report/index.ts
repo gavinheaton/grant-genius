@@ -99,6 +99,93 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
   }
 }
 
+// Fetch grant context for prompt interpolation
+// deno-lint-ignore no-explicit-any
+async function fetchGrantContext(supabase: any, grantVersionId: string): Promise<{
+  name: string;
+  versionLabel: string;
+  guidelinesExcerpt: string;
+  formattedRubric: string;
+  summary: string;
+}> {
+  const MAX_GUIDELINES_LENGTH = 10000;
+  
+  try {
+    const { data, error } = await supabase
+      .from("grant_versions")
+      .select(`
+        version_number,
+        guidelines_raw_text,
+        ai_suggestions_json,
+        grant:grants!inner(name)
+      `)
+      .eq("id", grantVersionId)
+      .maybeSingle();
+
+    if (error || !data) {
+      console.log("Grant context not found for version:", grantVersionId);
+      return {
+        name: "",
+        versionLabel: "",
+        guidelinesExcerpt: "",
+        formattedRubric: "",
+        summary: "",
+      };
+    }
+
+    // Extract grant name
+    // deno-lint-ignore no-explicit-any
+    const grantData = data.grant as any;
+    const grantName = Array.isArray(grantData) ? grantData[0]?.name : grantData?.name || "";
+    const versionLabel = `v${data.version_number}`;
+
+    // Truncate guidelines
+    let guidelinesExcerpt = data.guidelines_raw_text || "";
+    if (guidelinesExcerpt.length > MAX_GUIDELINES_LENGTH) {
+      guidelinesExcerpt = guidelinesExcerpt.slice(0, MAX_GUIDELINES_LENGTH) + "\n\n[Guidelines truncated...]";
+    }
+
+    // Format rubric from ai_suggestions_json
+    let formattedRubric = "";
+    // deno-lint-ignore no-explicit-any
+    const suggestions = data.ai_suggestions_json as any;
+    if (suggestions?.rubric?.sections && Array.isArray(suggestions.rubric.sections)) {
+      formattedRubric = "Assessment Criteria:\n\n";
+      // deno-lint-ignore no-explicit-any
+      suggestions.rubric.sections.forEach((section: any, index: number) => {
+        const weight = section.weight ? ` (${section.weight}%)` : "";
+        formattedRubric += `${index + 1}. ${section.title || section.key}${weight}\n`;
+        if (Array.isArray(section.criteria)) {
+          section.criteria.forEach((criterion: string) => {
+            formattedRubric += `   - ${criterion}\n`;
+          });
+        }
+        formattedRubric += "\n";
+      });
+    }
+
+    // Get summary from ai_suggestions_json
+    const summary = suggestions?.summary || "";
+
+    return {
+      name: grantName,
+      versionLabel,
+      guidelinesExcerpt,
+      formattedRubric: formattedRubric.trim(),
+      summary,
+    };
+  } catch (e) {
+    console.error("Error fetching grant context:", e);
+    return {
+      name: "",
+      versionLabel: "",
+      guidelinesExcerpt: "",
+      formattedRubric: "",
+      summary: "",
+    };
+  }
+}
+
 // Interpolate variables in prompt template
 function interpolatePrompt(template: string, variables: Record<string, string>): string {
   let result = template;
@@ -323,6 +410,8 @@ serve(async (req) => {
     // 10-PHASE ARCHITECTURE: Phase 1 runs ONLY Step 1, then checkpoints
     processStep1Only(
       reportRun.id,
+      applicationId,
+      application.grant_version_id,
       inputs
     ).catch((e) => console.error("Background processing error:", e));
 
@@ -350,6 +439,8 @@ serve(async (req) => {
  */
 async function processStep1Only(
   reportRunId: string,
+  applicationId: string,
+  grantVersionId: string,
   inputs: Record<string, unknown>
 ) {
   const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
@@ -368,6 +459,9 @@ async function processStep1Only(
   const summary = inputs.summary as string;
   const trl = (inputs.trl as string) || "";
   const ipStatus = (inputs.ipStatus as string) || "";
+
+  // Fetch grant context for prompt interpolation
+  const grantContext = await fetchGrantContext(supabase, grantVersionId);
 
   const reportContent: Record<string, unknown> = {};
   const citations: Array<{ url: string; title: string; accessed: string }> = [];
@@ -416,14 +510,22 @@ async function processStep1Only(
       const stepConfig = bundle?.steps.get(1);
       let contextPrompt: string;
       
+      // Build interpolation variables including grant context
+      const interpolationVars = {
+        summary,
+        publicArticleUrl,
+        articleContent: articleContent.slice(0, 8000),
+        trl,
+        ipStatus,
+        grantName: grantContext.name,
+        grantVersionLabel: grantContext.versionLabel,
+        grantGuidelines: grantContext.guidelinesExcerpt,
+        grantRubric: grantContext.formattedRubric,
+        grantSummary: grantContext.summary,
+      };
+      
       if (stepConfig?.prompt_template) {
-        contextPrompt = interpolatePrompt(stepConfig.prompt_template, {
-          summary,
-          publicArticleUrl,
-          articleContent: articleContent.slice(0, 8000),
-          trl,
-          ipStatus,
-        });
+        contextPrompt = interpolatePrompt(stepConfig.prompt_template, interpolationVars);
       } else {
         // Fallback to hardcoded prompt
         contextPrompt = `You are analyzing research for commercialization potential.

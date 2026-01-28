@@ -38,17 +38,41 @@ const AVAILABLE_MODELS = [
   { value: "google/gemini-3-pro-preview", label: "Gemini 3 Pro Preview (Best)" },
 ];
 
-const AVAILABLE_VARIABLES = [
-  { name: "{{summary}}", description: "User's 100-word research summary" },
-  { name: "{{publicArticleUrl}}", description: "URL of the research article" },
-  { name: "{{articleContent}}", description: "Scraped content from the article (up to 8000 chars)" },
-  { name: "{{trl}}", description: "Technology Readiness Level (if provided)" },
-  { name: "{{ipStatus}}", description: "IP Status (if provided)" },
-  { name: "{{marketSegments}}", description: "Output from market segments step" },
-  { name: "{{existingCompetitors}}", description: "Output from competitors step" },
-  { name: "{{tam}}", description: "Output from TAM calculation step" },
-  { name: "{{sam}}", description: "Output from SAM calculation step" },
-  { name: "{{som}}", description: "Output from SOM calculation step" },
+const VARIABLE_CATEGORIES = [
+  {
+    name: "User Inputs",
+    variables: [
+      { name: "{{summary}}", description: "User's 100-word research summary" },
+      { name: "{{publicArticleUrl}}", description: "URL of the research article" },
+      { name: "{{articleContent}}", description: "Scraped content from the article (up to 8000 chars)" },
+      { name: "{{trl}}", description: "Technology Readiness Level (if provided)" },
+      { name: "{{ipStatus}}", description: "IP Status (if provided)" },
+    ],
+  },
+  {
+    name: "Grant Context",
+    variables: [
+      { name: "{{grantName}}", description: "Name of the grant being applied for" },
+      { name: "{{grantVersionLabel}}", description: "Version label (e.g., 'v1')" },
+      { name: "{{grantGuidelines}}", description: "Excerpt from grant guidelines (up to 10,000 chars)" },
+      { name: "{{grantRubric}}", description: "Formatted assessment criteria from AI analysis" },
+      { name: "{{grantSummary}}", description: "AI-generated summary of the grant" },
+    ],
+  },
+  {
+    name: "Step Outputs (available in later steps)",
+    variables: [
+      { name: "{{researchContext}}", description: "Output from context extraction (Step 1)" },
+      { name: "{{competitorResearch}}", description: "Output from competitor research (Step 2)" },
+      { name: "{{marketSegments}}", description: "Output from market segments step (Step 3)" },
+      { name: "{{existingCompetitors}}", description: "Output from competitors step (Step 4)" },
+      { name: "{{tam}}", description: "Output from TAM calculation (Step 5)" },
+      { name: "{{sam}}", description: "Output from SAM calculation (Step 6)" },
+      { name: "{{som}}", description: "Output from SOM calculation (Step 7)" },
+      { name: "{{economicImpact}}", description: "Output from economic impact (Step 8)" },
+      { name: "{{competitorTable}}", description: "Output from competitor table (Step 9)" },
+    ],
+  },
 ];
 
 export default function PromptBundleEdit() {
@@ -239,19 +263,24 @@ export default function PromptBundleEdit() {
             Use these placeholders in your prompts. They will be replaced with actual values at runtime.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {AVAILABLE_VARIABLES.map((variable) => (
-              <div key={variable.name} className="flex items-start gap-2 text-sm">
-                <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono">
-                  {variable.name}
-                </code>
-                <span className="text-muted-foreground text-xs">
-                  {variable.description}
-                </span>
+        <CardContent className="space-y-6">
+          {VARIABLE_CATEGORIES.map((category) => (
+            <div key={category.name}>
+              <h4 className="text-sm font-medium mb-3 text-foreground">{category.name}</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {category.variables.map((variable) => (
+                  <div key={variable.name} className="flex items-start gap-2 text-sm">
+                    <code className="bg-muted px-1.5 py-0.5 rounded text-xs font-mono shrink-0">
+                      {variable.name}
+                    </code>
+                    <span className="text-muted-foreground text-xs">
+                      {variable.description}
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          ))}
         </CardContent>
       </Card>
 
