@@ -170,13 +170,38 @@ export function useReportGeneration(applicationId: string | undefined) {
     }
   }, [toast]);
 
-  // Retry from failed step - resets status to pending and resumes
+  // Retry from failed step - either restart fresh (step 0) or resume from checkpoint (step 1-10)
   const retryFromFailedStep = useCallback(async (runId: string) => {
     try {
       console.log("Retrying from failed step...");
       setIsGenerating(true);
 
-      // Reset the run status to pending so resume-report-run can pick it up
+      // Fetch the current run to check the step
+      const { data: run, error: fetchError } = await supabase
+        .from("report_runs")
+        .select("current_step")
+        .eq("id", runId)
+        .single();
+
+      if (fetchError || !run) {
+        throw new Error("Could not find report run");
+      }
+
+      // If Step 1 never completed, we need to start fresh
+      if (run.current_step === 0) {
+        console.log("Step 1 never completed, cancelling and restarting...");
+        
+        // Cancel the stuck run (this refunds the credit)
+        await supabase.functions.invoke("cancel-report-run", {
+          body: { reportRunId: runId },
+        });
+
+        // Start a fresh generation
+        await startGeneration();
+        return;
+      }
+
+      // Otherwise, resume from checkpoint (steps 1-10)
       const { error: updateError } = await supabase
         .from("report_runs")
         .update({ status: "pending" })
@@ -186,7 +211,6 @@ export function useReportGeneration(applicationId: string | undefined) {
         throw updateError;
       }
 
-      // Now call resume to continue from the checkpoint
       const { error } = await supabase.functions.invoke("resume-report-run", {
         body: { reportRunId: runId },
       });
@@ -200,7 +224,6 @@ export function useReportGeneration(applicationId: string | undefined) {
         description: "Continuing from the last successful step.",
       });
 
-      // Start polling for updates
       checkActiveRun();
     } catch (error) {
       console.error("Error retrying from failed step:", error);
@@ -211,7 +234,7 @@ export function useReportGeneration(applicationId: string | undefined) {
         variant: "destructive",
       });
     }
-  }, [toast, checkActiveRun]);
+  }, [toast, checkActiveRun, startGeneration]);
 
   // Poll for updates when generating
   useEffect(() => {
