@@ -1,147 +1,92 @@
 
 
-# Improved Credit-Required Messaging
+# Fix Step 11 Stuck Processing
 
-## Problem Statement
+## Problem Summary
 
-When a paying customer runs out of report credits and tries to generate:
-1. The current toast shows "Service unavailable" - confusing and unhelpful
-2. No automatic prompt to purchase more credits
-3. Users don't know what went wrong or how to fix it
+When Step 11 (final assembly) runs, three issues can cause the UI to appear "stuck":
+
+1. **Missing Step Name**: The `RESEARCH_STEPS` array has only 10 entries - Step 11 shows "Initializing..." instead of "Assembling final report"
+2. **No Auto-Resume for Step 11**: The auto-resume logic only handles steps 1-10, so Step 11 pending states don't auto-resume
+3. **Long Processing Time**: Step 11 takes 60-75 seconds (vs ~10-20s for other steps), which may feel like it's stuck
 
 ## Solution
 
-Enhance the error handling to detect the 402 "no credits" response specifically and:
-1. **Show a clear, friendly toast message** explaining credits are needed
-2. **Automatically open the Purchase Modal** so users can buy more instantly
-3. **Refresh entitlements data** to ensure the UI is in sync
+### 1. Add Step 11 to Progress Display
 
-## User Experience Flow
+**File:** `src/components/workspace/GenerationProgress.tsx`
 
-```text
-CURRENT FLOW (Poor UX):
-┌──────────────────────────────┐
-│  User clicks "Generate"      │
-│  (thinks they have credits)  │
-└──────────────────┬───────────┘
-                   ▼
-┌──────────────────────────────┐
-│  Edge function returns 402   │
-└──────────────────┬───────────┘
-                   ▼
-┌──────────────────────────────┐
-│  Toast: "Service unavailable"│  ← Confusing!
-│  Nothing else happens        │
-└──────────────────────────────┘
+Add "Assembling final report" as the 11th step in the array:
 
-IMPROVED FLOW (Good UX):
-┌──────────────────────────────┐
-│  User clicks "Generate"      │
-└──────────────────┬───────────┘
-                   ▼
-┌──────────────────────────────┐
-│  Edge function returns 402   │
-└──────────────────┬───────────┘
-                   ▼
-┌──────────────────────────────┐
-│  Toast: "You're out of       │  ← Clear!
-│  credits! Let's get you more"│
-└──────────────────┬───────────┘
-                   ▼
-┌──────────────────────────────┐
-│  Purchase Modal opens        │  ← Actionable!
-│  automatically               │
-└──────────────────────────────┘
+```typescript
+const RESEARCH_STEPS = [
+  "Extracting research context from article",
+  "Searching for competing research",
+  "Identifying market segments",
+  "Finding existing competitors",
+  "Calculating Total Addressable Market",
+  "Calculating Serviceable Addressable Market",
+  "Calculating Serviceable Obtainable Market",
+  "Analyzing Australian economic impact",
+  "Building competitor comparison",
+  "Finding Australian partner businesses",
+  "Assembling final report",  // NEW: Step 11
+];
 ```
 
-## Technical Changes
+### 2. Include Step 11 in Auto-Resume Logic
 
-### 1. Update `useReportGeneration.ts` 
+**File:** `src/hooks/useReportGeneration.ts`
 
-Add a callback parameter to notify the workspace component when credits are exhausted:
+Extend the auto-resume condition to include Step 11 pending states (which the backend's Step 11 recovery handles):
 
-| Change | Details |
-|--------|---------|
-| Add `onNoCredits` callback | New optional parameter to hook |
-| Parse 402 error specifically | Check for "credits" in error message |
-| Call callback on 402 | Triggers purchase flow |
-| Improve toast message | Clear, friendly wording |
+```typescript
+// BEFORE (line 309):
+if (activeRun.current_step >= 1 && activeRun.current_step <= 10) {
 
-### 2. Update `ApplicationWorkspace.tsx`
-
-Pass a callback that opens the purchase modal when credits run out:
-
-| Change | Details |
-|--------|---------|
-| Add `handleNoCredits` callback | Opens purchase modal + refetches entitlements |
-| Pass to `useReportGeneration` | Hook calls it on 402 error |
-
-### 3. Toast Message Improvements
-
-**Current toast for 402:**
-```
-Title: "Service unavailable"
-Description: "Please add credits to your workspace and try again."
+// AFTER:
+if (activeRun.current_step >= 1 && activeRun.current_step <= 11) {
 ```
 
-**Improved toast for 402:**
-```
-Title: "Report credits needed"
-Description: "You're out of credits! Purchase more to generate your report."
-```
+### 3. Add Special UI Messaging for Step 11
+
+Show users that Step 11 takes longer than other steps so they don't think it's stuck:
+
+| Current | After |
+|---------|-------|
+| "Step 11/11: Assembling final report" | "Step 11/11: Assembling final report (this step takes longer)" |
+
+## Implementation Details
+
+### Changes to GenerationProgress.tsx
+
+1. Add Step 11 name to `RESEARCH_STEPS` array
+2. Add special handling for Step 11 messaging to indicate longer duration
+
+### Changes to useReportGeneration.ts
+
+1. Extend auto-resume range from `<= 10` to `<= 11`
+2. Ensure Step 11 recovery (already in backend) is triggered by frontend
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/hooks/useReportGeneration.ts` | Add `onNoCredits` callback, improve 402 handling |
-| `src/pages/ApplicationWorkspace.tsx` | Pass callback to open purchase modal on credit error |
+| `src/components/workspace/GenerationProgress.tsx` | Add Step 11 name, improve Step 11 messaging |
+| `src/hooks/useReportGeneration.ts` | Extend auto-resume range to include Step 11 |
 
-## Code Preview
+## Expected Outcome
 
-**useReportGeneration.ts** - Updated `startGeneration`:
-```typescript
-// Add parameter to hook
-export function useReportGeneration(
-  applicationId: string | undefined,
-  options?: { onNoCredits?: () => void }
-) {
-  // In startGeneration catch block:
-  } else if (
-    errorMessage.includes("402") || 
-    errorMessage.toLowerCase().includes("no report credits")
-  ) {
-    toast({
-      title: "Report credits needed",
-      description: "You're out of credits! Purchase more to generate your report.",
-      variant: "destructive",
-    });
-    // Trigger purchase modal
-    options?.onNoCredits?.();
-  }
-}
-```
-
-**ApplicationWorkspace.tsx** - Updated hook call:
-```typescript
-const handleNoCredits = useCallback(() => {
-  refetchEntitlements();
-  setPurchaseModalOpen(true);
-}, [refetchEntitlements]);
-
-const { 
-  isGenerating, 
-  // ... other values
-} = useReportGeneration(id, { onNoCredits: handleNoCredits });
-```
+After these changes:
+- Step 11 will show "Assembling final report" instead of "Initializing..."
+- Users will see a note that Step 11 takes longer (sets expectations)
+- If Step 11 gets stuck in pending, the frontend will auto-resume it
+- Backend's existing Step 11 recovery logic will handle the re-run
 
 ## Testing
 
-After implementation:
-1. Use all available credits on a test account
-2. Try to generate a report
-3. Verify:
-   - Toast shows "Report credits needed" (not "Service unavailable")
-   - Purchase modal opens automatically
-   - After purchasing, generation can proceed
+1. Start a new report generation
+2. Verify Step 11 shows "Assembling final report" 
+3. Check that progress reaches 100% when Step 11 completes
+4. Verify the report is downloadable after completion
 
