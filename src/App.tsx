@@ -22,6 +22,7 @@ import EmailTemplates from "./pages/admin/EmailTemplates";
 import EmailLogs from "./pages/admin/EmailLogs";
 import AuditLogs from "./pages/admin/AuditLogs";
 import PDFTemplates from "./pages/admin/PDFTemplates";
+import DocxTemplates from "./pages/admin/DocxTemplates";
 import PromptBundles from "./pages/admin/PromptBundles";
 import PromptBundleEdit from "./pages/admin/PromptBundleEdit";
 
@@ -50,6 +51,7 @@ const App = () => (
           <Route path="/admin/emails" element={<AdminLayout><EmailTemplates /></AdminLayout>} />
           <Route path="/admin/emails/logs" element={<AdminLayout><EmailLogs /></AdminLayout>} />
           <Route path="/admin/pdf-templates" element={<AdminLayout><PDFTemplates /></AdminLayout>} />
+          <Route path="/admin/docx-templates" element={<AdminLayout><DocxTemplates /></AdminLayout>} />
           <Route path="/admin/prompt-bundles" element={<AdminLayout><PromptBundles /></AdminLayout>} />
           <Route path="/admin/prompt-bundles/:id" element={<AdminLayout><PromptBundleEdit /></AdminLayout>} />
           <Route path="/admin/audit-logs" element={<AdminLayout><AuditLogs /></AdminLayout>} />

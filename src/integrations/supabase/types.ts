@@ -139,6 +139,39 @@ export type Database = {
         }
         Relationships: []
       }
+      docx_templates: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          id: string
+          is_default: boolean | null
+          name: string
+          placeholder_schema_json: Json | null
+          template_path: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          is_default?: boolean | null
+          name: string
+          placeholder_schema_json?: Json | null
+          template_path: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          id?: string
+          is_default?: boolean | null
+          name?: string
+          placeholder_schema_json?: Json | null
+          template_path?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       email_events: {
         Row: {
           brevo_message_id: string | null

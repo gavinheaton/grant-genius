@@ -9,6 +9,7 @@ import {
   Printer,
   Home,
   Bot,
+  FileType,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -45,6 +46,7 @@ const emailItems = [
 
 const reportItems = [
   { title: "PDF Templates", url: "/admin/pdf-templates", icon: Printer },
+  { title: "DOCX Templates", url: "/admin/docx-templates", icon: FileType },
   { title: "AI Prompts", url: "/admin/prompt-bundles", icon: Bot },
 ];
 
