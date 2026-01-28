@@ -1,92 +1,42 @@
 
 
-# Fix Step 11 Stuck Processing
+# Fix Email Sender Address
 
-## Problem Summary
+## Problem
 
-When Step 11 (final assembly) runs, three issues can cause the UI to appear "stuck":
-
-1. **Missing Step Name**: The `RESEARCH_STEPS` array has only 10 entries - Step 11 shows "Initializing..." instead of "Assembling final report"
-2. **No Auto-Resume for Step 11**: The auto-resume logic only handles steps 1-10, so Step 11 pending states don't auto-resume
-3. **Long Processing Time**: Step 11 takes 60-75 seconds (vs ~10-20s for other steps), which may feel like it's stuck
+The "Report Ready" notification emails are being sent from `noreply@grant-genius.com`, which is likely not a verified sending domain in Brevo. This causes emails to fail delivery or land in spam.
 
 ## Solution
 
-### 1. Add Step 11 to Progress Display
+Update the sender email address to the verified domain: `grantgenius@disruptorsco.com`
 
-**File:** `src/components/workspace/GenerationProgress.tsx`
+## Change Required
 
-Add "Assembling final report" as the 11th step in the array:
+**File:** `supabase/functions/send-report-email/index.ts`
 
-```typescript
-const RESEARCH_STEPS = [
-  "Extracting research context from article",
-  "Searching for competing research",
-  "Identifying market segments",
-  "Finding existing competitors",
-  "Calculating Total Addressable Market",
-  "Calculating Serviceable Addressable Market",
-  "Calculating Serviceable Obtainable Market",
-  "Analyzing Australian economic impact",
-  "Building competitor comparison",
-  "Finding Australian partner businesses",
-  "Assembling final report",  // NEW: Step 11
-];
-```
+**Line 130** - Update sender configuration:
 
-### 2. Include Step 11 in Auto-Resume Logic
+| Current | New |
+|---------|-----|
+| `email: "noreply@grant-genius.com"` | `email: "grantgenius@disruptorsco.com"` |
 
-**File:** `src/hooks/useReportGeneration.ts`
+The sender name "Grant Genius" will remain unchanged as it's descriptive and user-friendly.
 
-Extend the auto-resume condition to include Step 11 pending states (which the backend's Step 11 recovery handles):
+## Code Change
 
 ```typescript
-// BEFORE (line 309):
-if (activeRun.current_step >= 1 && activeRun.current_step <= 10) {
+// Line 130
+// BEFORE:
+sender: { name: "Grant Genius", email: "noreply@grant-genius.com" },
 
 // AFTER:
-if (activeRun.current_step >= 1 && activeRun.current_step <= 11) {
+sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
 ```
 
-### 3. Add Special UI Messaging for Step 11
+## Verification
 
-Show users that Step 11 takes longer than other steps so they don't think it's stuck:
-
-| Current | After |
-|---------|-------|
-| "Step 11/11: Assembling final report" | "Step 11/11: Assembling final report (this step takes longer)" |
-
-## Implementation Details
-
-### Changes to GenerationProgress.tsx
-
-1. Add Step 11 name to `RESEARCH_STEPS` array
-2. Add special handling for Step 11 messaging to indicate longer duration
-
-### Changes to useReportGeneration.ts
-
-1. Extend auto-resume range from `<= 10` to `<= 11`
-2. Ensure Step 11 recovery (already in backend) is triggered by frontend
-
-## Files to Modify
-
-| File | Changes |
-|------|---------|
-| `src/components/workspace/GenerationProgress.tsx` | Add Step 11 name, improve Step 11 messaging |
-| `src/hooks/useReportGeneration.ts` | Extend auto-resume range to include Step 11 |
-
-## Expected Outcome
-
-After these changes:
-- Step 11 will show "Assembling final report" instead of "Initializing..."
-- Users will see a note that Step 11 takes longer (sets expectations)
-- If Step 11 gets stuck in pending, the frontend will auto-resume it
-- Backend's existing Step 11 recovery logic will handle the re-run
-
-## Testing
-
-1. Start a new report generation
-2. Verify Step 11 shows "Assembling final report" 
-3. Check that progress reaches 100% when Step 11 completes
-4. Verify the report is downloadable after completion
+After deployment:
+1. Trigger a report generation with "Email me when complete" enabled
+2. Confirm the email arrives from `grantgenius@disruptorsco.com`
+3. Check that it doesn't land in spam
 
