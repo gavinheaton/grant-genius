@@ -1,192 +1,241 @@
 
 
-# Add Step 0: Build Source Pack
+# Add Step 4.5: Market Sizing Source Pack
 
 ## Overview
 
-You've provided a new foundational step that curates validated sources before the existing 10-step research pipeline. This "Step 0" approach ensures downstream steps can cite pre-validated, Australia-first sources rather than searching ad-hoc.
+You want to insert a new step between Step 4 (Find Competitors) and Step 5 (TAM Calculation) that curates validated market category definitions and sizes from external sources. This ensures Step 5 can calculate TAM using real data rather than hallucinating.
 
 ## Architecture Impact
 
-Adding Step 0 requires changes across the entire pipeline:
+Adding a "Step 4.5" requires renumbering since the database uses integer step numbers:
 
-| Component | Current State | New State |
-|-----------|--------------|-----------|
-| Total steps | 11 (1-10 research + 11 assembly) | 12 (0 source pack + 1-10 research + 11 assembly) |
-| `generate-report` | Runs Step 1, checkpoints | Runs Step 0, checkpoints |
-| `resume-report-run` | Handles Steps 2-11 | Handles Steps 1-11 |
-| Database `prompt_bundle_steps` | Steps 1-11 | Steps 0-11 |
-| Frontend progress | Shows 11 steps | Shows 12 steps |
+| Current Step | Current Name | New Step | New Name |
+|--------------|--------------|----------|----------|
+| 0 | Build Australia-first source pack | 0 | (unchanged) |
+| 1 | Extract research context | 1 | (unchanged) |
+| 2 | Competitor research | 2 | (unchanged) |
+| 3 | Market segments | 3 | (unchanged) |
+| 4 | Find competitors | 4 | (unchanged) |
+| — | **(NEW)** | **5** | **Market Sizing Source Pack** |
+| 5 | Calculate TAM | 6 | Calculate TAM |
+| 6 | Calculate SAM | 7 | Calculate SAM |
+| 7 | Calculate SOM | 8 | Calculate SOM |
+| 8 | Economic impact | 9 | Economic impact |
+| 9 | Competitor table | 10 | Competitor table |
+| 10 | Partner businesses | 11 | Partner businesses |
+| 11 | Assemble report | 12 | Assemble report |
 
-## Key Design Decision: Step Numbering
+**Total Steps: 12 → 13**
 
-Two options for numbering:
-
-| Option | Approach | Pros | Cons |
-|--------|----------|------|------|
-| A) True Step 0 | `step_number = 0` | Clean semantic meaning | Requires shifting all existing step logic |
-| B) Renumber to 1-12 | Old Step 1 → Step 2, etc. | Standard 1-based indexing | More migration work, existing prompts need re-mapping |
-
-**Recommended: Option A (True Step 0)** - Minimal disruption to existing step numbers. Step 0 is explicitly a "pre-processing" phase.
-
-## Technical Changes
+## Technical Changes Required
 
 ### 1. Database Migration
 
-Add Step 0 to the active prompt bundle:
+Renumber existing steps 5-11 → 6-12, then insert new Step 5:
 
 ```sql
--- Insert Step 0 for the active prompt bundle
-INSERT INTO prompt_bundle_steps (
-  bundle_id,
-  step_number,
-  step_name,
-  step_description,
-  prompt_template,
-  model_override
-)
-SELECT 
-  id,
-  0,
-  'build_source_pack',
-  'Building Australia-first source pack',
-  '[FULL PROMPT FROM USER]',
-  'google/gemini-3-flash-preview'  -- Needs web search capability
-FROM prompt_bundles 
-WHERE is_active = true;
+-- Update step number constraint (0-12)
+ALTER TABLE prompt_bundle_steps 
+  DROP CONSTRAINT IF EXISTS prompt_bundle_steps_step_number_check;
+ALTER TABLE prompt_bundle_steps 
+  ADD CONSTRAINT prompt_bundle_steps_step_number_check 
+  CHECK (step_number >= 0 AND step_number <= 12);
+
+-- Renumber existing steps 11→12, 10→11, ..., 5→6 (descending to avoid conflicts)
+UPDATE prompt_bundle_steps SET step_number = 12, 
+  step_name = 'assemble_report', step_description = 'Assembling final grant report' 
+  WHERE step_number = 11;
+UPDATE prompt_bundle_steps SET step_number = 11 WHERE step_number = 10;
+UPDATE prompt_bundle_steps SET step_number = 10 WHERE step_number = 9;
+UPDATE prompt_bundle_steps SET step_number = 9 WHERE step_number = 8;
+UPDATE prompt_bundle_steps SET step_number = 8 WHERE step_number = 7;
+UPDATE prompt_bundle_steps SET step_number = 7 WHERE step_number = 6;
+UPDATE prompt_bundle_steps SET step_number = 6 WHERE step_number = 5;
+
+-- Insert new Step 5
+INSERT INTO prompt_bundle_steps (bundle_id, step_number, step_name, step_description, 
+  prompt_template, model_override)
+SELECT id, 5, 'market_sizing_source_pack', 'Building market sizing source pack',
+  '[YOUR FULL PROMPT]', 'google/gemini-3-flash-preview'
+FROM prompt_bundles;
 ```
 
 ### 2. Edge Function: `generate-report/index.ts`
 
 | Change | Details |
 |--------|---------|
-| Update `RESEARCH_STEPS` array | Add Step 0 "Building source pack" at index 0 |
-| Modify `processStep1Only` → `processStep0Only` | Execute Step 0 first, checkpoint at step 0 |
-| Update total_steps | From 11 to 12 |
-| Add Step 0 execution logic | Call Firecrawl search, then AI for source curation |
+| Update `RESEARCH_STEPS` array | Insert new step at index 5, renumber rest |
+| Update `getModelForStep()` | Step 5 uses "Pro/Smart" tier for web search |
+| Update `total_steps` | From 12 to 13 |
 
-Step 0 should:
-1. Scrape the article (existing Step 1 logic)
-2. Use Firecrawl search to find Australian authoritative sources
-3. Pass inputs + search results to AI with your Step 0 prompt
-4. Return structured JSON with `sources[]` and `unknowns[]`
-5. Checkpoint and exit
+```typescript
+const RESEARCH_STEPS = [
+  { name: "build_source_pack", description: "Building Australia-first source pack" },
+  { name: "extract_context", description: "Extracting research context from article" },
+  { name: "competitor_research", description: "Searching for competing research" },
+  { name: "market_segments", description: "Identifying market segments" },
+  { name: "find_competitors", description: "Finding existing competitors" },
+  { name: "market_sizing_source_pack", description: "Building market sizing source pack" }, // NEW
+  { name: "calculate_tam", description: "Calculating Total Addressable Market" },
+  // ... shifted by 1
+];
+```
 
 ### 3. Edge Function: `resume-report-run/index.ts`
 
 | Change | Details |
 |--------|---------|
-| Add Step 1 to switch statement | Move old Step 1 logic here (was in generate-report) |
-| Update checkpoint validation | Accept step 0 as valid checkpoint |
-| Update `getBaseVariables` | Add `{{sources}}` and `{{unknowns}}` variables from Step 0 output |
-| Update all step prompts | Inject source pack for downstream citation |
+| Add case 5 in switch statement | Execute new Market Sizing Source Pack step |
+| Renumber cases 5-11 → 6-12 | Shift all subsequent cases |
+| Update `getBaseVariables()` | Add `{{marketSizingSourcePack}}` variable |
+| Update step output mappings | `step5` → `step6`, etc. for assembly |
+
+**New Step 5 Execution Logic:**
+
+```typescript
+case 5:
+  // Step 5: Market Sizing Source Pack
+  await executeStep(supabase, reportRunId, 5, async () => {
+    const stepConfig = bundle?.steps.get(5);
+    const interpolationVars = {
+      ...getBaseVariables(),
+      marketSegments: String(reportContent.marketSegments || ""),
+    };
+    
+    const prompt = stepConfig?.prompt_template 
+      ? interpolatePrompt(stepConfig.prompt_template, interpolationVars)
+      : fallbackPrompt;
+    
+    const result = await callAIWithRetry(prompt, 5, systemPrompt, stepConfig?.model_override);
+    reportContent.marketSizingSourcePack = result;
+    return { marketSizingSourcePack: result };
+  });
+  break;
+```
 
 ### 4. Frontend: `GenerationProgress.tsx`
 
+Update step array to 13 steps:
+
 ```typescript
 const RESEARCH_STEPS = [
-  "Building Australia-first source pack",  // NEW: Step 0
+  "Building Australia-first source pack",
   "Extracting research context from article",
   "Searching for competing research",
-  // ... rest of steps
-  "Assembling final report",  // Step 11
+  "Identifying market segments",
+  "Finding existing competitors",
+  "Building market sizing source pack",  // NEW Step 5
+  "Calculating Total Addressable Market", // Now Step 6
+  "Calculating Serviceable Addressable Market",
+  "Calculating Serviceable Obtainable Market",
+  "Analyzing Australian economic impact",
+  "Building competitor comparison",
+  "Finding Australian partner businesses",
+  "Assembling final report",             // Now Step 12
 ];
 ```
 
 ### 5. Frontend: `useReportGeneration.ts`
 
-| Change | Details |
-|--------|---------|
-| Update auto-resume range | From `1-11` to `0-11` |
-| Update total_steps check | Expect 12 steps |
+Update auto-resume checkpoint range:
+
+```typescript
+// Steps 0-11 are valid checkpoints (step 12 is final assembly)
+if (activeRun.current_step >= 0 && activeRun.current_step <= 11) {
+  resumeFromCheckpoint(activeRun.id);
+}
+
+// Step 12 recovery logic
+if (run.current_step >= 12) {
+  // Handle final assembly recovery
+}
+```
 
 ### 6. Admin UI: `PromptBundleEdit.tsx`
 
-Add new variable category for Step 0 output:
+Add new variable category and update assembly variables:
 
 ```typescript
 {
-  name: "Source Pack (from Step 0)",
+  name: "Market Sizing Source Pack (from Step 5)",
   variables: [
-    { name: "{{sources}}", description: "JSON array of curated sources from Step 0" },
-    { name: "{{unknowns}}", description: "JSON array of missing source categories" },
+    { name: "{{marketSizingSourcePack}}", description: "JSON with by_segment market categories from Step 5" },
+  ],
+},
+{
+  name: "Assembly Variables (Step 12 only - JSON stringified)",
+  variables: [
+    // ... existing
+    { name: "{{step5}}", description: "JSON from Step 5 (Market Sizing Source Pack)" },  // NEW
+    { name: "{{step6}}", description: "JSON from Step 6 (TAM)" },  // Was step5
+    // ... shifted
   ],
 }
 ```
 
-### 7. Prompt Template Integration
-
-Update all downstream step prompts to reference the source pack:
+### 7. Variable Flow Update
 
 ```text
-## AVAILABLE SOURCES (from Step 0)
-{{sources}}
+STEP 5 INPUT:
+├── {{summary}}
+├── {{marketSegments}}   // JSON from Step 3
 
-## MISSING DATA CATEGORIES
-{{unknowns}}
+STEP 5 OUTPUT (saved to checkpoint):
+└── marketSizingSourcePack: {
+      by_segment: [...],  // validated market categories per segment
+    }
 
-INSTRUCTIONS: When citing data, reference sources by source_id (e.g., [S0-1]).
-If needed data is in unknowns, explicitly state "Data not available".
+STEPS 6-11 INPUT (updated):
+├── All original inputs
+├── {{marketSizingSourcePack}} ← NEW from Step 5
+
+STEP 12 (Assembly) INPUT:
+├── {{step5}} ← Market Sizing Source Pack JSON
+├── {{step6}} ← TAM JSON (was step5)
+├── ... shifted by 1
 ```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/generate-report/index.ts` | Add Step 0 execution, update step array |
-| `supabase/functions/resume-report-run/index.ts` | Move Step 1 here, add source pack variables |
-| `src/components/workspace/GenerationProgress.tsx` | Add Step 0 name to array |
-| `src/hooks/useReportGeneration.ts` | Update auto-resume range |
-| `src/pages/admin/PromptBundleEdit.tsx` | Add source pack variables |
-| Database migration | Insert Step 0 prompt template |
+| Database Migration | Renumber steps, insert Step 5 |
+| `supabase/functions/generate-report/index.ts` | Update RESEARCH_STEPS array, getModelForStep() |
+| `supabase/functions/resume-report-run/index.ts` | Add case 5, renumber cases 6-12, update variables |
+| `src/components/workspace/GenerationProgress.tsx` | Update RESEARCH_STEPS array (13 items) |
+| `src/hooks/useReportGeneration.ts` | Update checkpoint range (0-11), final step (12) |
+| `src/pages/admin/PromptBundleEdit.tsx` | Add Step 5 variables, update assembly mappings |
 
-## Step 0 Prompt Storage
+## Step 5 Prompt Storage
 
-Your full prompt will be stored in `prompt_bundle_steps` with:
-- `step_number`: 0
-- `step_name`: "build_source_pack"
-- `step_description`: "Building Australia-first source pack"
-- `prompt_template`: [Your full prompt from the message]
-- `model_override`: `google/gemini-3-flash-preview`
+Your full prompt will be stored with:
+- `step_number`: 5
+- `step_name`: "market_sizing_source_pack"  
+- `step_description`: "Building market sizing source pack"
+- `prompt_template`: [Your full prompt from the request]
+- `model_override`: `google/gemini-3-flash-preview` (Smart/Pro tier with web capability)
 
-## Variable Flow
+## Model Selection
+
+The new Step 5 requires web-enabled/retrieval capability for market research lookups. Using `google/gemini-3-flash-preview` as specified in "Smart/Pro tier" models.
+
+## Output Integration
+
+The Step 5 output provides validated market categories that Step 6 (TAM) will reference:
 
 ```text
-STEP 0 INPUT:
-├── {{summary}}
-├── {{publicArticleUrl}}
-├── {{articleContent}} (from Firecrawl scrape)
-├── {{trl}}
-└── {{ipStatus}}
-
-STEP 0 OUTPUT (saved to checkpoint):
-├── sources[] (12-25 validated sources)
-└── unknowns[] (missing categories)
-
-STEPS 1-10 INPUT:
-├── All original inputs
-├── {{sources}} ← From Step 0
-└── {{unknowns}} ← From Step 0
-
-STEP 11 INPUT:
-├── {{step0}} ← JSON from Step 0
-├── {{step1}} through {{step10}}
-└── All sources aggregated
+Step 6 TAM Prompt Variables:
+├── {{marketSegments}}          // From Step 3
+├── {{marketSizingSourcePack}}  // NEW: From Step 5 (validated categories + numbers)
+└── {{sources}}                 // From Step 0
 ```
 
-## Expected Outcome
-
-After implementation:
-1. Step 0 runs first, building a curated source pack
-2. Steps 1-10 can reference `{{sources}}` for validated citations
-3. Step 11 includes all Step 0 sources in final references
-4. Frontend shows 12-step progress (0-11)
-5. Admin can edit Step 0 prompt via Prompt Bundles UI
+This ensures TAM calculations are grounded in externally-validated market definitions rather than AI-generated estimates.
 
 ## Considerations
 
-- **Model Choice**: Step 0 needs web search capability. Gemini 3 Flash Preview is recommended.
-- **Firecrawl Integration**: May need to add Firecrawl search calls (not just scrape) for source discovery.
-- **Rate Limits**: Adding a step increases total AI calls. Inter-step delay helps.
-- **Fallback**: If Step 0 fails to find sources, continue with empty sources array + unknowns populated.
+- **Renumbering Impact**: All step references in existing prompts using `[S#]` notation remain unchanged (those refer to source IDs, not step numbers)
+- **Rate Limiting**: Adding a step increases total AI calls from 12 to 13. The 3-second inter-step delay helps mitigate rate limits.
+- **Fallback**: If Step 5 cannot find validated sources, it returns `unknowns[]` entries explaining what's missing, rather than fabricating data.
 
