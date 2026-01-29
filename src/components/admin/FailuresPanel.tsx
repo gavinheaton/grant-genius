@@ -1,7 +1,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDistanceToNow } from "date-fns";
-import { AlertCircle, XCircle } from "lucide-react";
+import { AlertCircle, XCircle, Ban } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState } from "react";
 
@@ -22,80 +23,120 @@ interface FailedRun {
 }
 
 interface FailuresPanelProps {
-  failures: FailedRun[];
+  stageFailures: FailedRun[];
+  cancellations: FailedRun[];
   isLoading: boolean;
 }
 
-export function FailuresPanel({ failures, isLoading }: FailuresPanelProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+function FailureItem({ failure, isCancellation }: { failure: FailedRun; isCancellation: boolean }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const failureTime = failure.completed_at || failure.created_at;
 
-  if (isLoading) {
-    return (
-      <div className="space-y-3">
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-      </div>
-    );
-  }
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger className="w-full">
+        <div className={`flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer ${isCancellation ? "opacity-70" : ""}`}>
+          <div className="flex items-center gap-3">
+            {isCancellation ? (
+              <Ban className="h-4 w-4 text-muted-foreground shrink-0" />
+            ) : (
+              <XCircle className="h-4 w-4 text-destructive shrink-0" />
+            )}
+            <div className="text-left">
+              <p className="text-sm font-medium truncate max-w-[200px]">
+                {failure.user_email || "Unknown user"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Step {failure.current_step}: {failure.failed_step?.step_name || "Unknown step"}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant={isCancellation ? "secondary" : "destructive"} className="text-xs">
+              {isCancellation ? "Cancelled" : "Failed"}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {formatDistanceToNow(new Date(failureTime), { addSuffix: true })}
+            </span>
+          </div>
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className={`mt-1 p-3 rounded-lg bg-muted/30 border-l-2 text-sm ${isCancellation ? "border-muted-foreground" : "border-destructive"}`}>
+          <p className="font-medium text-muted-foreground mb-1">Application:</p>
+          <p className="mb-2">{failure.application?.title || "Untitled"}</p>
+          {!isCancellation && (
+            <>
+              <p className="font-medium text-muted-foreground mb-1">Error:</p>
+              <p className="text-destructive font-mono text-xs break-all">
+                {failure.failed_step?.error_message || "No error message recorded"}
+              </p>
+            </>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
 
+function FailuresList({ failures, isCancellation }: { failures: FailedRun[]; isCancellation: boolean }) {
   if (failures.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
         <AlertCircle className="h-8 w-8 mb-2 opacity-50" />
-        <p className="text-sm">No recent failures</p>
+        <p className="text-sm">
+          {isCancellation ? "No recent cancellations" : "No recent stage failures"}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
-      {failures.map((failure) => {
-        const failureTime = failure.completed_at || failure.created_at;
-        const isCancelled = failure.failed_step?.error_message?.toLowerCase().includes("cancel");
-        
-        return (
-          <Collapsible 
-            key={failure.id}
-            open={expandedId === failure.id}
-            onOpenChange={(open) => setExpandedId(open ? failure.id : null)}
-          >
-            <CollapsibleTrigger className="w-full">
-              <div className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors cursor-pointer">
-                <div className="flex items-center gap-3">
-                  <XCircle className="h-4 w-4 text-destructive shrink-0" />
-                  <div className="text-left">
-                    <p className="text-sm font-medium truncate max-w-[200px]">
-                      {failure.user_email || "Unknown user"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Step {failure.current_step}: {failure.failed_step?.step_name || "Unknown step"}
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={isCancelled ? "secondary" : "destructive"} className="text-xs">
-                    {isCancelled ? "Cancelled" : "Failed"}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    {formatDistanceToNow(new Date(failureTime), { addSuffix: true })}
-                  </span>
-                </div>
-              </div>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="mt-1 p-3 rounded-lg bg-muted/30 border-l-2 border-destructive text-sm">
-                <p className="font-medium text-muted-foreground mb-1">Application:</p>
-                <p className="mb-2">{failure.application?.title || "Untitled"}</p>
-                <p className="font-medium text-muted-foreground mb-1">Error:</p>
-                <p className="text-destructive font-mono text-xs break-all">
-                  {failure.failed_step?.error_message || "No error message recorded"}
-                </p>
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        );
-      })}
+      {failures.map((failure) => (
+        <FailureItem key={failure.id} failure={failure} isCancellation={isCancellation} />
+      ))}
     </div>
+  );
+}
+
+export function FailuresPanel({ stageFailures, cancellations, isLoading }: FailuresPanelProps) {
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+    );
+  }
+
+  return (
+    <Tabs defaultValue="failures" className="w-full">
+      <TabsList className="grid w-full grid-cols-2">
+        <TabsTrigger value="failures" className="gap-2">
+          Stage Failures
+          {stageFailures.length > 0 && (
+            <Badge variant="destructive" className="ml-1 h-5 min-w-5 px-1.5">
+              {stageFailures.length}
+            </Badge>
+          )}
+        </TabsTrigger>
+        <TabsTrigger value="cancellations" className="gap-2">
+          Cancellations
+          {cancellations.length > 0 && (
+            <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5">
+              {cancellations.length}
+            </Badge>
+          )}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="failures" className="mt-4">
+        <FailuresList failures={stageFailures} isCancellation={false} />
+      </TabsContent>
+      <TabsContent value="cancellations" className="mt-4">
+        <FailuresList failures={cancellations} isCancellation={true} />
+      </TabsContent>
+    </Tabs>
   );
 }
