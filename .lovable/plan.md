@@ -1,89 +1,153 @@
 
 
-# Elapsed Time Display for Report Generation
+# Enhanced Failures Panel: Differentiate Cancellations vs Stage Gate Failures
 
 ## Overview
 
-Add a simple elapsed time display that calculates duration from `started_at` to `completed_at` (or current time for running reports). No real-time counters needed - just a static calculation on each data fetch.
+Improve the FailuresPanel to clearly separate and visualize:
+1. **User Cancellations** - Runs cancelled by the user (no actionable issue)
+2. **Stage Gate Failures** - Actual pipeline step failures that need investigation
 
-## Data Available
+Additionally, add a **failure breakdown by step** to identify which steps fail most often.
 
-The `report_runs` table already has all the fields needed:
-- `started_at` - When generation began
-- `completed_at` - When generation finished (null if still running)
+## Current State
 
-## Implementation
+The existing FailuresPanel:
+- Shows all failures in a single list
+- Only differentiates cancellations via the badge text
+- Doesn't provide aggregate analysis of which steps fail
 
-### 1. Create a utility function for formatting duration
+## Proposed Changes
 
-```typescript
-// Format elapsed time between two dates
-function formatElapsedTime(startedAt: string | null, completedAt: string | null): string {
-  if (!startedAt) return "-";
-  
-  const start = new Date(startedAt).getTime();
-  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
-  const seconds = Math.floor((end - start) / 1000);
-  
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  
-  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-}
+### 1. Split the Failures Panel into Tabs
+
+```text
++----------------------------------------------------------+
+|  Recent Failures                                          |
+|  [Stage Failures (1)] [Cancellations (5)]                |
++----------------------------------------------------------+
+|                                                           |
+|  STAGE FAILURES TAB:                                      |
+|  +------------------------------------------------------+ |
+|  | Step 3: market_segments              | 500 Error     | |
+|  | gavin@... | AEA Ignite | 2h ago      |               | |
+|  +------------------------------------------------------+ |
+|                                                           |
+|  CANCELLATIONS TAB:                                       |
+|  | (greyed out, less prominent)                         | |
+|  | gavin@... | Step 0 | Cancelled | 3h ago              | |
+|                                                           |
++----------------------------------------------------------+
 ```
 
-### 2. Update GenerationProgress Component
+### 2. Add Step Failure Breakdown Card
 
-**File**: `src/components/workspace/GenerationProgress.tsx`
+New card showing which steps fail most often (excluding cancellations):
 
-- Add props: `startedAt?: string | null`, `completedAt?: string | null`
-- Display elapsed time in the progress header
-- For running: show time since `started_at`
-- For completed: show total duration
+```text
++----------------------------------------------------------+
+|  Step Failure Breakdown (Last 30 days)                   |
++----------------------------------------------------------+
+|  Step 3: market_segments     ██████████████  3 failures  |
+|  Step 0: build_source_pack   ██████         1 failure    |
+|  Step 5: market_sizing       ████           1 failure    |
++----------------------------------------------------------+
+```
 
-### 3. Update ActiveRunsTable Component
+This helps identify problematic steps for prompt tuning.
 
-**File**: `src/components/admin/ActiveRunsTable.tsx`
+### 3. Classification Logic
 
-- Already fetches `started_at`
-- Add `completed_at` to the select query
-- Replace "Started X ago" column with calculated elapsed time
-- For running: calculate from `started_at` to now
-- For completed: use `started_at` to `completed_at`
+**Cancellation Detection**:
+```typescript
+const isCancelled = 
+  error_message?.toLowerCase().includes("cancel") ||
+  error_message?.toLowerCase().includes("cancelled");
+```
 
-### 4. Update ReportRun Interface and Hook
+**Stage Gate Failure** = Any failure that is NOT a cancellation
 
-**File**: `src/hooks/useReportGeneration.ts`
+### 4. Data Fetching Updates
 
-- Add `completed_at` to the ReportRun interface
-- Include `completed_at` in the select query
+Update the dashboard query to:
+- Fetch more failures (increase limit for analysis)
+- Include step failure aggregation
 
-### 5. Pass Props in ApplicationWorkspace
-
-**File**: `src/pages/ApplicationWorkspace.tsx`
-
-- Pass `startedAt` and `completedAt` from `activeRun` to `GenerationProgress`
+```typescript
+// Additional query for step failure breakdown
+const stepFailuresRes = await supabase
+  .from("report_run_steps")
+  .select("step_number, step_name, error_message")
+  .eq("status", "failed")
+  .not("error_message", "ilike", "%cancel%");
+```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/components/workspace/GenerationProgress.tsx` | Add elapsed time display with new props |
-| `src/components/admin/ActiveRunsTable.tsx` | Add elapsed time column using existing data |
-| `src/hooks/useReportGeneration.ts` | Add `completed_at` to interface and query |
-| `src/pages/ApplicationWorkspace.tsx` | Pass timestamp props to GenerationProgress |
+| `src/components/admin/FailuresPanel.tsx` | Add tabs for Stage Failures vs Cancellations, restyle layout |
+| `src/pages/admin/AdminDashboard.tsx` | Update query to separate failure types, add step breakdown data |
+| `src/components/admin/StepFailureBreakdown.tsx` | **NEW** - Component showing which steps fail most often |
 
-## UI Display
+## UI Design Details
 
-**User view (during generation)**:
-```text
-Generating Report                                    [Clock icon] 2m 35s
-Step 5/13: Building market sizing source pack        38%
-[=================                                              ]
+### FailuresPanel with Tabs
+
+- **Stage Failures tab** (default, highlighted):
+  - Red badge with failure count
+  - Shows step name prominently
+  - Shows actual error message (not "Cancelled")
+  - Sorted by recency
+
+- **Cancellations tab**:
+  - Grey/muted badge
+  - Less prominent styling
+  - Quick scan for users who cancelled
+
+### StepFailureBreakdown Component
+
+- Horizontal bar chart or simple list
+- Shows top 5 failing steps
+- Excludes cancellations from count
+- Links step name to help with debugging
+
+## Implementation Approach
+
+### Step 1: Update FailuresPanel Interface
+
+```typescript
+interface FailuresPanelProps {
+  stageFailures: FailedRun[];
+  cancellations: FailedRun[];
+  isLoading: boolean;
+}
 ```
 
-**Admin table**:
-| User | Application | Progress | Status | Elapsed |
-|------|-------------|----------|--------|---------|
-| gavin@... | AEA Ignite | 11/13 | Running | 3m 42s |
+### Step 2: Split Data in Dashboard
+
+```typescript
+// In AdminDashboard.tsx
+const recentFailures = (recentFailuresRes.data || []).map(/* ... */);
+
+// Separate cancellations from stage failures
+const stageFailures = recentFailures.filter(
+  f => !f.failed_step?.error_message?.toLowerCase().includes("cancel")
+);
+const cancellations = recentFailures.filter(
+  f => f.failed_step?.error_message?.toLowerCase().includes("cancel")
+);
+```
+
+### Step 3: Create StepFailureBreakdown
+
+Aggregate step failures (excluding cancellations) and display as a ranked list.
+
+## Expected Outcome
+
+After implementation:
+- Admin can quickly see **how many actual failures** vs cancellations
+- Admin can identify **which pipeline steps need attention**
+- Cancellations are de-emphasized but still visible
+- Clear actionable insights for prompt tuning
 
