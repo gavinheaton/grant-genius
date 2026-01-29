@@ -45,6 +45,16 @@ function getModelForStep(stepNumber: number): string {
   return "google/gemini-2.5-flash-lite";
 }
 
+// Timeout selection based on step complexity
+function getTimeoutForStep(stepNumber: number): number {
+  // Step 0: Source pack needs more time for complex source curation (50-70s observed)
+  if (stepNumber === 0) return 90000; // 90 seconds
+  // Step 12: Final assembly needs extended time for full report generation
+  if (stepNumber === 12) return 120000; // 120 seconds
+  // All other steps use default timeout
+  return 45000; // 45 seconds
+}
+
 // Default system prompt (fallback if no active bundle)
 const DEFAULT_SYSTEM_PROMPT = "You are a research commercialization expert helping prepare grant applications. Provide detailed, well-researched responses. Always cite sources where possible. If data cannot be validated, clearly indicate this.";
 
@@ -494,7 +504,7 @@ async function processStep0Only(
               onlyMainContent: true,
             }),
           },
-          60000 // 60s timeout for Firecrawl
+          75000 // 75s timeout for Firecrawl (increased for reliability)
         );
 
         if (scrapeResponse.ok) {
@@ -704,6 +714,9 @@ async function callAIWithRetry(
     }
 
     try {
+      // Use step-specific timeout for complex steps
+      const timeout = getTimeoutForStep(stepNumber);
+      
       const response = await fetchWithTimeout(
         "https://ai.gateway.lovable.dev/v1/chat/completions",
         {
@@ -720,7 +733,7 @@ async function callAIWithRetry(
             ],
           }),
         },
-        45000 // 45s timeout for AI calls
+        timeout
       );
 
       if (!response.ok) {
