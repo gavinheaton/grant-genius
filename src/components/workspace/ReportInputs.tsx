@@ -19,15 +19,21 @@ interface ReportInputsProps {
   disabled?: boolean;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  projectName?: string;
 }
 
-export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = false, onToggleCollapse }: ReportInputsProps) {
+export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = false, onToggleCollapse, projectName }: ReportInputsProps) {
   const wordCount = inputs.summary.trim().split(/\s+/).filter(Boolean).length;
 
   // Truncate URL for collapsed display
   const truncatedUrl = inputs.publicArticleUrl.length > 40 
     ? inputs.publicArticleUrl.substring(0, 40) + "..." 
     : inputs.publicArticleUrl;
+  
+  // Truncate project name for collapsed display
+  const truncatedProjectName = projectName && projectName.length > 30 
+    ? projectName.substring(0, 30) + "..." 
+    : projectName;
 
   return (
     <Card className="shadow-card">
@@ -43,6 +49,8 @@ export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = fa
           </div>
           {isCollapsed && (
             <p className="text-sm text-muted-foreground truncate mt-1">
+              {truncatedProjectName && <span className="font-medium text-foreground">{truncatedProjectName}</span>}
+              {truncatedProjectName && " • "}
               {truncatedUrl || "No URL"} • {wordCount} words
             </p>
           )}
