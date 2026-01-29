@@ -34,10 +34,24 @@ const INTER_STEP_DELAY_MS = 3000;
 // Retry delays for rate limit errors (5s, 15s, 30s)
 const RETRY_DELAYS = [5000, 15000, 30000];
 
+// Timeout selection based on step complexity (with configurable override)
+function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = null): number {
+  // If there's a configured override, use it
+  if (overrideSeconds !== null) {
+    return overrideSeconds * 1000; // Convert to ms
+  }
+  // Step 0: Source pack needs more time for complex source curation
+  if (stepNumber === 0) return 90000; // 90 seconds
+  // Step 12: Final assembly needs extended time for full report generation
+  if (stepNumber === 12) return 120000; // 120 seconds
+  // All other steps use default timeout
+  return 45000; // 45 seconds
+}
+
 // Cache for active prompt bundle
 let cachedBundle: {
   system_prompt: string;
-  steps: Map<number, { prompt_template: string; model_override: string | null }>;
+  steps: Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>;
 } | null = null;
 
 // Fetch active prompt bundle from database
@@ -59,7 +73,7 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
 
     const { data: steps, error: stepsError } = await supabase
       .from("prompt_bundle_steps")
-      .select("step_number, prompt_template, model_override")
+      .select("step_number, prompt_template, model_override, timeout_seconds")
       .eq("bundle_id", bundle.id)
       .order("step_number", { ascending: true });
 
@@ -68,11 +82,12 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
       return null;
     }
 
-    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null }>();
+    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>();
     for (const step of steps) {
       stepsMap.set(step.step_number, {
         prompt_template: step.prompt_template,
         model_override: step.model_override,
+        timeout_seconds: step.timeout_seconds,
       });
     }
 
@@ -518,6 +533,12 @@ async function processSingleStep(
     return bundle?.steps.get(stepNum)?.model_override || null;
   };
 
+  // Helper function to get timeout for a step (in ms)
+  const getStepTimeout = (stepNum: number) => {
+    const stepConfig = bundle?.steps.get(stepNum);
+    return getTimeoutForStep(stepNum, stepConfig?.timeout_seconds || null);
+  };
+
   try {
     // Execute exactly one step based on nextStep
     switch (nextStep) {
@@ -595,7 +616,7 @@ When citing data, reference sources by source_id from the source pack (e.g., [S0
 Provide a structured analysis.`;
           }
 
-          const contextResult = await callAIWithRetry(contextPrompt, 1, systemPrompt, stepConfig?.model_override);
+          const contextResult = await callAIWithRetry(contextPrompt, 1, systemPrompt, stepConfig?.model_override, getStepTimeout(1));
           reportContent.researchContext = contextResult;
           return { context: contextResult };
         });
@@ -619,7 +640,7 @@ Search for and identify competing or similar research projects from other resear
 Reference sources by source_id (e.g., [S0-1]).
 Format as a structured list. If you cannot find specific examples, indicate this clearly with "No validated sources found" for that area.`);
 
-          const competitorResult = await callAIWithRetry(competitorPrompt, 2, systemPrompt, getStepModel(2));
+          const competitorResult = await callAIWithRetry(competitorPrompt, 2, systemPrompt, getStepModel(2), getStepTimeout(2));
           reportContent.competitorResearch = competitorResult;
           return { competitors: competitorResult };
         });
@@ -646,7 +667,7 @@ For each segment provide:
 Reference sources by source_id (e.g., [S0-1]).
 Be specific and practical.`);
 
-          const marketResult = await callAIWithRetry(marketPrompt, 3, systemPrompt, getStepModel(3));
+          const marketResult = await callAIWithRetry(marketPrompt, 3, systemPrompt, getStepModel(3), getStepTimeout(3));
           reportContent.marketSegments = marketResult;
           return { segments: marketResult };
         });
@@ -674,7 +695,7 @@ Find companies that may already have products or services in these markets. For 
 Reference sources by source_id (e.g., [S0-1]).
 Note: If specific market data cannot be validated, mark as "Data not available - requires further research".`);
 
-          const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4, systemPrompt, getStepModel(4));
+          const existingCompetitorsResult = await callAIWithRetry(existingCompetitorsPrompt, 4, systemPrompt, getStepModel(4), getStepTimeout(4));
           reportContent.existingCompetitors = existingCompetitorsResult;
           return { competitors: existingCompetitorsResult };
         });
@@ -705,7 +726,7 @@ Return JSON with by_segment array containing candidate_categories and unknowns.
 If you cannot find validated sources, set market_value to "Unknown (no validated source found)".`;
           }
 
-          const marketSizingResult = await callAIWithRetry(marketSizingPrompt, 5, systemPrompt, stepConfig?.model_override);
+          const marketSizingResult = await callAIWithRetry(marketSizingPrompt, 5, systemPrompt, stepConfig?.model_override, getStepTimeout(5));
           reportContent.marketSizingSourcePack = marketSizingResult;
           return { marketSizingSourcePack: marketSizingResult };
         });
@@ -733,7 +754,7 @@ Using data from the validated sources above AND the market sizing source pack (p
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`);
 
-          const tamResult = await callAIWithRetry(tamPrompt, 6, systemPrompt, getStepModel(6));
+          const tamResult = await callAIWithRetry(tamPrompt, 6, systemPrompt, getStepModel(6), getStepTimeout(6));
           reportContent.tam = tamResult;
           return { tam: tamResult };
         });
@@ -760,7 +781,7 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 Reference sources by source_id (e.g., [S0-1]).
 Provide SAM for each market segment with clear methodology.`);
 
-          const samResult = await callAIWithRetry(samPrompt, 7, systemPrompt, getStepModel(7));
+          const samResult = await callAIWithRetry(samPrompt, 7, systemPrompt, getStepModel(7), getStepTimeout(7));
           reportContent.sam = samResult;
           return { sam: samResult };
         });
@@ -788,7 +809,7 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 Reference sources by source_id (e.g., [S0-1]).
 Be conservative and realistic in estimates.`);
 
-          const somResult = await callAIWithRetry(somPrompt, 8, systemPrompt, getStepModel(8));
+          const somResult = await callAIWithRetry(somPrompt, 8, systemPrompt, getStepModel(8), getStepTimeout(8));
           reportContent.som = somResult;
           return { som: somResult };
         });
@@ -815,7 +836,7 @@ Calculate the likely economic impact to the Australian economy from commercializ
 Reference sources by source_id (e.g., [S0-1]).
 Provide 5-year projections where possible.`);
 
-          const impactResult = await callAIWithRetry(impactPrompt, 9, systemPrompt, getStepModel(9));
+          const impactResult = await callAIWithRetry(impactPrompt, 9, systemPrompt, getStepModel(9), getStepTimeout(9));
           reportContent.economicImpact = impactResult;
           return { impact: impactResult };
         });
@@ -840,7 +861,7 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`);
 
-          const tableResult = await callAIWithRetry(tablePrompt, 10, systemPrompt, getStepModel(10));
+          const tableResult = await callAIWithRetry(tablePrompt, 10, systemPrompt, getStepModel(10), getStepTimeout(10));
           reportContent.competitorTable = tableResult;
           return { table: tableResult };
         });
@@ -869,7 +890,7 @@ Market Segments: ${reportContent.marketSegments}
 Reference sources by source_id (e.g., [S0-1]).
 Use the ANZSIC hierarchy for classification.`);
 
-          const partnerResult = await callAIWithRetry(partnerPrompt, 11, systemPrompt, getStepModel(11));
+          const partnerResult = await callAIWithRetry(partnerPrompt, 11, systemPrompt, getStepModel(11), getStepTimeout(11));
           reportContent.partnerBusinesses = partnerResult;
           return { partners: partnerResult };
         });
@@ -941,13 +962,13 @@ Return ONLY valid JSON with this schema:
 STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.`;
 
           const assemblyPrompt = getStepPrompt(12, defaultAssemblyPrompt);
-          // Use 120s timeout for Step 12 (2x normal) - this step processes all prior outputs
+          // Use configurable timeout for Step 12 (default 120s)
           const assemblyResult = await callAIWithRetry(
             assemblyPrompt, 
             12, 
             systemPrompt, 
             getStepModel(12),
-            120000  // 2 minute timeout for final assembly
+            getStepTimeout(12)
           );
           
           // Parse the JSON response
@@ -1178,8 +1199,8 @@ async function callAIWithRetry(
   // Use model override if provided, otherwise use default for step
   const model = modelOverride || getModelForStep(stepNumber);
   
-  // Use custom timeout for specific steps (e.g., Step 12), default 45s
-  const timeoutMs = customTimeoutMs || 45000;
+  // Use custom timeout if provided, otherwise use step-specific default
+  const timeoutMs = customTimeoutMs || getTimeoutForStep(stepNumber);
   console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeoutMs / 1000}s`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
