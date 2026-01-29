@@ -14,12 +14,12 @@ function getModelForStep(stepNumber: number): string {
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
-  // Steps 4-7: Complex market analysis - use heavier model
-  if (stepNumber <= 7) {
+  // Steps 4-8: Complex market analysis (including new Step 5) - use heavier model
+  if (stepNumber <= 8) {
     return "google/gemini-3-flash-preview";
   }
-  // Step 11: Final assembly - use most capable model
-  if (stepNumber === 11) {
+  // Step 12: Final assembly - use most capable model
+  if (stepNumber === 12) {
     return "google/gemini-3-pro-preview";
   }
   return "google/gemini-2.5-flash-lite";
@@ -306,11 +306,11 @@ serve(async (req) => {
       );
     }
 
-    // 12-PHASE ARCHITECTURE: Accept any checkpoint from steps 0-10, plus recovery for step 11
+    // 13-PHASE ARCHITECTURE: Accept any checkpoint from steps 0-11, plus recovery for step 12
     let effectiveResumeFromStep = reportRun.current_step;
 
-    // STEP 11 RECOVERY: Handle case where final step stalled without completing
-    if (effectiveResumeFromStep >= 11) {
+    // STEP 12 RECOVERY: Handle case where final step stalled without completing
+    if (effectiveResumeFromStep >= 12) {
       // Check if a report already exists for this run
       const { data: existingReport } = await supabaseAdmin
         .from("reports")
@@ -338,10 +338,10 @@ serve(async (req) => {
         );
       }
 
-      // No report exists - step 11 stalled. Reset to resume from step 10 (re-run step 11)
-      console.log(`Step 11 recovery: Run ${reportRunId} stuck at step 11 without report. Resetting to resume from step 10.`);
+      // No report exists - step 12 stalled. Reset to resume from step 11 (re-run step 12)
+      console.log(`Step 12 recovery: Run ${reportRunId} stuck at step 12 without report. Resetting to resume from step 11.`);
       
-      // Reset step 11 row so it can be re-run
+      // Reset step 12 row so it can be re-run
       await supabaseAdmin
         .from("report_run_steps")
         .update({
@@ -352,14 +352,14 @@ serve(async (req) => {
           outputs_json: {},
         })
         .eq("report_run_id", reportRunId)
-        .eq("step_number", 11);
+        .eq("step_number", 12);
 
-      // Treat as resuming from step 10 so next step executed is 11
-      effectiveResumeFromStep = 10;
+      // Treat as resuming from step 11 so next step executed is 12
+      effectiveResumeFromStep = 11;
     }
 
-    // Validate checkpoint range (steps 0-10 are valid checkpoints)
-    if (effectiveResumeFromStep < 0 || effectiveResumeFromStep > 10) {
+    // Validate checkpoint range (steps 0-11 are valid checkpoints)
+    if (effectiveResumeFromStep < 0 || effectiveResumeFromStep > 11) {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -415,9 +415,9 @@ serve(async (req) => {
 });
 
 /**
- * 12-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
- * This function is called for steps 1-11.
- * Step 11 completes the report instead of checkpointing.
+ * 13-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
+ * This function is called for steps 1-12.
+ * Step 12 completes the report instead of checkpointing.
  */
 async function processSingleStep(
   reportRunId: string,
@@ -487,18 +487,21 @@ async function processSingleStep(
     economicImpact: String(reportContent.economicImpact || ""),
     competitorTable: String(reportContent.competitorTable || ""),
     partnerBusinesses: String(reportContent.partnerBusinesses || ""),
-    // Assembly variables (JSON stringified for Step 11)
+    // NEW: Market Sizing Source Pack from Step 5
+    marketSizingSourcePack: String(reportContent.marketSizingSourcePack || ""),
+    // Assembly variables (JSON stringified for Step 12)
     step0: JSON.stringify(reportContent.sourcePack || {}),
     step1: JSON.stringify(reportContent.researchContext || {}),
     step2: JSON.stringify(reportContent.competitorResearch || {}),
     step3: JSON.stringify(reportContent.marketSegments || {}),
     step4: JSON.stringify(reportContent.existingCompetitors || {}),
-    step5: JSON.stringify(reportContent.tam || {}),
-    step6: JSON.stringify(reportContent.sam || {}),
-    step7: JSON.stringify(reportContent.som || {}),
-    step8: JSON.stringify(reportContent.economicImpact || {}),
-    step9: JSON.stringify(reportContent.competitorTable || {}),
-    step10: JSON.stringify(reportContent.partnerBusinesses || {}),
+    step5: JSON.stringify(reportContent.marketSizingSourcePack || {}),
+    step6: JSON.stringify(reportContent.tam || {}),
+    step7: JSON.stringify(reportContent.sam || {}),
+    step8: JSON.stringify(reportContent.som || {}),
+    step9: JSON.stringify(reportContent.economicImpact || {}),
+    step10: JSON.stringify(reportContent.competitorTable || {}),
+    step11: JSON.stringify(reportContent.partnerBusinesses || {}),
   });
 
   // Helper function to get prompt for a step
@@ -678,17 +681,51 @@ Note: If specific market data cannot be validated, mark as "Data not available -
         break;
 
       case 5:
-        // Step 5: Calculate TAM
+        // Step 5: Market Sizing Source Pack (NEW)
         await executeStep(supabase, reportRunId, 5, async () => {
-          const tamPrompt = getStepPrompt(5, `Calculate the Total Addressable Market (TAM) for the research commercialization:
+          const stepConfig = bundle?.steps.get(5);
+          const interpolationVars = {
+            ...getBaseVariables(),
+            marketSegments: String(reportContent.marketSegments || ""),
+          };
+          
+          let marketSizingPrompt: string;
+          if (stepConfig?.prompt_template) {
+            marketSizingPrompt = interpolatePrompt(stepConfig.prompt_template, interpolationVars);
+          } else {
+            marketSizingPrompt = `Build a validated source pack of market categories and sizes for the market segments identified.
+
+## INPUTS
+Research Summary: ${summary}
+Market Segments: ${reportContent.marketSegments}
+
+## TASK
+For each segment, identify 2-4 externally-defined market categories with validated market size numbers where available.
+Return JSON with by_segment array containing candidate_categories and unknowns.
+If you cannot find validated sources, set market_value to "Unknown (no validated source found)".`;
+          }
+
+          const marketSizingResult = await callAIWithRetry(marketSizingPrompt, 5, systemPrompt, stepConfig?.model_override);
+          reportContent.marketSizingSourcePack = marketSizingResult;
+          return { marketSizingSourcePack: marketSizingResult };
+        });
+        break;
+
+      case 6:
+        // Step 6: Calculate TAM (was Step 5)
+        await executeStep(supabase, reportRunId, 6, async () => {
+          const tamPrompt = getStepPrompt(6, `Calculate the Total Addressable Market (TAM) for the research commercialization:
 
 ## AVAILABLE SOURCES (from Step 0)
 ${sourcesJson}
 
+## MARKET SIZING SOURCE PACK (from Step 5)
+${reportContent.marketSizingSourcePack || "Not available"}
+
 Research: ${summary}
 Market Segments: ${reportContent.marketSegments}
 
-Using data from the validated sources above (prioritize Australian Government, OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
+Using data from the validated sources above AND the market sizing source pack (prioritize Australian Government, OECD, World Bank, ABS, industry reports), estimate TAM for each market segment:
 1. Market size in USD/AUD
 2. Data source and year (reference by source_id e.g., [S0-1])
 3. Growth rate if available
@@ -696,20 +733,23 @@ Using data from the validated sources above (prioritize Australian Government, O
 
 IMPORTANT: Only use numbers from validated sources. If you cannot find validated data, clearly state "Validated data not available - estimate based on [methodology]".`);
 
-          const tamResult = await callAIWithRetry(tamPrompt, 5, systemPrompt, getStepModel(5));
+          const tamResult = await callAIWithRetry(tamPrompt, 6, systemPrompt, getStepModel(6));
           reportContent.tam = tamResult;
           return { tam: tamResult };
         });
         break;
 
-      case 6:
-        // Step 6: Calculate SAM
-        await executeStep(supabase, reportRunId, 6, async () => {
-          const samPrompt = getStepPrompt(6, `Based on the TAM analysis:
+      case 7:
+        // Step 7: Calculate SAM (was Step 6)
+        await executeStep(supabase, reportRunId, 7, async () => {
+          const samPrompt = getStepPrompt(7, `Based on the TAM analysis:
 ${reportContent.tam}
 
 ## AVAILABLE SOURCES (from Step 0)
 ${sourcesJson}
+
+## MARKET SIZING SOURCE PACK (from Step 5)
+${reportContent.marketSizingSourcePack || "Not available"}
 
 Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can realistically be served:
 1. Geographic limitations
@@ -720,20 +760,23 @@ Calculate the Serviceable Addressable Market (SAM) - the portion of TAM that can
 Reference sources by source_id (e.g., [S0-1]).
 Provide SAM for each market segment with clear methodology.`);
 
-          const samResult = await callAIWithRetry(samPrompt, 6, systemPrompt, getStepModel(6));
+          const samResult = await callAIWithRetry(samPrompt, 7, systemPrompt, getStepModel(7));
           reportContent.sam = samResult;
           return { sam: samResult };
         });
         break;
 
-      case 7:
-        // Step 7: Calculate SOM
-        await executeStep(supabase, reportRunId, 7, async () => {
-          const somPrompt = getStepPrompt(7, `Based on the SAM analysis:
+      case 8:
+        // Step 8: Calculate SOM (was Step 7)
+        await executeStep(supabase, reportRunId, 8, async () => {
+          const somPrompt = getStepPrompt(8, `Based on the SAM analysis:
 ${reportContent.sam}
 
 ## AVAILABLE SOURCES (from Step 0)
 ${sourcesJson}
+
+## MARKET SIZING SOURCE PACK (from Step 5)
+${reportContent.marketSizingSourcePack || "Not available"}
 
 Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be captured:
 1. First year targets
@@ -745,16 +788,16 @@ Calculate a realistic Serviceable Obtainable Market (SOM) - what can actually be
 Reference sources by source_id (e.g., [S0-1]).
 Be conservative and realistic in estimates.`);
 
-          const somResult = await callAIWithRetry(somPrompt, 7, systemPrompt, getStepModel(7));
+          const somResult = await callAIWithRetry(somPrompt, 8, systemPrompt, getStepModel(8));
           reportContent.som = somResult;
           return { som: somResult };
         });
         break;
 
-      case 8:
-        // Step 8: Australian Economic Impact
-        await executeStep(supabase, reportRunId, 8, async () => {
-          const impactPrompt = getStepPrompt(8, `Based on the SOM projections:
+      case 9:
+        // Step 9: Australian Economic Impact (was Step 8)
+        await executeStep(supabase, reportRunId, 9, async () => {
+          const impactPrompt = getStepPrompt(9, `Based on the SOM projections:
 ${reportContent.som}
 
 ## AVAILABLE SOURCES (from Step 0)
@@ -772,16 +815,16 @@ Calculate the likely economic impact to the Australian economy from commercializ
 Reference sources by source_id (e.g., [S0-1]).
 Provide 5-year projections where possible.`);
 
-          const impactResult = await callAIWithRetry(impactPrompt, 8, systemPrompt, getStepModel(8));
+          const impactResult = await callAIWithRetry(impactPrompt, 9, systemPrompt, getStepModel(9));
           reportContent.economicImpact = impactResult;
           return { impact: impactResult };
         });
         break;
 
-      case 9:
-        // Step 9: Competitor Comparison Table
-        await executeStep(supabase, reportRunId, 9, async () => {
-          const tablePrompt = getStepPrompt(9, `Create a competitor comparison table based on:
+      case 10:
+        // Step 10: Competitor Comparison Table (was Step 9)
+        await executeStep(supabase, reportRunId, 10, async () => {
+          const tablePrompt = getStepPrompt(10, `Create a competitor comparison table based on:
 
 Our Products: ${reportContent.marketSegments}
 Existing Competitors: ${reportContent.existingCompetitors}
@@ -797,16 +840,16 @@ Build a markdown table comparing:
 
 Fill in with specific comparisons.`);
 
-          const tableResult = await callAIWithRetry(tablePrompt, 9, systemPrompt, getStepModel(9));
+          const tableResult = await callAIWithRetry(tablePrompt, 10, systemPrompt, getStepModel(10));
           reportContent.competitorTable = tableResult;
           return { table: tableResult };
         });
         break;
 
-      case 10:
-        // Step 10: Partner Businesses
-        await executeStep(supabase, reportRunId, 10, async () => {
-          const partnerPrompt = getStepPrompt(10, `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
+      case 11:
+        // Step 11: Partner Businesses (was Step 10)
+        await executeStep(supabase, reportRunId, 11, async () => {
+          const partnerPrompt = getStepPrompt(11, `Based on the ANZSIC Industry Codes, identify Australian businesses that could partner for commercialization:
 
 ## AVAILABLE SOURCES (from Step 0)
 ${sourcesJson}
@@ -826,15 +869,15 @@ Market Segments: ${reportContent.marketSegments}
 Reference sources by source_id (e.g., [S0-1]).
 Use the ANZSIC hierarchy for classification.`);
 
-          const partnerResult = await callAIWithRetry(partnerPrompt, 10, systemPrompt, getStepModel(10));
+          const partnerResult = await callAIWithRetry(partnerPrompt, 11, systemPrompt, getStepModel(11));
           reportContent.partnerBusinesses = partnerResult;
           return { partners: partnerResult };
         });
         break;
 
-      case 11:
-        // Step 11: Assemble Final Report - FINAL STEP
-        await executeStep(supabase, reportRunId, 11, async () => {
+      case 12:
+        // Step 12: Assemble Final Report (was Step 11) - FINAL STEP
+        await executeStep(supabase, reportRunId, 12, async () => {
           const defaultAssemblyPrompt = `You are assembling a final grant report for Australian government assessors.
 
 Grant: {{grantName}} ({{grantVersionLabel}})
@@ -848,12 +891,13 @@ Step 1 - Research Context: {{step1}}
 Step 2 - Competitor Research: {{step2}}
 Step 3 - Market Segments: {{step3}}
 Step 4 - Existing Competitors: {{step4}}
-Step 5 - TAM: {{step5}}
-Step 6 - SAM: {{step6}}
-Step 7 - SOM: {{step7}}
-Step 8 - Economic Impact: {{step8}}
-Step 9 - Competitor Table: {{step9}}
-Step 10 - Partner Businesses: {{step10}}
+Step 5 - Market Sizing Source Pack: {{step5}}
+Step 6 - TAM: {{step6}}
+Step 7 - SAM: {{step7}}
+Step 8 - SOM: {{step8}}
+Step 9 - Economic Impact: {{step9}}
+Step 10 - Competitor Table: {{step10}}
+Step 11 - Partner Businesses: {{step11}}
 
 ## TASK
 
@@ -861,7 +905,7 @@ Parse and merge these outputs into ONE coherent report for Australian government
 
 RULES:
 - Use ONLY validated facts from step outputs
-- Every numeric claim must have a citation marker [S#] referencing sources from Step 0
+- Every numeric claim must have a citation marker [S#] referencing sources from Step 0 or Step 5
 - If an output contains an assumption, label it (High/Med/Low confidence)
 - Remove internal process phrasing ("in Step X", "your instructions")
 - Eliminate placeholders - add missing items to Data Gaps section
@@ -893,8 +937,8 @@ Return ONLY valid JSON with this schema:
 
 STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.`;
 
-          const assemblyPrompt = getStepPrompt(11, defaultAssemblyPrompt);
-          const assemblyResult = await callAIWithRetry(assemblyPrompt, 11, systemPrompt, getStepModel(11));
+          const assemblyPrompt = getStepPrompt(12, defaultAssemblyPrompt);
+          const assemblyResult = await callAIWithRetry(assemblyPrompt, 12, systemPrompt, getStepModel(12));
           
           // Parse the JSON response
           let parsedReport;
@@ -928,11 +972,11 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
           emailOnComplete
         );
         
-        console.log(`12-PHASE: Report run ${reportRunId} completed successfully`);
+        console.log(`13-PHASE: Report run ${reportRunId} completed successfully`);
         return; // No checkpoint needed - we're done
     }
 
-    // For steps 1-10: Save checkpoint and exit
+    // For steps 1-11: Save checkpoint and exit
     // Frontend will detect pending status and call resume-report-run again
     await supabase
       .from("report_runs")
@@ -944,10 +988,10 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
       })
       .eq("id", reportRunId);
 
-    console.log(`12-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
+    console.log(`13-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
 
   } catch (error) {
-    console.error(`12-PHASE: Step ${nextStep} failed:`, error);
+    console.error(`13-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
     
@@ -1035,7 +1079,7 @@ async function createFinalReport(
     .from("report_runs")
     .update({
       status: "completed",
-      current_step: 11,
+      current_step: 12,
       completed_at: new Date().toISOString(),
     })
     .eq("id", reportRunId);

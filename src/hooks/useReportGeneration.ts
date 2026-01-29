@@ -217,9 +217,9 @@ export function useReportGeneration(
         return;
       }
 
-      // CASE 2: Step 11 stuck (final assembly failed) - backend will handle recovery
-      if (run.current_step >= 11) {
-        console.log("Step 11 stuck, triggering final step recovery...");
+      // CASE 2: Step 12 stuck (final assembly failed) - backend will handle recovery
+      if (run.current_step >= 12) {
+        console.log("Step 12 stuck, triggering final step recovery...");
         
         // Set status to pending so backend accepts the resume
         const { error: updateError } = await supabase
@@ -298,7 +298,7 @@ export function useReportGeneration(
   // Track resume attempts to prevent infinite loops
   const resumeAttemptedRef = useRef<Set<string>>(new Set());
 
-  // 12-PHASE ARCHITECTURE: Detect checkpoint at any step 0-10 and auto-resume
+  // 13-PHASE ARCHITECTURE: Detect checkpoint at any step 0-11 and auto-resume
   useEffect(() => {
     if (activeRun && activeRun.status === "pending") {
       // Create a unique key for this checkpoint attempt
@@ -306,8 +306,8 @@ export function useReportGeneration(
       
       // Only resume if we haven't already attempted this specific checkpoint
       if (!resumeAttemptedRef.current.has(attemptKey)) {
-        // Steps 0-10 are valid checkpoints (step 11 is final assembly)
-        if (activeRun.current_step >= 0 && activeRun.current_step <= 10) {
+        // Steps 0-11 are valid checkpoints (step 12 is final assembly)
+        if (activeRun.current_step >= 0 && activeRun.current_step <= 11) {
           resumeAttemptedRef.current.add(attemptKey);
           resumeFromCheckpoint(activeRun.id);
         }
