@@ -1,241 +1,218 @@
 
 
-# Add Step 4.5: Market Sizing Source Pack
+# Enhanced Admin Dashboard: Activity and Error Monitoring
 
-## Overview
+## Current State
 
-You want to insert a new step between Step 4 (Find Competitors) and Step 5 (TAM Calculation) that curates validated market category definitions and sizes from external sources. This ensures Step 5 can calculate TAM using real data rather than hallucinating.
+The existing admin dashboard shows only static totals (grants, users, emails, audit logs) with placeholder cards. It doesn't show any real-time operational insights.
 
-## Architecture Impact
+## Available Data Sources
 
-Adding a "Step 4.5" requires renumbering since the database uses integer step numbers:
+Based on database analysis, you have rich operational data:
 
-| Current Step | Current Name | New Step | New Name |
-|--------------|--------------|----------|----------|
-| 0 | Build Australia-first source pack | 0 | (unchanged) |
-| 1 | Extract research context | 1 | (unchanged) |
-| 2 | Competitor research | 2 | (unchanged) |
-| 3 | Market segments | 3 | (unchanged) |
-| 4 | Find competitors | 4 | (unchanged) |
-| — | **(NEW)** | **5** | **Market Sizing Source Pack** |
-| 5 | Calculate TAM | 6 | Calculate TAM |
-| 6 | Calculate SAM | 7 | Calculate SAM |
-| 7 | Calculate SOM | 8 | Calculate SOM |
-| 8 | Economic impact | 9 | Economic impact |
-| 9 | Competitor table | 10 | Competitor table |
-| 10 | Partner businesses | 11 | Partner businesses |
-| 11 | Assemble report | 12 | Assemble report |
+| Source | Insights Available |
+|--------|-------------------|
+| `report_runs` | Generation status, success/failure rates, current step progress |
+| `report_run_steps` | Step-level timing, errors, bottlenecks |
+| `orders` | Revenue tracking, payment status |
+| `entitlements` | Credit usage, remaining balances |
+| `email_outbox` | Email delivery status |
+| `audit_logs` | Admin actions, system changes |
 
-**Total Steps: 12 → 13**
-
-## Technical Changes Required
-
-### 1. Database Migration
-
-Renumber existing steps 5-11 → 6-12, then insert new Step 5:
-
-```sql
--- Update step number constraint (0-12)
-ALTER TABLE prompt_bundle_steps 
-  DROP CONSTRAINT IF EXISTS prompt_bundle_steps_step_number_check;
-ALTER TABLE prompt_bundle_steps 
-  ADD CONSTRAINT prompt_bundle_steps_step_number_check 
-  CHECK (step_number >= 0 AND step_number <= 12);
-
--- Renumber existing steps 11→12, 10→11, ..., 5→6 (descending to avoid conflicts)
-UPDATE prompt_bundle_steps SET step_number = 12, 
-  step_name = 'assemble_report', step_description = 'Assembling final grant report' 
-  WHERE step_number = 11;
-UPDATE prompt_bundle_steps SET step_number = 11 WHERE step_number = 10;
-UPDATE prompt_bundle_steps SET step_number = 10 WHERE step_number = 9;
-UPDATE prompt_bundle_steps SET step_number = 9 WHERE step_number = 8;
-UPDATE prompt_bundle_steps SET step_number = 8 WHERE step_number = 7;
-UPDATE prompt_bundle_steps SET step_number = 7 WHERE step_number = 6;
-UPDATE prompt_bundle_steps SET step_number = 6 WHERE step_number = 5;
-
--- Insert new Step 5
-INSERT INTO prompt_bundle_steps (bundle_id, step_number, step_name, step_description, 
-  prompt_template, model_override)
-SELECT id, 5, 'market_sizing_source_pack', 'Building market sizing source pack',
-  '[YOUR FULL PROMPT]', 'google/gemini-3-flash-preview'
-FROM prompt_bundles;
-```
-
-### 2. Edge Function: `generate-report/index.ts`
-
-| Change | Details |
-|--------|---------|
-| Update `RESEARCH_STEPS` array | Insert new step at index 5, renumber rest |
-| Update `getModelForStep()` | Step 5 uses "Pro/Smart" tier for web search |
-| Update `total_steps` | From 12 to 13 |
-
-```typescript
-const RESEARCH_STEPS = [
-  { name: "build_source_pack", description: "Building Australia-first source pack" },
-  { name: "extract_context", description: "Extracting research context from article" },
-  { name: "competitor_research", description: "Searching for competing research" },
-  { name: "market_segments", description: "Identifying market segments" },
-  { name: "find_competitors", description: "Finding existing competitors" },
-  { name: "market_sizing_source_pack", description: "Building market sizing source pack" }, // NEW
-  { name: "calculate_tam", description: "Calculating Total Addressable Market" },
-  // ... shifted by 1
-];
-```
-
-### 3. Edge Function: `resume-report-run/index.ts`
-
-| Change | Details |
-|--------|---------|
-| Add case 5 in switch statement | Execute new Market Sizing Source Pack step |
-| Renumber cases 5-11 → 6-12 | Shift all subsequent cases |
-| Update `getBaseVariables()` | Add `{{marketSizingSourcePack}}` variable |
-| Update step output mappings | `step5` → `step6`, etc. for assembly |
-
-**New Step 5 Execution Logic:**
-
-```typescript
-case 5:
-  // Step 5: Market Sizing Source Pack
-  await executeStep(supabase, reportRunId, 5, async () => {
-    const stepConfig = bundle?.steps.get(5);
-    const interpolationVars = {
-      ...getBaseVariables(),
-      marketSegments: String(reportContent.marketSegments || ""),
-    };
-    
-    const prompt = stepConfig?.prompt_template 
-      ? interpolatePrompt(stepConfig.prompt_template, interpolationVars)
-      : fallbackPrompt;
-    
-    const result = await callAIWithRetry(prompt, 5, systemPrompt, stepConfig?.model_override);
-    reportContent.marketSizingSourcePack = result;
-    return { marketSizingSourcePack: result };
-  });
-  break;
-```
-
-### 4. Frontend: `GenerationProgress.tsx`
-
-Update step array to 13 steps:
-
-```typescript
-const RESEARCH_STEPS = [
-  "Building Australia-first source pack",
-  "Extracting research context from article",
-  "Searching for competing research",
-  "Identifying market segments",
-  "Finding existing competitors",
-  "Building market sizing source pack",  // NEW Step 5
-  "Calculating Total Addressable Market", // Now Step 6
-  "Calculating Serviceable Addressable Market",
-  "Calculating Serviceable Obtainable Market",
-  "Analyzing Australian economic impact",
-  "Building competitor comparison",
-  "Finding Australian partner businesses",
-  "Assembling final report",             // Now Step 12
-];
-```
-
-### 5. Frontend: `useReportGeneration.ts`
-
-Update auto-resume checkpoint range:
-
-```typescript
-// Steps 0-11 are valid checkpoints (step 12 is final assembly)
-if (activeRun.current_step >= 0 && activeRun.current_step <= 11) {
-  resumeFromCheckpoint(activeRun.id);
-}
-
-// Step 12 recovery logic
-if (run.current_step >= 12) {
-  // Handle final assembly recovery
-}
-```
-
-### 6. Admin UI: `PromptBundleEdit.tsx`
-
-Add new variable category and update assembly variables:
-
-```typescript
-{
-  name: "Market Sizing Source Pack (from Step 5)",
-  variables: [
-    { name: "{{marketSizingSourcePack}}", description: "JSON with by_segment market categories from Step 5" },
-  ],
-},
-{
-  name: "Assembly Variables (Step 12 only - JSON stringified)",
-  variables: [
-    // ... existing
-    { name: "{{step5}}", description: "JSON from Step 5 (Market Sizing Source Pack)" },  // NEW
-    { name: "{{step6}}", description: "JSON from Step 6 (TAM)" },  // Was step5
-    // ... shifted
-  ],
-}
-```
-
-### 7. Variable Flow Update
+## Proposed Dashboard Layout
 
 ```text
-STEP 5 INPUT:
-├── {{summary}}
-├── {{marketSegments}}   // JSON from Step 3
-
-STEP 5 OUTPUT (saved to checkpoint):
-└── marketSizingSourcePack: {
-      by_segment: [...],  // validated market categories per segment
-    }
-
-STEPS 6-11 INPUT (updated):
-├── All original inputs
-├── {{marketSizingSourcePack}} ← NEW from Step 5
-
-STEP 12 (Assembly) INPUT:
-├── {{step5}} ← Market Sizing Source Pack JSON
-├── {{step6}} ← TAM JSON (was step5)
-├── ... shifted by 1
++------------------------------------------------------------------+
+|                    ADMIN DASHBOARD                                |
++------------------------------------------------------------------+
+|                                                                   |
+|  [LIVE OPERATIONS]                                                |
+|  +------------+  +------------+  +------------+  +------------+   |
+|  | Currently  |  | Completed  |  | Failed     |  | Success    |   |
+|  | Running: 1 |  | Today: 0   |  | Today: 5   |  | Rate: 0%   |   |
+|  +------------+  +------------+  +------------+  +------------+   |
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+|  [ACTIVE REPORT RUNS]                               Auto-refresh  |
+|  +---------------------------------------------------------------+|
+|  | User          | Application    | Step    | Progress | Status  ||
+|  |---------------|----------------|---------|----------|---------|
+|  | gavin@...     | AEA Ignite     | 11/13   | 85%      | Running ||
+|  +---------------------------------------------------------------+|
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+|  [RECENT FAILURES]                                   View All >>  |
+|  +---------------------------------------------------------------+|
+|  | Time     | User       | Step Failed    | Error Message        ||
+|  |----------|------------|----------------|----------------------||
+|  | 2h ago   | gavin@...  | Step 0         | (cancelled)          ||
+|  +---------------------------------------------------------------+|
+|                                                                   |
++------------------------------------------------------------------+
+|                                                                   |
+|  [7-DAY TREND]              |  [SYSTEM HEALTH]                   |
+|  Reports: ===========       |  Emails Sent: 6                    |
+|  Success: ====              |  Orders Paid: 7                    |
+|  Failed:  =======           |  Active Users: 1                   |
+|                              |  Credits Used: 12                  |
+|                                                                   |
++------------------------------------------------------------------+
 ```
 
-## Files to Modify
+## Proposed Sections
+
+### 1. Live Operations Cards (Top Row)
+Real-time metrics with color coding:
+- **Currently Running** (blue) - Active generation jobs
+- **Completed Today** (green) - Successful completions in last 24h
+- **Failed Today** (red) - Failures in last 24h
+- **Success Rate** (dynamic color) - Percentage based on last 7 days
+
+### 2. Active Report Runs Table
+Live view of in-progress generations:
+- User email
+- Application title
+- Current step / total steps
+- Progress bar percentage
+- Status badge (running/pending)
+- Time elapsed
+- Auto-refresh every 10 seconds
+
+### 3. Recent Failures Panel
+Quick view of recent issues:
+- Timestamp (relative)
+- User email
+- Step that failed
+- Error message preview
+- Link to full run details
+- Filter by error type vs user cancellation
+
+### 4. 7-Day Trend Chart
+Simple bar or line chart showing:
+- Reports started per day
+- Completed vs failed ratio
+- Trend direction indicator
+
+### 5. System Health Summary
+Quick stats panel:
+- Emails sent (with delivery success rate if webhooks configured)
+- Orders/payments processed
+- Active entitlements
+- Recent admin actions count
+
+### 6. Recent Admin Activity Feed
+Compact list of recent audit log entries:
+- Action type badges
+- Entity affected
+- Performing admin
+- Relative timestamp
+
+## Technical Implementation
+
+### Data Fetching Strategy
+
+```typescript
+// Single query aggregation for efficiency
+const { data: dashboardStats } = useQuery({
+  queryKey: ["admin-dashboard-stats"],
+  queryFn: async () => {
+    const [
+      runStats,
+      activeRuns,
+      recentFailures,
+      trendData,
+      systemHealth
+    ] = await Promise.all([
+      // Today's run statistics
+      supabase.from("report_runs")
+        .select("status")
+        .gte("created_at", startOfToday),
+      
+      // Active runs with details
+      supabase.from("report_runs")
+        .select(`*, applications(title, user_id), profiles(email)`)
+        .in("status", ["running", "pending"])
+        .order("created_at", { ascending: false }),
+      
+      // Recent failures
+      supabase.from("report_runs")
+        .select(`*, applications(title), profiles(email)`)
+        .eq("status", "failed")
+        .order("created_at", { ascending: false })
+        .limit(5),
+      
+      // 7-day trend (using RPC or aggregation)
+      supabase.rpc("get_report_trend_7_days"),
+      
+      // System health counts
+      Promise.all([
+        supabase.from("email_outbox").select("id", { count: "exact" }),
+        supabase.from("orders").select("id", { count: "exact" }),
+        supabase.from("entitlements").select("id", { count: "exact" }),
+      ])
+    ]);
+    
+    return { runStats, activeRuns, recentFailures, trendData, systemHealth };
+  },
+  refetchInterval: 10000, // Auto-refresh every 10 seconds
+});
+```
+
+### UI Components to Add
+
+| Component | Purpose |
+|-----------|---------|
+| `ActiveRunsTable` | Live progress tracking with step details |
+| `FailuresPanel` | Recent errors with expandable details |
+| `TrendChart` | 7-day visualization using recharts |
+| `SystemHealthCards` | Quick-glance operational metrics |
+| `ActivityFeed` | Recent audit log entries |
+
+### Optional Database Function
+
+For efficient trend aggregation:
+
+```sql
+CREATE OR REPLACE FUNCTION get_report_trend_7_days()
+RETURNS TABLE (
+  date DATE,
+  started INTEGER,
+  completed INTEGER,
+  failed INTEGER
+) AS $$
+  SELECT 
+    DATE(created_at) as date,
+    COUNT(*)::INTEGER as started,
+    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)::INTEGER as completed,
+    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END)::INTEGER as failed
+  FROM report_runs
+  WHERE created_at > NOW() - INTERVAL '7 days'
+  GROUP BY DATE(created_at)
+  ORDER BY date DESC
+$$ LANGUAGE SQL STABLE;
+```
+
+## Files to Create/Modify
 
 | File | Changes |
 |------|---------|
-| Database Migration | Renumber steps, insert Step 5 |
-| `supabase/functions/generate-report/index.ts` | Update RESEARCH_STEPS array, getModelForStep() |
-| `supabase/functions/resume-report-run/index.ts` | Add case 5, renumber cases 6-12, update variables |
-| `src/components/workspace/GenerationProgress.tsx` | Update RESEARCH_STEPS array (13 items) |
-| `src/hooks/useReportGeneration.ts` | Update checkpoint range (0-11), final step (12) |
-| `src/pages/admin/PromptBundleEdit.tsx` | Add Step 5 variables, update assembly mappings |
+| `src/pages/admin/AdminDashboard.tsx` | Complete rewrite with new sections |
+| `src/components/admin/ActiveRunsTable.tsx` | New component for live run tracking |
+| `src/components/admin/FailuresPanel.tsx` | New component for error display |
+| `src/components/admin/TrendChart.tsx` | New component using recharts |
+| `src/components/admin/SystemHealthCards.tsx` | New component for metrics |
+| Database migration | Add `get_report_trend_7_days` function |
 
-## Step 5 Prompt Storage
+## Priority Features
 
-Your full prompt will be stored with:
-- `step_number`: 5
-- `step_name`: "market_sizing_source_pack"  
-- `step_description`: "Building market sizing source pack"
-- `prompt_template`: [Your full prompt from the request]
-- `model_override`: `google/gemini-3-flash-preview` (Smart/Pro tier with web capability)
+For an MVP operational dashboard, I recommend implementing in this order:
 
-## Model Selection
-
-The new Step 5 requires web-enabled/retrieval capability for market research lookups. Using `google/gemini-3-flash-preview` as specified in "Smart/Pro tier" models.
-
-## Output Integration
-
-The Step 5 output provides validated market categories that Step 6 (TAM) will reference:
-
-```text
-Step 6 TAM Prompt Variables:
-├── {{marketSegments}}          // From Step 3
-├── {{marketSizingSourcePack}}  // NEW: From Step 5 (validated categories + numbers)
-└── {{sources}}                 // From Step 0
-```
-
-This ensures TAM calculations are grounded in externally-validated market definitions rather than AI-generated estimates.
-
-## Considerations
-
-- **Renumbering Impact**: All step references in existing prompts using `[S#]` notation remain unchanged (those refer to source IDs, not step numbers)
-- **Rate Limiting**: Adding a step increases total AI calls from 12 to 13. The 3-second inter-step delay helps mitigate rate limits.
-- **Fallback**: If Step 5 cannot find validated sources, it returns `unknowns[]` entries explaining what's missing, rather than fabricating data.
+1. **Live Operations Cards** - Immediate value for monitoring
+2. **Active Report Runs Table** - Critical for debugging current issues
+3. **Recent Failures Panel** - Quick error identification
+4. **7-Day Trend** - Pattern recognition
+5. **System Health** - Secondary metrics
+6. **Activity Feed** - Lower priority audit trail
 
