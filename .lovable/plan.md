@@ -1,168 +1,121 @@
 
-# Fix Admin Invitation Email
 
-## Problem
+# Investigation Report: Timeouts & Admin Dashboard Failures
 
-When inviting a new admin, no email is sent because:
-1. The `invite-admin` function generates a magic link but never sends it
-2. No email template exists for admin invitations (`ADMIN_INVITE`)
-3. The Brevo API is never called to deliver the email
+## Problems Identified
 
-## Current Flow (Broken)
+I investigated two interrelated issues:
 
-```text
-Super Admin clicks "Add Admin"
-    ↓
-invite-admin function runs
-    ↓
-User created in auth.users ✓
-Profile created ✓
-Role assigned ✓
-Magic link generated ✓
-    ↓
-Email sent? ✗ NEVER HAPPENS
-    ↓
-New admin never receives login link
-```
+### 1. Timeouts at Various Steps
+**Root Cause**: Supabase Edge Functions have a hard timeout limit (60 seconds wall-clock time). When a step takes longer than this limit:
+- The function is forcibly terminated by the platform
+- No cleanup code runs (no catch blocks, no finally blocks)
+- Database status remains "running" instead of "failed"
+- Credits are never refunded
 
-## Solution
+Evidence from the database:
+- Current run `ca41a41d-f84c-4d16-9e1b-2b62aa24deb8` has been "running" Step 3 for over 7 minutes
+- The step shows `status: running` with no `error_message`
+- Edge function logs show `shutdown` events without corresponding error recordings
 
-1. **Add email template to database** for `ADMIN_INVITE`
-2. **Update `invite-admin` function** to send the magic link via Brevo API
+### 2. Failures Not Appearing on Admin Dashboard
+**Root Cause**: The admin dashboard queries only for `status = "failed"`, but timeout-killed runs remain stuck in `status = "running"` forever.
 
-## Implementation
-
-### Step 1: Add Email Template
-
-Run SQL migration to add the template mapping:
-
+The current query in `AdminDashboard.tsx` (lines 63-77):
 ```sql
-INSERT INTO email_templates (template_key, brevo_template_id, description)
-VALUES (
-  'ADMIN_INVITE',
-  0,  -- Placeholder - will use fallback HTML
-  'Invitation email for new admin users with magic link'
-);
+.eq("status", "failed")
+```
+This misses:
+- Runs stuck in "running" status (timed out)
+- Runs stuck in "pending" status (never resumed)
+
+---
+
+## Solution Plan
+
+### Part 1: Add "Stalled Runs" Detection to Admin Dashboard
+
+Modify the admin dashboard to detect and display runs that are likely stalled (stuck in running/pending beyond a threshold).
+
+**Changes to `src/pages/admin/AdminDashboard.tsx`:**
+- Add a new query for stalled runs (running/pending for >5 minutes)
+- Display stalled runs in a new section or as a separate tab in the failures panel
+- Allow admins to manually mark runs as failed or trigger cleanup
+
+### Part 2: Create Background Cleanup Edge Function
+
+Create a new edge function `cleanup-stalled-runs` that:
+- Finds runs stuck in "running" for >10 minutes
+- Marks them as "failed" with an appropriate error message
+- Updates the failed step with an error
+- Refunds the consumed credit
+- Can be triggered manually by admins or via a scheduled job
+
+### Part 3: Add Admin Actions for Stuck Runs
+
+Provide admin controls to:
+- View stalled runs with details
+- Manually fail a stalled run (with credit refund)
+- View the last activity timestamp for each run
+
+---
+
+## Technical Details
+
+### Database Query for Stalled Runs
+```sql
+SELECT rr.*, a.title, p.email
+FROM report_runs rr
+JOIN applications a ON a.id = rr.application_id
+JOIN profiles p ON p.user_id = a.user_id
+WHERE rr.status IN ('running', 'pending')
+  AND rr.started_at < NOW() - INTERVAL '5 minutes'
+ORDER BY rr.started_at ASC
 ```
 
-### Step 2: Update invite-admin Function
-
-Add Brevo email sending after generating the magic link:
-
-```typescript
-// After generating magic link (around line 178)
-
-// Send invitation email via Brevo
-const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
-if (!BREVO_API_KEY) {
-  logStep("Warning: BREVO_API_KEY not configured, cannot send email");
-} else {
-  const magicLinkUrl = linkData?.properties?.action_link;
-  
-  const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      "api-key": BREVO_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
-      to: [{ email: email, name: fullName || email }],
-      subject: "You've been invited to Grant Genius Admin",
-      htmlContent: `
-<!DOCTYPE html>
-<html>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="text-align: center; margin-bottom: 30px;">
-    <h1 style="color: #4F46E5;">🎓 Grant Genius</h1>
-  </div>
-  
-  <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; border-radius: 12px; margin-bottom: 30px;">
-    <h2 style="color: white; margin: 0;">You're Invited!</h2>
-    <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">
-      You've been invited to join Grant Genius as an ${role === 'super_admin' ? 'Super Admin' : 'Admin'}.
-    </p>
-  </div>
-  
-  <p>Hi${fullName ? ' ' + fullName : ''},</p>
-  
-  <p>Click the button below to set up your account and access the admin dashboard:</p>
-  
-  <div style="text-align: center; margin: 30px 0;">
-    <a href="${magicLinkUrl}" style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;">
-      Accept Invitation
-    </a>
-  </div>
-  
-  <p style="color: #666; font-size: 14px;">
-    This link expires in 24 hours. If it doesn't work, copy and paste this URL:<br>
-    <a href="${magicLinkUrl}" style="color: #4F46E5; word-break: break-all;">${magicLinkUrl}</a>
-  </p>
-  
-  <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-  
-  <p style="color: #999; font-size: 12px; text-align: center;">
-    This invitation was sent by a Grant Genius Super Admin.
-  </p>
-</body>
-</html>
-      `,
-    }),
-  });
-
-  if (brevoResponse.ok) {
-    logStep("Invitation email sent successfully");
-    
-    // Log to email_outbox for tracking
-    await adminClient.from("email_outbox").insert({
-      user_id: newUser.user.id,
-      to_email: email,
-      template_key: "ADMIN_INVITE",
-      subject: "You've been invited to Grant Genius Admin",
-      status: "sent",
-      sent_at: new Date().toISOString(),
-      variables_json: {
-        role: role,
-        full_name: fullName || null,
-        invited_by: requesterId,
-      },
-    });
-  } else {
-    const errorText = await brevoResponse.text();
-    logStep("Failed to send invitation email", { error: errorText });
-  }
-}
-```
-
-## Files to Modify
-
-| File | Changes |
-|------|---------|
-| `supabase/functions/invite-admin/index.ts` | Add Brevo API call to send magic link email |
-| Database migration | Add `ADMIN_INVITE` template row (optional, for tracking) |
-
-## Email Content
-
-- **Subject**: "You've been invited to Grant Genius Admin"
-- **From**: Grant Genius <grantgenius@disruptorsco.com>
-- **Contains**:
-  - Welcome message with role (Admin/Super Admin)
-  - Magic link button to accept invitation
-  - Fallback plain text link
-  - 24-hour expiry notice
-
-## Expected Flow After Fix
-
+### New Edge Function: `cleanup-stalled-runs`
 ```text
-Super Admin clicks "Add Admin"
-    ↓
-invite-admin function runs
-    ↓
-User created in auth.users ✓
-Magic link generated ✓
-    ↓
-Brevo API sends email with link ✓
-Email logged to email_outbox ✓
-    ↓
-New admin receives email and clicks to log in
+supabase/functions/cleanup-stalled-runs/index.ts
 ```
+- Accepts optional `stale_threshold_minutes` parameter (default: 10)
+- Accepts optional `run_id` to clean up a specific run
+- Updates run status to "failed"
+- Updates current step with error message "Edge function timed out"
+- Refunds credits via existing `refundCredit` pattern
+
+### UI Additions
+1. New "Stalled Runs" card in admin dashboard
+2. "Force Fail" button for each stalled run
+3. Alert badge showing count of stalled runs
+
+---
+
+## Files to Create/Modify
+
+| File | Action |
+|------|--------|
+| `src/pages/admin/AdminDashboard.tsx` | Add stalled runs query and display |
+| `src/components/admin/StalledRunsTable.tsx` | New component for stalled runs |
+| `supabase/functions/cleanup-stalled-runs/index.ts` | New cleanup function |
+| `supabase/config.toml` | Add config for new function |
+
+---
+
+## Implementation Order
+
+1. Create `cleanup-stalled-runs` edge function
+2. Add StalledRunsTable component
+3. Update AdminDashboard to fetch and display stalled runs
+4. Add "Force Fail" action that calls the cleanup function
+5. Test end-to-end with a stuck run
+
+---
+
+## Expected Outcome
+
+After implementation:
+- Admins will see stalled runs prominently in the dashboard
+- One-click "Force Fail" will clean up stuck runs and refund credits
+- Better visibility into actual system reliability
+- Users stuck in limbo will get their credits back
+
