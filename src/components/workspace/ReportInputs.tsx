@@ -20,9 +20,10 @@ interface ReportInputsProps {
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   projectName?: string;
+  onProjectNameChange?: (value: string) => void;
 }
 
-export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = false, onToggleCollapse, projectName }: ReportInputsProps) {
+export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = false, onToggleCollapse, projectName, onProjectNameChange }: ReportInputsProps) {
   const wordCount = inputs.summary.trim().split(/\s+/).filter(Boolean).length;
 
   // Truncate URL for collapsed display
@@ -57,6 +58,21 @@ export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = fa
         </CardHeader>
         <CollapsibleContent className="animate-accordion-down data-[state=closed]:animate-accordion-up">
           <CardContent className="space-y-6 pt-0">
+            {/* Project Name */}
+            <div className="space-y-2">
+              <Label htmlFor="projectName">Project Name</Label>
+              <Input
+                id="projectName"
+                placeholder="e.g., My Research Project"
+                value={projectName || ""}
+                onChange={(e) => onProjectNameChange?.(e.target.value)}
+                disabled={disabled}
+              />
+              <p className="text-xs text-muted-foreground">
+                Give your project a memorable name for easier tracking
+              </p>
+            </div>
+
             {/* Public Article URL */}
             <div className="space-y-2">
               <Label htmlFor="publicArticleUrl">
