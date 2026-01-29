@@ -3,15 +3,24 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RefreshCw } from "lucide-react";
-import { startOfDay } from "date-fns";
+import { startOfDay, subDays } from "date-fns";
 import { LiveOperationsCards } from "@/components/admin/LiveOperationsCards";
 import { ActiveRunsTable } from "@/components/admin/ActiveRunsTable";
 import { FailuresPanel } from "@/components/admin/FailuresPanel";
+import { StepFailureBreakdown } from "@/components/admin/StepFailureBreakdown";
 import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
 
+// Helper to check if an error message indicates cancellation
+function isCancellation(errorMessage: string | null | undefined): boolean {
+  if (!errorMessage) return false;
+  const lower = errorMessage.toLowerCase();
+  return lower.includes("cancel");
+}
+
 export default function AdminDashboard() {
   const todayStart = startOfDay(new Date()).toISOString();
+  const thirtyDaysAgo = subDays(new Date(), 30).toISOString();
 
   // Fetch all dashboard data with auto-refresh
   const { data, isLoading, dataUpdatedAt } = useQuery({
@@ -26,6 +35,7 @@ export default function AdminDashboard() {
         ordersRes,
         entitlementsRes,
         auditRes,
+        stepFailuresRes,
       ] = await Promise.all([
         // Today's run statistics
         supabase
@@ -50,7 +60,7 @@ export default function AdminDashboard() {
           .order("created_at", { ascending: false })
           .limit(10),
 
-        // Recent failures with step info
+        // Recent failures with step info (increased limit for better analysis)
         supabase
           .from("report_runs")
           .select(`
@@ -64,7 +74,7 @@ export default function AdminDashboard() {
           `)
           .eq("status", "failed")
           .order("created_at", { ascending: false })
-          .limit(5),
+          .limit(20),
 
         // 7-day trend data
         supabase.rpc("get_report_trend_7_days"),
@@ -74,6 +84,13 @@ export default function AdminDashboard() {
         supabase.from("orders").select("id", { count: "exact", head: true }).eq("status", "paid"),
         supabase.from("entitlements").select("id", { count: "exact", head: true }),
         supabase.from("audit_logs").select("id", { count: "exact", head: true }),
+
+        // Step failure breakdown (last 30 days, excluding cancellations)
+        supabase
+          .from("report_run_steps")
+          .select("step_number, step_name, error_message")
+          .eq("status", "failed")
+          .gte("created_at", thirtyDaysAgo),
       ]);
 
       // Calculate today's stats
@@ -128,13 +145,48 @@ export default function AdminDashboard() {
         };
       });
 
+      // Separate stage failures from cancellations
+      const stageFailures = recentFailures.filter(
+        f => !isCancellation(f.failed_step?.error_message)
+      );
+      const cancellations = recentFailures.filter(
+        f => isCancellation(f.failed_step?.error_message)
+      );
+
+      // Aggregate step failure breakdown (excluding cancellations)
+      const stepFailuresRaw = stepFailuresRes.data || [];
+      const stepFailureMap = new Map<string, { step_number: number; step_name: string; count: number }>();
+      
+      for (const step of stepFailuresRaw) {
+        if (isCancellation(step.error_message)) continue;
+        
+        const key = `${step.step_number}-${step.step_name}`;
+        const existing = stepFailureMap.get(key);
+        if (existing) {
+          existing.count++;
+        } else {
+          stepFailureMap.set(key, {
+            step_number: step.step_number,
+            step_name: step.step_name,
+            count: 1,
+          });
+        }
+      }
+
+      // Sort by count descending and take top 5
+      const stepFailureBreakdown = Array.from(stepFailureMap.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+
       return {
         currentlyRunning,
         completedToday,
         failedToday,
         successRate7d,
         activeRuns,
-        recentFailures,
+        stageFailures,
+        cancellations,
+        stepFailureBreakdown,
         trendData,
         systemHealth: {
           emailsSent: emailsRes.count ?? 0,
@@ -197,18 +249,39 @@ export default function AdminDashboard() {
         </CardContent>
       </Card>
 
-      {/* Two Column Layout: Failures + Trend/Health */}
+      {/* Two Column Layout: Failures + Step Breakdown | Trend/Health */}
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Recent Failures */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Failures</CardTitle>
-            <CardDescription>Last 5 failed or cancelled report generations</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <FailuresPanel failures={data?.recentFailures ?? []} isLoading={isLoading} />
-          </CardContent>
-        </Card>
+        {/* Left Column: Failures + Step Breakdown */}
+        <div className="space-y-6">
+          {/* Recent Failures with Tabs */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Failures</CardTitle>
+              <CardDescription>Stage gate failures vs user cancellations</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <FailuresPanel 
+                stageFailures={data?.stageFailures ?? []} 
+                cancellations={data?.cancellations ?? []}
+                isLoading={isLoading} 
+              />
+            </CardContent>
+          </Card>
+
+          {/* Step Failure Breakdown */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Step Failure Breakdown</CardTitle>
+              <CardDescription>Which steps fail most often (last 30 days, excludes cancellations)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <StepFailureBreakdown 
+                stepFailures={data?.stepFailureBreakdown ?? []} 
+                isLoading={isLoading} 
+              />
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Right Column: Trend + Health */}
         <div className="space-y-6">
