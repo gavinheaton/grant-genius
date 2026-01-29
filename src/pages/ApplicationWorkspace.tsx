@@ -262,13 +262,9 @@ export default function ApplicationWorkspace() {
               </div>
               <div className="flex flex-col">
                 <h1 className="text-sm font-semibold">{application.grant_version.grant.name}</h1>
-                <Input
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder="Add a project name..."
-                  className="h-6 text-xs border-none bg-transparent hover:bg-muted focus:bg-muted px-1 -ml-1 w-48 placeholder:text-muted-foreground/60"
-                  disabled={isGenerating}
-                />
+                {projectName && (
+                  <p className="text-xs text-muted-foreground">{projectName}</p>
+                )}
               </div>
             </div>
           </div>
@@ -313,6 +309,7 @@ export default function ApplicationWorkspace() {
           isCollapsed={inputsCollapsed}
           onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
           projectName={projectName}
+          onProjectNameChange={setProjectName}
         />
 
         {/* Generate Report Button */}
