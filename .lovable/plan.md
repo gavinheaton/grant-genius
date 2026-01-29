@@ -1,153 +1,148 @@
 
 
-# Enhanced Failures Panel: Differentiate Cancellations vs Stage Gate Failures
+# Export Bundle Feature for Prompt Bundles
 
 ## Overview
 
-Improve the FailuresPanel to clearly separate and visualize:
-1. **User Cancellations** - Runs cancelled by the user (no actionable issue)
-2. **Stage Gate Failures** - Actual pipeline step failures that need investigation
+Add an "Export" button next to the Edit and Clone buttons on each bundle card that opens a dialog displaying the full bundle configuration in a readable, copyable format.
 
-Additionally, add a **failure breakdown by step** to identify which steps fail most often.
+## Implementation Details
 
-## Current State
+### 1. Export Button Placement
 
-The existing FailuresPanel:
-- Shows all failures in a single list
-- Only differentiates cancellations via the badge text
-- Doesn't provide aggregate analysis of which steps fail
+Add an Export button with a `FileDown` or `Download` icon between Edit and Clone:
 
-## Proposed Changes
+```text
+[Edit] [Export] [Clone] [Delete]
+```
 
-### 1. Split the Failures Panel into Tabs
+### 2. Export Dialog Design
+
+When clicked, opens a dialog showing:
 
 ```text
 +----------------------------------------------------------+
-|  Recent Failures                                          |
-|  [Stage Failures (1)] [Cancellations (5)]                |
+|  Export Bundle: "Australian Focus Bundle"                 |
 +----------------------------------------------------------+
 |                                                           |
-|  STAGE FAILURES TAB:                                      |
+|  BUNDLE NAME                                              |
+|  Australian Focus Bundle                                  |
+|                                                           |
+|  SYSTEM PROMPT                                            |
 |  +------------------------------------------------------+ |
-|  | Step 3: market_segments              | 500 Error     | |
-|  | gavin@... | AEA Ignite | 2h ago      |               | |
+|  | You are a research commercialization expert...       | |
 |  +------------------------------------------------------+ |
 |                                                           |
-|  CANCELLATIONS TAB:                                       |
-|  | (greyed out, less prominent)                         | |
-|  | gavin@... | Step 0 | Cancelled | 3h ago              | |
+|  STEP PROMPTS (13)                                        |
 |                                                           |
+|  Step 0: build_source_pack                                |
+|  Model: google/gemini-2.5-flash (or "Default")           |
+|  +------------------------------------------------------+ |
+|  | Your task is to curate a pack of validated...        | |
+|  +------------------------------------------------------+ |
+|                                                           |
+|  Step 1: scrape_research_context                         |
+|  Model: Default                                           |
+|  +------------------------------------------------------+ |
+|  | Extract the key research findings from...            | |
+|  +------------------------------------------------------+ |
+|  ...                                                      |
+|                                                           |
+|  [Copy to Clipboard]                      [Close]         |
 +----------------------------------------------------------+
 ```
 
-### 2. Add Step Failure Breakdown Card
+### 3. Data Fetching
 
-New card showing which steps fail most often (excluding cancellations):
+Since the bundle list only contains basic info (no steps), clicking "Export" will need to fetch the full bundle with steps using the existing `usePromptBundle` hook pattern. However, to avoid a separate hook call for each potential export, we'll fetch on-demand when the dialog opens.
+
+### 4. Copy to Clipboard
+
+Format the bundle as structured text for easy copying:
 
 ```text
-+----------------------------------------------------------+
-|  Step Failure Breakdown (Last 30 days)                   |
-+----------------------------------------------------------+
-|  Step 3: market_segments     ██████████████  3 failures  |
-|  Step 0: build_source_pack   ██████         1 failure    |
-|  Step 5: market_sizing       ████           1 failure    |
-+----------------------------------------------------------+
+# Bundle: Australian Focus Bundle
+
+## System Prompt
+You are a research commercialization expert...
+
+## Step 0: build_source_pack
+Model: google/gemini-2.5-flash
+---
+Your task is to curate a pack of validated...
+
+## Step 1: scrape_research_context
+Model: Default
+---
+Extract the key research findings from...
 ```
 
-This helps identify problematic steps for prompt tuning.
+## Technical Approach
 
-### 3. Classification Logic
+### State Management
 
-**Cancellation Detection**:
 ```typescript
-const isCancelled = 
-  error_message?.toLowerCase().includes("cancel") ||
-  error_message?.toLowerCase().includes("cancelled");
+// In PromptBundles.tsx
+const [exportDialogOpen, setExportDialogOpen] = useState(false);
+const [exportBundleId, setExportBundleId] = useState<string | null>(null);
+
+// Fetch full bundle when export dialog opens
+const { data: exportBundle, isLoading: exportLoading } = usePromptBundle(
+  exportDialogOpen ? exportBundleId : undefined
+);
 ```
 
-**Stage Gate Failure** = Any failure that is NOT a cancellation
-
-### 4. Data Fetching Updates
-
-Update the dashboard query to:
-- Fetch more failures (increase limit for analysis)
-- Include step failure aggregation
+### Export Handler
 
 ```typescript
-// Additional query for step failure breakdown
-const stepFailuresRes = await supabase
-  .from("report_run_steps")
-  .select("step_number, step_name, error_message")
-  .eq("status", "failed")
-  .not("error_message", "ilike", "%cancel%");
+const openExportDialog = (bundle: PromptBundle) => {
+  setExportBundleId(bundle.id);
+  setExportDialogOpen(true);
+};
+```
+
+### Copy Function
+
+```typescript
+const formatBundleForExport = (bundle: PromptBundleWithSteps): string => {
+  let output = `# Bundle: ${bundle.name}\n\n`;
+  output += `## System Prompt\n${bundle.system_prompt}\n\n`;
+  
+  for (const step of bundle.steps) {
+    output += `## Step ${step.step_number}: ${step.step_name}\n`;
+    output += `Model: ${step.model_override || "Default"}\n`;
+    output += `---\n${step.prompt_template}\n\n`;
+  }
+  
+  return output;
+};
 ```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/components/admin/FailuresPanel.tsx` | Add tabs for Stage Failures vs Cancellations, restyle layout |
-| `src/pages/admin/AdminDashboard.tsx` | Update query to separate failure types, add step breakdown data |
-| `src/components/admin/StepFailureBreakdown.tsx` | **NEW** - Component showing which steps fail most often |
+| `src/pages/admin/PromptBundles.tsx` | Add Export button, export dialog with loading state, copy-to-clipboard functionality |
+| `src/hooks/usePromptBundles.ts` | No changes needed - existing `usePromptBundle` hook fetches steps |
 
-## UI Design Details
+## UI Details
 
-### FailuresPanel with Tabs
+### Export Dialog
 
-- **Stage Failures tab** (default, highlighted):
-  - Red badge with failure count
-  - Shows step name prominently
-  - Shows actual error message (not "Cancelled")
-  - Sorted by recency
+- **Header**: "Export Bundle: {name}"
+- **Sections**:
+  - Bundle Name (text)
+  - System Prompt (scrollable code block)
+  - Step Prompts (accordion or scrollable list, each with step number, name, model, and prompt)
+- **Actions**:
+  - "Copy to Clipboard" button - copies formatted markdown text
+  - "Close" button
+- **Loading State**: Show skeleton while fetching full bundle data
 
-- **Cancellations tab**:
-  - Grey/muted badge
-  - Less prominent styling
-  - Quick scan for users who cancelled
+### Styling
 
-### StepFailureBreakdown Component
-
-- Horizontal bar chart or simple list
-- Shows top 5 failing steps
-- Excludes cancellations from count
-- Links step name to help with debugging
-
-## Implementation Approach
-
-### Step 1: Update FailuresPanel Interface
-
-```typescript
-interface FailuresPanelProps {
-  stageFailures: FailedRun[];
-  cancellations: FailedRun[];
-  isLoading: boolean;
-}
-```
-
-### Step 2: Split Data in Dashboard
-
-```typescript
-// In AdminDashboard.tsx
-const recentFailures = (recentFailuresRes.data || []).map(/* ... */);
-
-// Separate cancellations from stage failures
-const stageFailures = recentFailures.filter(
-  f => !f.failed_step?.error_message?.toLowerCase().includes("cancel")
-);
-const cancellations = recentFailures.filter(
-  f => f.failed_step?.error_message?.toLowerCase().includes("cancel")
-);
-```
-
-### Step 3: Create StepFailureBreakdown
-
-Aggregate step failures (excluding cancellations) and display as a ranked list.
-
-## Expected Outcome
-
-After implementation:
-- Admin can quickly see **how many actual failures** vs cancellations
-- Admin can identify **which pipeline steps need attention**
-- Cancellations are de-emphasized but still visible
-- Clear actionable insights for prompt tuning
+- Use `ScrollArea` for the dialog content since bundles can be long
+- Use `font-mono` for prompts
+- Use subtle separators between steps
+- Toast notification on successful copy
 
