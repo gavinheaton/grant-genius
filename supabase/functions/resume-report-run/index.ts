@@ -877,7 +877,10 @@ Use the ANZSIC hierarchy for classification.`);
 
       case 12:
         // Step 12: Assemble Final Report (was Step 11) - FINAL STEP
+        // Uses extended timeout (120s) due to large context and complex processing
         await executeStep(supabase, reportRunId, 12, async () => {
+          console.log("Step 12: Final assembly starting with extended 120s timeout");
+          
           const defaultAssemblyPrompt = `You are assembling a final grant report for Australian government assessors.
 
 Grant: {{grantName}} ({{grantVersionLabel}})
@@ -938,7 +941,14 @@ Return ONLY valid JSON with this schema:
 STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.`;
 
           const assemblyPrompt = getStepPrompt(12, defaultAssemblyPrompt);
-          const assemblyResult = await callAIWithRetry(assemblyPrompt, 12, systemPrompt, getStepModel(12));
+          // Use 120s timeout for Step 12 (2x normal) - this step processes all prior outputs
+          const assemblyResult = await callAIWithRetry(
+            assemblyPrompt, 
+            12, 
+            systemPrompt, 
+            getStepModel(12),
+            120000  // 2 minute timeout for final assembly
+          );
           
           // Parse the JSON response
           let parsedReport;
@@ -1156,7 +1166,8 @@ async function callAIWithRetry(
   prompt: string, 
   stepNumber: number,
   systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
-  modelOverride?: string | null
+  modelOverride?: string | null,
+  customTimeoutMs?: number
 ): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
@@ -1166,7 +1177,10 @@ async function callAIWithRetry(
 
   // Use model override if provided, otherwise use default for step
   const model = modelOverride || getModelForStep(stepNumber);
-  console.log(`Step ${stepNumber}: Using model ${model}`);
+  
+  // Use custom timeout for specific steps (e.g., Step 12), default 45s
+  const timeoutMs = customTimeoutMs || 45000;
+  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeoutMs / 1000}s`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
     // Wait before retry (not on first attempt)
@@ -1193,7 +1207,7 @@ async function callAIWithRetry(
             ],
           }),
         },
-        45000 // 45s timeout for AI calls
+        timeoutMs // Use configurable timeout
       );
 
       if (!response.ok) {
