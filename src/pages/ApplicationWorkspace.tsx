@@ -300,7 +300,7 @@ export default function ApplicationWorkspace() {
 
         {/* Progress Indicator */}
         <div ref={progressRef}>
-          {(isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
+        {(isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
             <GenerationProgress
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}
@@ -313,6 +313,8 @@ export default function ApplicationWorkspace() {
               }
               emailOnComplete={activeRun.email_on_complete}
               onToggleEmailOnComplete={toggleEmailOnComplete}
+              startedAt={activeRun.started_at}
+              completedAt={activeRun.completed_at}
             />
           )}
         </div>

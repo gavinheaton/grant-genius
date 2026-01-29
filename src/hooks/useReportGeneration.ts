@@ -10,6 +10,7 @@ interface ReportRun {
   total_steps: number;
   created_at: string;
   started_at: string | null;
+  completed_at: string | null;
   email_on_complete: boolean;
 }
 
@@ -63,7 +64,7 @@ export function useReportGeneration(
 
     const { data, error } = await supabase
       .from("report_runs")
-      .select("id, status, current_step, total_steps, created_at, started_at, email_on_complete")
+      .select("id, status, current_step, total_steps, created_at, started_at, completed_at, email_on_complete")
       .eq("application_id", applicationId)
       .in("status", ["pending", "running"])
       .order("created_at", { ascending: false })
@@ -86,11 +87,13 @@ export function useReportGeneration(
         setActiveRun({
           ...data,
           status: "stalled" as const,
+          completed_at: data.completed_at ?? null,
           email_on_complete: data.email_on_complete ?? false,
         } as ReportRun);
       } else {
         setActiveRun({
           ...data,
+          completed_at: data.completed_at ?? null,
           email_on_complete: data.email_on_complete ?? false,
         } as ReportRun);
       }

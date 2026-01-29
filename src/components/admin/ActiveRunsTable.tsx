@@ -2,8 +2,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDistanceToNow } from "date-fns";
-import { Activity } from "lucide-react";
+import { Activity, Clock } from "lucide-react";
 
 interface ActiveRun {
   id: string;
@@ -12,11 +11,26 @@ interface ActiveRun {
   total_steps: number;
   created_at: string;
   started_at: string | null;
+  completed_at: string | null;
   application: {
     title: string | null;
     user_id: string;
   } | null;
   user_email: string | null;
+}
+
+// Format elapsed time between two dates
+function formatElapsedTime(startedAt: string | null, completedAt: string | null): string {
+  if (!startedAt) return "-";
+  
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  const seconds = Math.floor((end - start) / 1000);
+  
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
 interface ActiveRunsTableProps {
@@ -52,13 +66,12 @@ export function ActiveRunsTable({ runs, isLoading }: ActiveRunsTableProps) {
           <TableHead>Application</TableHead>
           <TableHead>Progress</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Started</TableHead>
+          <TableHead>Elapsed</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {runs.map((run) => {
+      {runs.map((run) => {
           const progressPercent = Math.round((run.current_step / run.total_steps) * 100);
-          const startTime = run.started_at || run.created_at;
           
           return (
             <TableRow key={run.id}>
@@ -89,7 +102,10 @@ export function ActiveRunsTable({ runs, isLoading }: ActiveRunsTableProps) {
                 </Badge>
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">
-                {formatDistanceToNow(new Date(startTime), { addSuffix: true })}
+                <div className="flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5" />
+                  {formatElapsedTime(run.started_at, run.completed_at)}
+                </div>
               </TableCell>
             </TableRow>
           );
