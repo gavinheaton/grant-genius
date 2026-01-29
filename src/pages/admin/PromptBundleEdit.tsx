@@ -73,28 +73,30 @@ const VARIABLE_CATEGORIES = [
       { name: "{{competitorResearch}}", description: "Output from competitor research (Step 2)" },
       { name: "{{marketSegments}}", description: "Output from market segments step (Step 3)" },
       { name: "{{existingCompetitors}}", description: "Output from competitors step (Step 4)" },
-      { name: "{{tam}}", description: "Output from TAM calculation (Step 5)" },
-      { name: "{{sam}}", description: "Output from SAM calculation (Step 6)" },
-      { name: "{{som}}", description: "Output from SOM calculation (Step 7)" },
-      { name: "{{economicImpact}}", description: "Output from economic impact (Step 8)" },
-      { name: "{{competitorTable}}", description: "Output from competitor table (Step 9)" },
-      { name: "{{partnerBusinesses}}", description: "Output from partner businesses (Step 10)" },
+      { name: "{{marketSizingSourcePack}}", description: "Output from market sizing source pack (Step 5)" },
+      { name: "{{tam}}", description: "Output from TAM calculation (Step 6)" },
+      { name: "{{sam}}", description: "Output from SAM calculation (Step 7)" },
+      { name: "{{som}}", description: "Output from SOM calculation (Step 8)" },
+      { name: "{{economicImpact}}", description: "Output from economic impact (Step 9)" },
+      { name: "{{competitorTable}}", description: "Output from competitor table (Step 10)" },
+      { name: "{{partnerBusinesses}}", description: "Output from partner businesses (Step 11)" },
     ],
   },
   {
-    name: "Assembly Variables (Step 11 only - JSON stringified)",
+    name: "Assembly Variables (Step 12 only - JSON stringified)",
     variables: [
       { name: "{{step0}}", description: "JSON from Step 0 (Source Pack)" },
       { name: "{{step1}}", description: "JSON from Step 1 (Research Context)" },
       { name: "{{step2}}", description: "JSON from Step 2 (Competitor Research)" },
       { name: "{{step3}}", description: "JSON from Step 3 (Market Segments)" },
       { name: "{{step4}}", description: "JSON from Step 4 (Existing Competitors)" },
-      { name: "{{step5}}", description: "JSON from Step 5 (TAM)" },
-      { name: "{{step6}}", description: "JSON from Step 6 (SAM)" },
-      { name: "{{step7}}", description: "JSON from Step 7 (SOM)" },
-      { name: "{{step8}}", description: "JSON from Step 8 (Economic Impact)" },
-      { name: "{{step9}}", description: "JSON from Step 9 (Competitor Table)" },
-      { name: "{{step10}}", description: "JSON from Step 10 (Partner Businesses)" },
+      { name: "{{step5}}", description: "JSON from Step 5 (Market Sizing Source Pack)" },
+      { name: "{{step6}}", description: "JSON from Step 6 (TAM)" },
+      { name: "{{step7}}", description: "JSON from Step 7 (SAM)" },
+      { name: "{{step8}}", description: "JSON from Step 8 (SOM)" },
+      { name: "{{step9}}", description: "JSON from Step 9 (Economic Impact)" },
+      { name: "{{step10}}", description: "JSON from Step 10 (Competitor Table)" },
+      { name: "{{step11}}", description: "JSON from Step 11 (Partner Businesses)" },
     ],
   },
 ];
@@ -313,7 +315,7 @@ export default function PromptBundleEdit() {
         <CardHeader>
           <CardTitle>Step Prompts</CardTitle>
           <CardDescription>
-            Configure the prompt for each of the 11 research steps.
+            Configure the prompt for each of the 13 research steps.
           </CardDescription>
         </CardHeader>
         <CardContent>

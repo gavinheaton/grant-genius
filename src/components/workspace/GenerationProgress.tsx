@@ -6,20 +6,21 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
 
-// 12-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-10 (research) + Step 11 (assembly)
+// 13-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Step 12 (assembly)
 const RESEARCH_STEPS = [
   "Building Australia-first source pack",
   "Extracting research context from article",
   "Searching for competing research",
   "Identifying market segments",
   "Finding existing competitors",
-  "Calculating Total Addressable Market",
+  "Building market sizing source pack",  // NEW Step 5
+  "Calculating Total Addressable Market", // Now Step 6
   "Calculating Serviceable Addressable Market",
   "Calculating Serviceable Obtainable Market",
   "Analyzing Australian economic impact",
   "Building competitor comparison",
   "Finding Australian partner businesses",
-  "Assembling final report",
+  "Assembling final report",             // Now Step 12
 ];
 
 const AUTO_RETRY_SECONDS = 30;
@@ -86,12 +87,12 @@ export function GenerationProgress({
     onRestart?.();
   }, [onRestart]);
 
-  // Progress is based on completed steps (currentStep represents last completed step, 0-11)
-  // Total steps is 12 (0-11), so we calculate progress as (currentStep + 1) / 12 when running
+  // Progress is based on completed steps (currentStep represents last completed step, 0-12)
+  // Total steps is 13 (0-12), so we calculate progress as (currentStep + 1) / 13 when running
   const progressPercent = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;
-  // currentStep is 0-indexed (0-11), map to RESEARCH_STEPS array
+  // currentStep is 0-indexed (0-12), map to RESEARCH_STEPS array
   const currentStepName = currentStep >= 0 && currentStep < RESEARCH_STEPS.length 
-    ? RESEARCH_STEPS[currentStep] + (currentStep === 11 ? " (this step takes longer)" : "")
+    ? RESEARCH_STEPS[currentStep] + (currentStep === 12 ? " (this step takes longer)" : "")
     : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending";
