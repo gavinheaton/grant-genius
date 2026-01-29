@@ -26,7 +26,8 @@ export function useEntitlements() {
     const { data, error } = await supabase
       .from("entitlements")
       .select("id, entitlement_type, quantity, used_quantity, expires_at")
-      .eq("entitlement_type", "REPORT_ONE_OFF");
+      .eq("entitlement_type", "REPORT_ONE_OFF")
+      .eq("user_id", session.user.id);
 
     if (error) {
       console.error("Error fetching entitlements:", error);
