@@ -1,121 +1,152 @@
 
+# Plan: Add Configurable Processing Window per Step
 
-# Investigation Report: Timeouts & Admin Dashboard Failures
+## Overview
 
-## Problems Identified
-
-I investigated two interrelated issues:
-
-### 1. Timeouts at Various Steps
-**Root Cause**: Supabase Edge Functions have a hard timeout limit (60 seconds wall-clock time). When a step takes longer than this limit:
-- The function is forcibly terminated by the platform
-- No cleanup code runs (no catch blocks, no finally blocks)
-- Database status remains "running" instead of "failed"
-- Credits are never refunded
-
-Evidence from the database:
-- Current run `ca41a41d-f84c-4d16-9e1b-2b62aa24deb8` has been "running" Step 3 for over 7 minutes
-- The step shows `status: running` with no `error_message`
-- Edge function logs show `shutdown` events without corresponding error recordings
-
-### 2. Failures Not Appearing on Admin Dashboard
-**Root Cause**: The admin dashboard queries only for `status = "failed"`, but timeout-killed runs remain stuck in `status = "running"` forever.
-
-The current query in `AdminDashboard.tsx` (lines 63-77):
-```sql
-.eq("status", "failed")
-```
-This misses:
-- Runs stuck in "running" status (timed out)
-- Runs stuck in "pending" status (never resumed)
+This feature will allow admins to set a custom **processing window (timeout)** for each of the 13 pipeline steps directly from the Prompt Bundle editor. Currently, timeouts are hardcoded in the edge functions (45s default, 90s for Step 0, 120s for Step 12). Making these configurable will help manage timeout issues by allowing admins to tune processing time based on observed step complexity.
 
 ---
 
-## Solution Plan
+## Current State
 
-### Part 1: Add "Stalled Runs" Detection to Admin Dashboard
-
-Modify the admin dashboard to detect and display runs that are likely stalled (stuck in running/pending beyond a threshold).
-
-**Changes to `src/pages/admin/AdminDashboard.tsx`:**
-- Add a new query for stalled runs (running/pending for >5 minutes)
-- Display stalled runs in a new section or as a separate tab in the failures panel
-- Allow admins to manually mark runs as failed or trigger cleanup
-
-### Part 2: Create Background Cleanup Edge Function
-
-Create a new edge function `cleanup-stalled-runs` that:
-- Finds runs stuck in "running" for >10 minutes
-- Marks them as "failed" with an appropriate error message
-- Updates the failed step with an error
-- Refunds the consumed credit
-- Can be triggered manually by admins or via a scheduled job
-
-### Part 3: Add Admin Actions for Stuck Runs
-
-Provide admin controls to:
-- View stalled runs with details
-- Manually fail a stalled run (with credit refund)
-- View the last activity timestamp for each run
+| Component | Current Behavior |
+|-----------|------------------|
+| Database | `prompt_bundle_steps` has no timeout column |
+| Edge Functions | `getTimeoutForStep()` returns hardcoded values (45s/90s/120s) |
+| Admin UI | `PromptStepEditor.tsx` only allows model and prompt editing |
 
 ---
 
-## Technical Details
+## Changes Required
 
-### Database Query for Stalled Runs
+### 1. Database Migration
+
+Add a `timeout_seconds` column to the `prompt_bundle_steps` table:
+
 ```sql
-SELECT rr.*, a.title, p.email
-FROM report_runs rr
-JOIN applications a ON a.id = rr.application_id
-JOIN profiles p ON p.user_id = a.user_id
-WHERE rr.status IN ('running', 'pending')
-  AND rr.started_at < NOW() - INTERVAL '5 minutes'
-ORDER BY rr.started_at ASC
+ALTER TABLE prompt_bundle_steps 
+ADD COLUMN timeout_seconds integer DEFAULT NULL;
 ```
 
-### New Edge Function: `cleanup-stalled-runs`
+- `NULL` means "use default" (the current hardcoded logic)
+- A numeric value (e.g., 60) overrides the default
+
+---
+
+### 2. Update TypeScript Types
+
+Modify `src/hooks/usePromptBundles.ts`:
+
+```typescript
+export interface PromptBundleStep {
+  // ... existing fields
+  timeout_seconds: number | null;  // NEW
+}
+```
+
+---
+
+### 3. Update Admin UI - PromptStepEditor
+
+Add a dropdown for "Processing Window" with options:
+
+| Option | Value |
+|--------|-------|
+| Default (varies by step) | `null` |
+| 30 seconds | 30 |
+| 45 seconds | 45 |
+| 60 seconds | 60 |
+| 90 seconds | 90 |
+| 120 seconds | 120 |
+| 150 seconds | 150 |
+| 180 seconds | 180 |
+
+The UI will show the current default for the step (e.g., "Default: 45s" for most steps, "Default: 90s" for Step 0).
+
 ```text
-supabase/functions/cleanup-stalled-runs/index.ts
++------------------------------------------+
+| Processing Window                         |
+| [Dropdown: Default (45s) / 60s / 90s...] |
+|                                          |
+| Model                                    |
+| [Dropdown: Gemini 2.5 Flash Lite...]     |
+|                                          |
+| Prompt Template                          |
+| [Textarea]                               |
++------------------------------------------+
 ```
-- Accepts optional `stale_threshold_minutes` parameter (default: 10)
-- Accepts optional `run_id` to clean up a specific run
-- Updates run status to "failed"
-- Updates current step with error message "Edge function timed out"
-- Refunds credits via existing `refundCredit` pattern
-
-### UI Additions
-1. New "Stalled Runs" card in admin dashboard
-2. "Force Fail" button for each stalled run
-3. Alert badge showing count of stalled runs
 
 ---
 
-## Files to Create/Modify
+### 4. Update Edge Functions
 
-| File | Action |
+Modify both `generate-report/index.ts` and `resume-report-run/index.ts` to:
+
+1. Include `timeout_seconds` when fetching the active bundle's steps
+2. Use the configured timeout if set, otherwise fall back to the default
+
+```typescript
+// Updated fetchActiveBundle
+const stepsMap = new Map<number, { 
+  prompt_template: string; 
+  model_override: string | null;
+  timeout_seconds: number | null;  // NEW
+}>();
+
+// Updated getTimeoutForStep with override
+function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null): number {
+  if (overrideSeconds !== null) {
+    return overrideSeconds * 1000; // Convert to ms
+  }
+  // Fallback to defaults
+  if (stepNumber === 0) return 90000;
+  if (stepNumber === 12) return 120000;
+  return 45000;
+}
+```
+
+---
+
+### 5. Update useUpdatePromptStep Hook
+
+Update the mutation to accept `timeout_seconds`:
+
+```typescript
+mutationFn: async ({
+  id,
+  bundleId,
+  prompt_template,
+  model_override,
+  timeout_seconds,  // NEW
+}) => { ... }
+```
+
+---
+
+## File Changes Summary
+
+| File | Change |
 |------|--------|
-| `src/pages/admin/AdminDashboard.tsx` | Add stalled runs query and display |
-| `src/components/admin/StalledRunsTable.tsx` | New component for stalled runs |
-| `supabase/functions/cleanup-stalled-runs/index.ts` | New cleanup function |
-| `supabase/config.toml` | Add config for new function |
+| `prompt_bundle_steps` table | Add `timeout_seconds` column (migration) |
+| `src/hooks/usePromptBundles.ts` | Add `timeout_seconds` to types and mutation |
+| `src/components/admin/PromptStepEditor.tsx` | Add timeout dropdown selector |
+| `supabase/functions/generate-report/index.ts` | Fetch and use `timeout_seconds` |
+| `supabase/functions/resume-report-run/index.ts` | Fetch and use `timeout_seconds` |
 
 ---
 
-## Implementation Order
+## Technical Notes
 
-1. Create `cleanup-stalled-runs` edge function
-2. Add StalledRunsTable component
-3. Update AdminDashboard to fetch and display stalled runs
-4. Add "Force Fail" action that calls the cleanup function
-5. Test end-to-end with a stuck run
+- **Supabase Edge Function Limit**: The wall-clock limit is 60 seconds. Setting timeouts above 60s won't prevent platform termination, but it does control the AI request timeout. Steps that need >60s should use the checkpoint/resume architecture (which we already have).
+- **Validation**: The dropdown limits options to reasonable values (30-180s) to prevent misuse.
+- **Backward Compatibility**: `NULL` preserves current behavior, so existing bundles work unchanged.
 
 ---
 
 ## Expected Outcome
 
 After implementation:
-- Admins will see stalled runs prominently in the dashboard
-- One-click "Force Fail" will clean up stuck runs and refund credits
-- Better visibility into actual system reliability
-- Users stuck in limbo will get their credits back
-
+- Admins can tune step timeouts from the Prompt Bundles editor
+- Steps that frequently timeout can be given more headroom
+- Simple steps can be configured with shorter timeouts to fail faster
+- Better visibility into timeout configuration alongside model selection
