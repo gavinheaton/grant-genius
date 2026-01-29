@@ -1,48 +1,76 @@
 
-# Plan: Add Configurable Processing Window per Step
 
-## Status: ✅ COMPLETED
+# Fix: Admin Users Seeing Other Users' Credits
 
-## Overview
+## Problem Identified
 
-This feature allows admins to set a custom **processing window (timeout)** for each of the 13 pipeline steps directly from the Prompt Bundle editor.
+**Root Cause**: The `useEntitlements` hook relies on Row-Level Security (RLS) to filter entitlements to the current user. However, admin users have an RLS policy that allows them to view ALL entitlements:
 
----
+```sql
+-- This policy lets admins see everyone's entitlements
+Policy: "Admins can view all entitlements"
+Using Expression: is_admin(auth.uid())
+```
 
-## Implementation Summary
-
-### 1. Database Migration ✅
-Added `timeout_seconds` column to `prompt_bundle_steps` table:
-- `NULL` means "use default" (hardcoded logic: 90s for Step 0, 120s for Step 12, 45s for others)
-- Numeric value overrides the default
-
-### 2. TypeScript Types ✅
-Updated `src/hooks/usePromptBundles.ts`:
-- Added `timeout_seconds: number | null` to `PromptBundleStep` interface
-- Updated clone mutation to copy `timeout_seconds`
-
-### 3. Admin UI ✅
-Updated `src/components/admin/PromptStepEditor.tsx`:
-- Added "Processing Window" dropdown with options: Default, 30s, 45s, 60s, 90s, 120s, 150s, 180s
-- Shows the current default for each step (e.g., "Default: 45s", "Default: 90s" for Step 0)
-- Saves the configured timeout with other step changes
-
-### 4. Edge Functions ✅
-Updated both `generate-report/index.ts` and `resume-report-run/index.ts`:
-- Updated `fetchActiveBundle` to fetch `timeout_seconds` from database
-- Added `getTimeoutForStep(stepNumber, overrideSeconds)` function
-- Updated `callAIWithRetry` to accept custom timeout parameter
-- All 13 steps now use configurable timeout from the bundle
+When an admin (like gavin@disruptorsco.com) visits the Dashboard:
+1. The hook fetches entitlements without a `user_id` filter
+2. RLS returns ALL users' entitlements (not just their own)
+3. The frontend sums everything: gavin's 0 + joanne's 10 = 10
+4. The UI incorrectly shows "You have 10 credits remaining"
 
 ---
 
-## Usage
+## Solution
 
-Admins can now:
-1. Navigate to Admin → Prompt Bundles → Edit a bundle
-2. Expand any step
-3. Select "Processing Window" dropdown
-4. Choose a custom timeout or leave as "Default"
-5. Save the step
+Add an explicit `user_id` filter to the `useEntitlements` hook. This ensures admins only see their OWN credits on user-facing pages, regardless of RLS policies.
 
-The configured timeout will be used for that step's AI request during report generation.
+---
+
+## Changes Required
+
+### File: `src/hooks/useEntitlements.ts`
+
+**Current code (lines 26-29):**
+```typescript
+const { data, error } = await supabase
+  .from("entitlements")
+  .select("id, entitlement_type, quantity, used_quantity, expires_at")
+  .eq("entitlement_type", "REPORT_ONE_OFF");
+```
+
+**Updated code:**
+```typescript
+const { data, error } = await supabase
+  .from("entitlements")
+  .select("id, entitlement_type, quantity, used_quantity, expires_at")
+  .eq("entitlement_type", "REPORT_ONE_OFF")
+  .eq("user_id", session.user.id);  // Filter to current user only
+```
+
+---
+
+## Technical Notes
+
+- This is a defense-in-depth fix — the hook should NOT rely solely on RLS for scoping
+- The admin RLS policy is intentional (admins need to see all entitlements in the admin panel), but user-facing hooks should explicitly filter by the authenticated user
+- No database changes required
+- No edge function changes required
+
+---
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/hooks/useEntitlements.ts` | Add `.eq("user_id", session.user.id)` filter |
+
+---
+
+## Expected Outcome
+
+After this fix:
+- gavin@disruptorsco.com will see "0 credits" (correct)
+- joanne@disruptorsco.com will see "10 credits" (unchanged)
+- Admin users will see only their own credits on user-facing pages
+- The admin panel will continue to show all users' entitlements (unchanged)
+
