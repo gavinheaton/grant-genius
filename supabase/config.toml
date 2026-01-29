@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.invite-admin]
 verify_jwt = false
+
+[functions.cleanup-stalled-runs]
+verify_jwt = false
