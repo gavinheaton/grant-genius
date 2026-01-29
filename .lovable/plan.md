@@ -1,148 +1,132 @@
 
+# Fix Step 12 Timeout Issue
 
-# Export Bundle Feature for Prompt Bundles
+## Problem Summary
 
-## Overview
+Step 12 (final report assembly) consistently stalls because:
+1. It uses the most complex AI model (gemini-3-pro-preview) with ~50KB of context
+2. The AI response takes 60-90 seconds - exceeding the 45s timeout in `callAIWithRetry`
+3. When timeout occurs, the step is left in "running" state with no output
+4. Recovery logic resets and retries, but hits the same timeout
 
-Add an "Export" button next to the Edit and Clone buttons on each bundle card that opens a dialog displaying the full bundle configuration in a readable, copyable format.
+## Root Cause
 
-## Implementation Details
-
-### 1. Export Button Placement
-
-Add an Export button with a `FileDown` or `Download` icon between Edit and Clone:
-
-```text
-[Edit] [Export] [Clone] [Delete]
-```
-
-### 2. Export Dialog Design
-
-When clicked, opens a dialog showing:
-
-```text
-+----------------------------------------------------------+
-|  Export Bundle: "Australian Focus Bundle"                 |
-+----------------------------------------------------------+
-|                                                           |
-|  BUNDLE NAME                                              |
-|  Australian Focus Bundle                                  |
-|                                                           |
-|  SYSTEM PROMPT                                            |
-|  +------------------------------------------------------+ |
-|  | You are a research commercialization expert...       | |
-|  +------------------------------------------------------+ |
-|                                                           |
-|  STEP PROMPTS (13)                                        |
-|                                                           |
-|  Step 0: build_source_pack                                |
-|  Model: google/gemini-2.5-flash (or "Default")           |
-|  +------------------------------------------------------+ |
-|  | Your task is to curate a pack of validated...        | |
-|  +------------------------------------------------------+ |
-|                                                           |
-|  Step 1: scrape_research_context                         |
-|  Model: Default                                           |
-|  +------------------------------------------------------+ |
-|  | Extract the key research findings from...            | |
-|  +------------------------------------------------------+ |
-|  ...                                                      |
-|                                                           |
-|  [Copy to Clipboard]                      [Close]         |
-+----------------------------------------------------------+
-```
-
-### 3. Data Fetching
-
-Since the bundle list only contains basic info (no steps), clicking "Export" will need to fetch the full bundle with steps using the existing `usePromptBundle` hook pattern. However, to avoid a separate hook call for each potential export, we'll fetch on-demand when the dialog opens.
-
-### 4. Copy to Clipboard
-
-Format the bundle as structured text for easy copying:
-
-```text
-# Bundle: Australian Focus Bundle
-
-## System Prompt
-You are a research commercialization expert...
-
-## Step 0: build_source_pack
-Model: google/gemini-2.5-flash
----
-Your task is to curate a pack of validated...
-
-## Step 1: scrape_research_context
-Model: Default
----
-Extract the key research findings from...
-```
-
-## Technical Approach
-
-### State Management
+The `fetchWithTimeout` for AI calls in `resume-report-run` is set to **45 seconds**:
 
 ```typescript
-// In PromptBundles.tsx
-const [exportDialogOpen, setExportDialogOpen] = useState(false);
-const [exportBundleId, setExportBundleId] = useState<string | null>(null);
-
-// Fetch full bundle when export dialog opens
-const { data: exportBundle, isLoading: exportLoading } = usePromptBundle(
-  exportDialogOpen ? exportBundleId : undefined
+const response = await fetchWithTimeout(
+  "https://ai.gateway.lovable.dev/v1/chat/completions",
+  { ... },
+  45000 // 45s timeout for AI calls
 );
 ```
 
-### Export Handler
+Step 12 with gemini-3-pro-preview typically needs **60-90 seconds** to process all 11 prior step outputs and generate the structured JSON report.
+
+## Solution
+
+### 1. Increase AI timeout for Step 12
+
+Update `callAIWithRetry` to accept a custom timeout parameter, and increase it for Step 12:
 
 ```typescript
-const openExportDialog = (bundle: PromptBundle) => {
-  setExportBundleId(bundle.id);
-  setExportDialogOpen(true);
-};
+// In callAIWithRetry function signature
+async function callAIWithRetry(
+  prompt: string, 
+  stepNumber: number,
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
+  modelOverride?: string | null,
+  timeoutMs: number = 45000  // NEW: configurable timeout
+): Promise<string>
+
+// In Step 12 execution
+const assemblyResult = await callAIWithRetry(
+  assemblyPrompt, 
+  12, 
+  systemPrompt, 
+  getStepModel(12),
+  120000  // 2 minute timeout for final assembly
+);
 ```
 
-### Copy Function
+### 2. Add explicit timeout logging
+
+Log when Step 12 is starting so we can track duration:
 
 ```typescript
-const formatBundleForExport = (bundle: PromptBundleWithSteps): string => {
-  let output = `# Bundle: ${bundle.name}\n\n`;
-  output += `## System Prompt\n${bundle.system_prompt}\n\n`;
-  
-  for (const step of bundle.steps) {
-    output += `## Step ${step.step_number}: ${step.step_name}\n`;
-    output += `Model: ${step.model_override || "Default"}\n`;
-    output += `---\n${step.prompt_template}\n\n`;
-  }
-  
-  return output;
-};
+console.log(`Step 12: Final assembly starting, timeout set to 120s`);
 ```
+
+### 3. Consider chunking the Step 12 prompt
+
+If timeouts persist, the Step 12 prompt could be optimized:
+- Reduce the amount of raw JSON passed (summarize prior steps first)
+- Use a smaller model that responds faster
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/pages/admin/PromptBundles.tsx` | Add Export button, export dialog with loading state, copy-to-clipboard functionality |
-| `src/hooks/usePromptBundles.ts` | No changes needed - existing `usePromptBundle` hook fetches steps |
+| `supabase/functions/resume-report-run/index.ts` | Increase Step 12 timeout to 120s, add timeout parameter to `callAIWithRetry` |
 
-## UI Details
+## Implementation Details
 
-### Export Dialog
+### Update callAIWithRetry signature
 
-- **Header**: "Export Bundle: {name}"
-- **Sections**:
-  - Bundle Name (text)
-  - System Prompt (scrollable code block)
-  - Step Prompts (accordion or scrollable list, each with step number, name, model, and prompt)
-- **Actions**:
-  - "Copy to Clipboard" button - copies formatted markdown text
-  - "Close" button
-- **Loading State**: Show skeleton while fetching full bundle data
+```typescript
+async function callAIWithRetry(
+  prompt: string, 
+  stepNumber: number,
+  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
+  modelOverride?: string | null,
+  customTimeoutMs?: number  // Optional custom timeout
+): Promise<string> {
+  // ...
+  
+  // Use custom timeout for specific steps, default 45s
+  const timeoutMs = customTimeoutMs || 45000;
+  
+  // Log the timeout being used
+  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeoutMs/1000}s`);
+  
+  // ... use timeoutMs in fetchWithTimeout
+}
+```
 
-### Styling
+### Update Step 12 call
 
-- Use `ScrollArea` for the dialog content since bundles can be long
-- Use `font-mono` for prompts
-- Use subtle separators between steps
-- Toast notification on successful copy
+```typescript
+case 12:
+  await executeStep(supabase, reportRunId, 12, async () => {
+    console.log(`Step 12: Final assembly starting with extended timeout`);
+    
+    const assemblyPrompt = getStepPrompt(12, defaultAssemblyPrompt);
+    
+    // Use 120s timeout for final assembly (2x normal)
+    const assemblyResult = await callAIWithRetry(
+      assemblyPrompt, 
+      12, 
+      systemPrompt, 
+      getStepModel(12),
+      120000  // 2 minute timeout
+    );
+    
+    // ... rest of parsing logic
+  });
+```
 
+## Expected Outcome
+
+- Step 12 will have adequate time (2 minutes) to complete the complex final assembly
+- Timeout logs will help diagnose any remaining issues
+- Recovery logic will continue to work for genuine failures
+- Current stuck run will need manual reset or will resolve on next retry
+
+## Alternative Approach (if 2 min still fails)
+
+If the 2-minute timeout still isn't enough, we could:
+1. Split Step 12 into two sub-steps:
+   - Step 12a: Generate report_markdown and tables
+   - Step 12b: Generate sources and data_gaps
+2. Use a faster model (gemini-3-flash-preview) with explicit instructions
+3. Pre-summarize step outputs before passing to Step 12
