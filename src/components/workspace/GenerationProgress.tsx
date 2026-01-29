@@ -34,6 +34,22 @@ interface GenerationProgressProps {
   onRestart?: () => void;
   emailOnComplete?: boolean;
   onToggleEmailOnComplete?: (enabled: boolean) => void;
+  startedAt?: string | null;
+  completedAt?: string | null;
+}
+
+// Format elapsed time between two dates
+function formatElapsedTime(startedAt: string | null | undefined, completedAt: string | null | undefined): string {
+  if (!startedAt) return "-";
+  
+  const start = new Date(startedAt).getTime();
+  const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+  const seconds = Math.floor((end - start) / 1000);
+  
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
 }
 
 export function GenerationProgress({ 
@@ -45,6 +61,8 @@ export function GenerationProgress({
   onRestart,
   emailOnComplete = false,
   onToggleEmailOnComplete,
+  startedAt,
+  completedAt,
 }: GenerationProgressProps) {
   const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
   const [isPaused, setIsPaused] = useState(false);
@@ -100,13 +118,21 @@ export function GenerationProgress({
   return (
     <Card className="shadow-card border-primary/20">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          {status === "running" && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-          {status === "completed" && <CheckCircle className="h-5 w-5 text-success" />}
-          {status === "failed" && <AlertCircle className="h-5 w-5 text-destructive" />}
-          {status === "pending" && <Loader2 className="h-5 w-5 text-muted-foreground" />}
-          {status === "stalled" && <Clock className="h-5 w-5 text-warning" />}
-          Generating Report
+        <CardTitle className="flex items-center justify-between text-lg">
+          <div className="flex items-center gap-2">
+            {status === "running" && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+            {status === "completed" && <CheckCircle className="h-5 w-5 text-success" />}
+            {status === "failed" && <AlertCircle className="h-5 w-5 text-destructive" />}
+            {status === "pending" && <Loader2 className="h-5 w-5 text-muted-foreground" />}
+            {status === "stalled" && <Clock className="h-5 w-5 text-warning" />}
+            Generating Report
+          </div>
+          {startedAt && (
+            <div className="flex items-center gap-1.5 text-sm font-normal text-muted-foreground">
+              <Clock className="h-4 w-4" />
+              <span>{formatElapsedTime(startedAt, completedAt)}</span>
+            </div>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">

@@ -43,6 +43,7 @@ export default function AdminDashboard() {
             total_steps,
             created_at,
             started_at,
+            completed_at,
             applications!inner(title, user_id, profiles:user_id(email))
           `)
           .in("status", ["running", "pending"])
@@ -88,6 +89,7 @@ export default function AdminDashboard() {
         total_steps: run.total_steps,
         created_at: run.created_at,
         started_at: run.started_at,
+        completed_at: run.completed_at,
         application: run.applications ? { 
           title: run.applications.title,
           user_id: run.applications.user_id 
