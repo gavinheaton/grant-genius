@@ -1019,6 +1019,15 @@ export type Database = {
     }
     Functions: {
       decrement_entitlement: { Args: { ent_id: string }; Returns: undefined }
+      get_report_trend_7_days: {
+        Args: never
+        Returns: {
+          completed: number
+          date: string
+          failed: number
+          started: number
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
