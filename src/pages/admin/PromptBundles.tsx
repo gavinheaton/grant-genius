@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Edit, Copy, Trash2, CheckCircle, Circle } from "lucide-react";
+import { Plus, Edit, Copy, Trash2, CheckCircle, Circle, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -26,14 +26,34 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { toast } from "sonner";
 import {
   usePromptBundles,
+  usePromptBundle,
   useCreatePromptBundle,
   useSetActiveBundle,
   useDeletePromptBundle,
   PromptBundle,
+  PromptBundleWithSteps,
 } from "@/hooks/usePromptBundles";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
+
+const formatBundleForExport = (bundle: PromptBundleWithSteps): string => {
+  let output = `# Bundle: ${bundle.name}\n\n`;
+  output += `## System Prompt\n${bundle.system_prompt}\n\n`;
+  
+  const sortedSteps = [...bundle.steps].sort((a, b) => a.step_number - b.step_number);
+  
+  for (const step of sortedSteps) {
+    output += `## Step ${step.step_number}: ${step.step_name}\n`;
+    output += `Model: ${step.model_override || "Default"}\n`;
+    output += `---\n${step.prompt_template}\n\n`;
+  }
+  
+  return output;
+};
 
 export default function PromptBundles() {
   const { isSuperAdmin } = useAdminAuth();
@@ -46,9 +66,16 @@ export default function PromptBundles() {
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [activateDialogOpen, setActivateDialogOpen] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [exportBundleId, setExportBundleId] = useState<string | null>(null);
   const [selectedBundle, setSelectedBundle] = useState<PromptBundle | null>(null);
   const [newBundleName, setNewBundleName] = useState("");
   const [newBundleDescription, setNewBundleDescription] = useState("");
+
+  // Fetch full bundle data when export dialog is open
+  const { data: exportBundle, isLoading: exportLoading } = usePromptBundle(
+    exportDialogOpen ? exportBundleId ?? undefined : undefined
+  );
 
   const activeBundle = bundles?.find((b) => b.is_active);
 
@@ -106,6 +133,18 @@ export default function PromptBundles() {
   const openDeleteDialog = (bundle: PromptBundle) => {
     setSelectedBundle(bundle);
     setDeleteDialogOpen(true);
+  };
+
+  const openExportDialog = (bundle: PromptBundle) => {
+    setExportBundleId(bundle.id);
+    setExportDialogOpen(true);
+  };
+
+  const handleCopyToClipboard = async () => {
+    if (!exportBundle) return;
+    const text = formatBundleForExport(exportBundle);
+    await navigator.clipboard.writeText(text);
+    toast.success("Bundle copied to clipboard");
   };
 
   if (isLoading) {
@@ -209,6 +248,14 @@ export default function PromptBundles() {
                           <Edit className="h-4 w-4 mr-1" />
                           Edit
                         </Link>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openExportDialog(bundle)}
+                      >
+                        <FileDown className="h-4 w-4 mr-1" />
+                        Export
                       </Button>
                       {isSuperAdmin && (
                         <>
@@ -369,6 +416,93 @@ export default function PromptBundles() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Export Dialog */}
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>
+              Export Bundle: "{exportBundle?.name || "Loading..."}"
+            </DialogTitle>
+            <DialogDescription>
+              View and copy the full bundle configuration including all step prompts.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {exportLoading ? (
+            <div className="space-y-4 py-4">
+              <Skeleton className="h-6 w-48" />
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-6 w-32" />
+              <Skeleton className="h-32 w-full" />
+            </div>
+          ) : exportBundle ? (
+            <ScrollArea className="flex-1 pr-4">
+              <div className="space-y-6 py-4">
+                {/* Bundle Name */}
+                <div>
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    Bundle Name
+                  </h3>
+                  <p className="text-foreground font-medium">{exportBundle.name}</p>
+                </div>
+
+                <Separator />
+
+                {/* System Prompt */}
+                <div>
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                    System Prompt
+                  </h3>
+                  <pre className="bg-muted p-4 rounded-md text-sm font-mono whitespace-pre-wrap overflow-x-auto max-h-48 overflow-y-auto">
+                    {exportBundle.system_prompt}
+                  </pre>
+                </div>
+
+                <Separator />
+
+                {/* Step Prompts */}
+                <div>
+                  <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-4">
+                    Step Prompts ({exportBundle.steps.length})
+                  </h3>
+                  <div className="space-y-4">
+                    {[...exportBundle.steps]
+                      .sort((a, b) => a.step_number - b.step_number)
+                      .map((step) => (
+                        <div key={step.id} className="border rounded-lg p-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-medium">
+                              Step {step.step_number}: {step.step_name}
+                            </h4>
+                            <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
+                              Model: {step.model_override || "Default"}
+                            </span>
+                          </div>
+                          <pre className="bg-muted p-3 rounded-md text-sm font-mono whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto">
+                            {step.prompt_template}
+                          </pre>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            </ScrollArea>
+          ) : (
+            <p className="text-muted-foreground py-4">Bundle not found.</p>
+          )}
+
+          <DialogFooter className="mt-4">
+            <Button variant="outline" onClick={() => setExportDialogOpen(false)}>
+              Close
+            </Button>
+            <Button onClick={handleCopyToClipboard} disabled={!exportBundle}>
+              <Copy className="h-4 w-4 mr-2" />
+              Copy to Clipboard
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
