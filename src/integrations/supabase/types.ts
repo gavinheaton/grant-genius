@@ -679,6 +679,7 @@ export type Database = {
           step_description: string
           step_name: string
           step_number: number
+          timeout_seconds: number | null
           updated_at: string
         }
         Insert: {
@@ -690,6 +691,7 @@ export type Database = {
           step_description: string
           step_name: string
           step_number: number
+          timeout_seconds?: number | null
           updated_at?: string
         }
         Update: {
@@ -701,6 +703,7 @@ export type Database = {
           step_description?: string
           step_name?: string
           step_number?: number
+          timeout_seconds?: number | null
           updated_at?: string
         }
         Relationships: [

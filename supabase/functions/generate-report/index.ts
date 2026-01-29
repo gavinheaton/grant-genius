@@ -45,8 +45,12 @@ function getModelForStep(stepNumber: number): string {
   return "google/gemini-2.5-flash-lite";
 }
 
-// Timeout selection based on step complexity
-function getTimeoutForStep(stepNumber: number): number {
+// Timeout selection based on step complexity (with configurable override)
+function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = null): number {
+  // If there's a configured override, use it
+  if (overrideSeconds !== null) {
+    return overrideSeconds * 1000; // Convert to ms
+  }
   // Step 0: Source pack needs more time for complex source curation (50-70s observed)
   if (stepNumber === 0) return 90000; // 90 seconds
   // Step 12: Final assembly needs extended time for full report generation
@@ -67,7 +71,7 @@ const RETRY_DELAYS = [5000, 15000, 30000];
 // Cache for active prompt bundle
 let cachedBundle: {
   system_prompt: string;
-  steps: Map<number, { prompt_template: string; model_override: string | null }>;
+  steps: Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>;
 } | null = null;
 
 // Fetch active prompt bundle from database
@@ -89,7 +93,7 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
 
     const { data: steps, error: stepsError } = await supabase
       .from("prompt_bundle_steps")
-      .select("step_number, prompt_template, model_override")
+      .select("step_number, prompt_template, model_override, timeout_seconds")
       .eq("bundle_id", bundle.id)
       .order("step_number", { ascending: true });
 
@@ -98,11 +102,12 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
       return null;
     }
 
-    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null }>();
+    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>();
     for (const step of steps) {
       stepsMap.set(step.step_number, {
         prompt_template: step.prompt_template,
         model_override: step.model_override,
+        timeout_seconds: step.timeout_seconds,
       });
     }
 
@@ -588,7 +593,12 @@ Return JSON:
 }`;
       }
 
-      const sourcePackResult = await callAIWithRetry(sourcePackPrompt, 0, systemPrompt, stepConfig?.model_override);
+      // Get timeout from bundle (convert seconds to ms) or use default
+      const timeoutMs = stepConfig?.timeout_seconds 
+        ? stepConfig.timeout_seconds * 1000 
+        : getTimeoutForStep(0);
+
+      const sourcePackResult = await callAIWithRetry(sourcePackPrompt, 0, systemPrompt, stepConfig?.model_override, timeoutMs);
       
       // Try to parse as JSON, otherwise wrap in structure
       let parsedSourcePack;
@@ -693,7 +703,8 @@ async function callAIWithRetry(
   prompt: string, 
   stepNumber: number, 
   systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
-  modelOverride?: string | null
+  modelOverride?: string | null,
+  customTimeoutMs?: number
 ): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
@@ -703,7 +714,10 @@ async function callAIWithRetry(
 
   // Use model override if provided, otherwise use default for step
   const model = modelOverride || getModelForStep(stepNumber);
-  console.log(`Step ${stepNumber}: Using model ${model}`);
+  
+  // Use custom timeout if provided, otherwise use step-specific default
+  const timeout = customTimeoutMs || getTimeoutForStep(stepNumber);
+  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeout / 1000}s`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
     // Wait before retry (not on first attempt)
@@ -714,9 +728,6 @@ async function callAIWithRetry(
     }
 
     try {
-      // Use step-specific timeout for complex steps
-      const timeout = getTimeoutForStep(stepNumber);
-      
       const response = await fetchWithTimeout(
         "https://ai.gateway.lovable.dev/v1/chat/completions",
         {

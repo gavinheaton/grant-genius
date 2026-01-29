@@ -20,6 +20,7 @@ export interface PromptBundleStep {
   step_description: string;
   prompt_template: string;
   model_override: string | null;
+  timeout_seconds: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +119,7 @@ export function useCreatePromptBundle() {
             step_description: step.step_description,
             prompt_template: step.prompt_template,
             model_override: step.model_override,
+            timeout_seconds: step.timeout_seconds,
           }));
 
           const { error: stepsError } = await supabase
