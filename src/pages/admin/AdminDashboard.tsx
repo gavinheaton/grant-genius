@@ -2,14 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw } from "lucide-react";
-import { startOfDay, subDays } from "date-fns";
+import { RefreshCw, AlertTriangle } from "lucide-react";
+import { startOfDay, subDays, differenceInMinutes } from "date-fns";
 import { LiveOperationsCards } from "@/components/admin/LiveOperationsCards";
 import { ActiveRunsTable } from "@/components/admin/ActiveRunsTable";
 import { FailuresPanel } from "@/components/admin/FailuresPanel";
 import { StepFailureBreakdown } from "@/components/admin/StepFailureBreakdown";
 import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
+import { StalledRunsTable } from "@/components/admin/StalledRunsTable";
 
 // Helper to check if an error message indicates cancellation
 function isCancellation(errorMessage: string | null | undefined): boolean {
@@ -21,6 +22,7 @@ function isCancellation(errorMessage: string | null | undefined): boolean {
 export default function AdminDashboard() {
   const todayStart = startOfDay(new Date()).toISOString();
   const thirtyDaysAgo = subDays(new Date(), 30).toISOString();
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
   // Fetch all dashboard data with auto-refresh
   const { data, isLoading, dataUpdatedAt } = useQuery({
@@ -36,6 +38,7 @@ export default function AdminDashboard() {
         entitlementsRes,
         auditRes,
         stepFailuresRes,
+        stalledRunsRes,
       ] = await Promise.all([
         // Today's run statistics
         supabase
@@ -91,6 +94,21 @@ export default function AdminDashboard() {
           .select("step_number, step_name, error_message")
           .eq("status", "failed")
           .gte("created_at", thirtyDaysAgo),
+
+        // Stalled runs (running/pending for >5 minutes)
+        supabase
+          .from("report_runs")
+          .select(`
+            id,
+            current_step,
+            total_steps,
+            created_at,
+            started_at,
+            applications!inner(title, user_id, profiles:user_id(email))
+          `)
+          .in("status", ["running", "pending"])
+          .lt("started_at", fiveMinutesAgo)
+          .order("started_at", { ascending: true }),
       ]);
 
       // Calculate today's stats
@@ -178,6 +196,24 @@ export default function AdminDashboard() {
         .sort((a, b) => b.count - a.count)
         .slice(0, 5);
 
+      // Process stalled runs
+      const now = new Date();
+      const stalledRuns = (stalledRunsRes.data || []).map((run: any) => ({
+        id: run.id,
+        current_step: run.current_step,
+        total_steps: run.total_steps,
+        started_at: run.started_at,
+        created_at: run.created_at,
+        application: run.applications ? {
+          title: run.applications.title,
+          user_id: run.applications.user_id,
+        } : null,
+        user_email: run.applications?.profiles?.email || null,
+        stalled_duration_minutes: run.started_at 
+          ? differenceInMinutes(now, new Date(run.started_at))
+          : 0,
+      }));
+
       return {
         currentlyRunning,
         completedToday,
@@ -187,6 +223,7 @@ export default function AdminDashboard() {
         stageFailures,
         cancellations,
         stepFailureBreakdown,
+        stalledRuns,
         trendData,
         systemHealth: {
           emailsSent: emailsRes.count ?? 0,
@@ -230,6 +267,29 @@ export default function AdminDashboard() {
         successRate7d={data?.successRate7d ?? 0}
         isLoading={isLoading}
       />
+
+      {/* Stalled Runs Alert */}
+      {(data?.stalledRuns?.length ?? 0) > 0 && (
+        <Card className="border-destructive/50 bg-destructive/5">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+                <div>
+                  <CardTitle className="text-destructive">Stalled Runs Detected</CardTitle>
+                  <CardDescription>
+                    These runs have been stuck for 5+ minutes and may need manual intervention
+                  </CardDescription>
+                </div>
+              </div>
+              <Badge variant="destructive">{data?.stalledRuns?.length} stalled</Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <StalledRunsTable runs={data?.stalledRuns ?? []} isLoading={isLoading} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Active Report Runs */}
       <Card>
