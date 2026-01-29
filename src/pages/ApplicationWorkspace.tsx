@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { 
   GraduationCap, 
@@ -48,6 +49,7 @@ export default function ApplicationWorkspace() {
   const [application, setApplication] = useState<ApplicationData | null>(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [inputsCollapsed, setInputsCollapsed] = useState(false);
+  const [projectName, setProjectName] = useState<string>("");
   const [inputs, setInputs] = useState<ApplicationInputs>({
     publicArticleUrl: "",
     summary: "",
@@ -131,6 +133,7 @@ export default function ApplicationWorkspace() {
         };
         setApplication(appData);
         setInputs(appData.inputs_json);
+        setProjectName(data.title || "");
       } else {
         toast({
           title: "Application not found",
@@ -163,7 +166,25 @@ export default function ApplicationWorkspace() {
     setIsSaving(false);
   }, [id, inputs]);
 
-  // Debounced autosave
+  // Save project name to database
+  const saveProjectName = useCallback(async () => {
+    if (!id) return;
+    
+    setIsSaving(true);
+    const { error } = await supabase
+      .from("applications")
+      .update({ title: projectName || null })
+      .eq("id", id);
+
+    if (error) {
+      console.error("Error saving project name:", error);
+    } else {
+      setLastSaved(new Date());
+    }
+    setIsSaving(false);
+  }, [id, projectName]);
+
+  // Debounced autosave for inputs
   useEffect(() => {
     if (!application) return;
     
@@ -174,6 +195,16 @@ export default function ApplicationWorkspace() {
     }, 2000);
     return () => clearTimeout(timer);
   }, [inputs, saveInputs, application]);
+
+  // Debounced autosave for project name
+  useEffect(() => {
+    if (!application) return;
+    
+    const timer = setTimeout(() => {
+      saveProjectName();
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [projectName, saveProjectName, application]);
 
   // Auto-collapse inputs and scroll to progress when generation starts
   useEffect(() => {
@@ -229,9 +260,15 @@ export default function ApplicationWorkspace() {
               <div className="flex items-center justify-center w-8 h-8 rounded-lg gradient-hero">
                 <GraduationCap className="h-4 w-4 text-primary-foreground" />
               </div>
-              <div>
+              <div className="flex flex-col">
                 <h1 className="text-sm font-semibold">{application.grant_version.grant.name}</h1>
-                <p className="text-xs text-muted-foreground">Application #{id?.slice(0, 8)}</p>
+                <Input
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  placeholder="Add a project name..."
+                  className="h-6 text-xs border-none bg-transparent hover:bg-muted focus:bg-muted px-1 -ml-1 w-48 placeholder:text-muted-foreground/60"
+                  disabled={isGenerating}
+                />
               </div>
             </div>
           </div>
@@ -275,6 +312,7 @@ export default function ApplicationWorkspace() {
           disabled={isGenerating}
           isCollapsed={inputsCollapsed}
           onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
+          projectName={projectName}
         />
 
         {/* Generate Report Button */}
