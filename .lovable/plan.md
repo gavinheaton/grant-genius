@@ -1,100 +1,113 @@
 
-# Add Editable Project Name to Application Workspace
+# Move Project Name Field into Research Details Card
 
-## Overview
+## Problem
 
-Add a "Project Name" field to the Application Workspace that lets researchers give their applications meaningful names for easier tracking. This field will be prominently displayed in the header and editable inline.
-
-## Current State
-
-- The `applications` table already has a `title` column (nullable text)
-- Currently auto-generated as "{Grant Name} Application" on creation
-- Displayed in Dashboard cards but not editable
-- Users with multiple applications for the same grant cannot easily distinguish them
+The project name field in the header is too subtle and hidden. Users don't notice it's editable because it looks like a label rather than an input field.
 
 ## Solution
 
-### 1. Add Editable Project Name in Application Header
+Move the project name from the header into the Research Details card as the **first form field**, making it a proper labeled input like the other fields.
 
-Update the ApplicationWorkspace header to show an editable project name:
+## New UI Layout
 
 ```text
 +----------------------------------------------------------+
-|  ← Back   [AEA Ignite]                        [Saving...] |
-|           My Immunotherapy Research Project    [Draft]    |
-|           ────────────────────────────────                |
-|           Click to edit project name                      |
+|  Research Details                              [▼]       |
++----------------------------------------------------------+
+|                                                           |
+|  Project Name                                             |
+|  [My Immunotherapy Research                          ]    |
+|  Give your project a memorable name for tracking          |
+|                                                           |
+|  Public Article URL *                                     |
+|  [https://doi.org/...                                ]    |
+|                                                           |
+|  100-Word Summary *                              45/100   |
+|  [...                                                ]    |
+|                                                           |
+|  Technology Readiness Level    |    IP Status            |
+|  [TRL 4                      ] |    [Patent pending    ] |
 +----------------------------------------------------------+
 ```
-
-The project name will be:
-- Displayed prominently below the grant name
-- Editable via inline input (click to edit)
-- Auto-saved like other inputs
-
-### 2. Update Dashboard to Show Project Name More Prominently
-
-The Dashboard already shows the title - we'll ensure the new project names display well.
-
-### 3. UI Design
-
-**In ApplicationWorkspace Header:**
-- Show project name as editable input below grant name
-- Placeholder: "Click to add a project name..."
-- Auto-saves on blur or after typing stops
-- Show in collapsed summary when ReportInputs is collapsed
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/pages/ApplicationWorkspace.tsx` | Add project name state, inline editable input in header, save logic |
-| `src/components/workspace/ReportInputs.tsx` | Show project name in collapsed summary |
+| `src/components/workspace/ReportInputs.tsx` | Add project name as first form field, add `onProjectNameChange` prop |
+| `src/pages/ApplicationWorkspace.tsx` | Remove project name from header, pass change handler to ReportInputs |
 
 ## Technical Details
 
-### ApplicationWorkspace Changes
+### ReportInputs Changes
 
-```typescript
-// Add state for project name
-const [projectName, setProjectName] = useState<string>("");
-
-// In fetch, populate from application.title
-setProjectName(data.title || "");
-
-// Save project name (debounced, same pattern as inputs)
-const saveProjectName = useCallback(async () => {
-  if (!id) return;
-  await supabase
-    .from("applications")
-    .update({ title: projectName || null })
-    .eq("id", id);
-}, [id, projectName]);
-```
-
-### Header UI
+1. Add `onProjectNameChange` prop to handle edits
+2. Add Project Name as the first field inside `CardContent`
+3. Keep showing project name in collapsed summary (already working)
 
 ```tsx
+interface ReportInputsProps {
+  inputs: ApplicationInputs;
+  onInputChange: (field: keyof ApplicationInputs, value: string) => void;
+  disabled?: boolean;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
+  projectName?: string;
+  onProjectNameChange?: (value: string) => void;  // NEW
+}
+
+// In CardContent, as the FIRST field:
+<div className="space-y-2">
+  <Label htmlFor="projectName">Project Name</Label>
+  <Input
+    id="projectName"
+    placeholder="e.g., My Research Project"
+    value={projectName || ""}
+    onChange={(e) => onProjectNameChange?.(e.target.value)}
+    disabled={disabled}
+  />
+  <p className="text-xs text-muted-foreground">
+    Give your project a memorable name for easier tracking
+  </p>
+</div>
+```
+
+### ApplicationWorkspace Changes
+
+1. Remove the inline `Input` from the header
+2. Restore the simpler header display (just grant name)
+3. Pass `onProjectNameChange` prop to `ReportInputs`
+
+```tsx
+// Header simplified - just show grant name
 <div>
   <h1 className="text-sm font-semibold">{application.grant_version.grant.name}</h1>
-  <Input
-    value={projectName}
-    onChange={(e) => setProjectName(e.target.value)}
-    placeholder="Add a project name..."
-    className="h-6 text-xs border-none bg-transparent focus:bg-muted px-1 -ml-1"
-  />
+  {projectName && (
+    <p className="text-xs text-muted-foreground">{projectName}</p>
+  )}
 </div>
+
+// Pass handler to ReportInputs
+<ReportInputs 
+  inputs={inputs} 
+  onInputChange={handleInputChange}
+  disabled={isGenerating}
+  isCollapsed={inputsCollapsed}
+  onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
+  projectName={projectName}
+  onProjectNameChange={setProjectName}  // NEW
+/>
 ```
 
 ## User Experience
 
-1. **On first visit**: Project name shows placeholder "Add a project name..."
-2. **User clicks**: Input becomes active
-3. **User types**: "Immunotherapy Phase 2 Study"
-4. **After 2s idle**: Auto-saves (same as other inputs)
-5. **On Dashboard**: Card shows "Immunotherapy Phase 2 Study" under grant name
-6. **Search**: Dashboard search already works on title field
+1. User opens application workspace
+2. Research Details card shows Project Name as the first field
+3. User types a project name - it auto-saves like other fields
+4. Header shows the project name as a subtitle (read-only display)
+5. Collapsed summary continues to show the project name
 
 ## No Database Changes Required
 
-The `title` column already exists in the `applications` table - we're just making it user-editable instead of auto-generated.
+Uses existing `title` column and existing save logic.
