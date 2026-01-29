@@ -177,6 +177,91 @@ serve(async (req) => {
       logStep("Magic link generated");
     }
 
+    // Send invitation email via Brevo
+    const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
+    if (!BREVO_API_KEY) {
+      logStep("Warning: BREVO_API_KEY not configured, cannot send email");
+    } else if (linkData?.properties?.action_link) {
+      const magicLinkUrl = linkData.properties.action_link;
+      
+      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+          to: [{ email: email, name: fullName || email }],
+          subject: "You've been invited to Grant Genius Admin",
+          htmlContent: `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="text-align: center; margin-bottom: 30px;">
+    <h1 style="color: #4F46E5;">🎓 Grant Genius</h1>
+  </div>
+  
+  <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; border-radius: 12px; margin-bottom: 30px;">
+    <h2 style="color: white; margin: 0;">You're Invited!</h2>
+    <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">
+      You've been invited to join Grant Genius as an ${role === 'super_admin' ? 'Super Admin' : 'Admin'}.
+    </p>
+  </div>
+  
+  <p>Hi${fullName ? ' ' + fullName : ''},</p>
+  
+  <p>Click the button below to set up your account and access the admin dashboard:</p>
+  
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="${magicLinkUrl}" style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;">
+      Accept Invitation
+    </a>
+  </div>
+  
+  <p style="color: #666; font-size: 14px;">
+    This link expires in 24 hours. If it doesn't work, copy and paste this URL:<br>
+    <a href="${magicLinkUrl}" style="color: #4F46E5; word-break: break-all;">${magicLinkUrl}</a>
+  </p>
+  
+  <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+  
+  <p style="color: #999; font-size: 12px; text-align: center;">
+    This invitation was sent by a Grant Genius Super Admin.
+  </p>
+</body>
+</html>
+          `,
+        }),
+      });
+
+      if (brevoResponse.ok) {
+        const brevoResult = await brevoResponse.json();
+        logStep("Invitation email sent successfully", { messageId: brevoResult.messageId });
+        
+        // Log to email_outbox for tracking
+        await adminClient.from("email_outbox").insert({
+          user_id: newUser.user.id,
+          to_email: email,
+          template_key: "ADMIN_INVITE",
+          subject: "You've been invited to Grant Genius Admin",
+          status: "sent",
+          sent_at: new Date().toISOString(),
+          brevo_message_id: brevoResult.messageId || null,
+          variables_json: {
+            role: role,
+            full_name: fullName || null,
+            invited_by: requesterId,
+          },
+        });
+      } else {
+        const errorText = await brevoResponse.text();
+        logStep("Failed to send invitation email", { error: errorText });
+      }
+    } else {
+      logStep("Warning: No magic link URL available to send");
+    }
+
     // Log audit event
     await adminClient.from("audit_logs").insert({
       entity_type: "user_roles",
