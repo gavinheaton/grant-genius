@@ -1,102 +1,168 @@
 
-# Extend Timeout for Step 0 in Report Generation
+# Fix Admin Invitation Email
 
 ## Problem
 
-Step 0 (Build Source Pack) keeps timing out because:
-1. The AI call timeout is 45 seconds
-2. Successful Step 0 runs take 50-70 seconds total
-3. Step 0 uses `google/gemini-3-pro-preview` (configured via prompt bundle) which needs more time for the complex source curation task
+When inviting a new admin, no email is sent because:
+1. The `invite-admin` function generates a magic link but never sends it
+2. No email template exists for admin invitations (`ADMIN_INVITE`)
+3. The Brevo API is never called to deliver the email
 
-Recent data shows:
-- Successful Step 0: 50-70 seconds
-- Failed/stuck runs: Still running after 97+ seconds or cancelled after 5+ minutes
+## Current Flow (Broken)
+
+```text
+Super Admin clicks "Add Admin"
+    ↓
+invite-admin function runs
+    ↓
+User created in auth.users ✓
+Profile created ✓
+Role assigned ✓
+Magic link generated ✓
+    ↓
+Email sent? ✗ NEVER HAPPENS
+    ↓
+New admin never receives login link
+```
 
 ## Solution
 
-Extend the AI call timeout specifically for Step 0, similar to how Step 12 already has an extended timeout (120 seconds as noted in memory).
-
-## Current Timeouts
-
-| Operation | Current Timeout |
-|-----------|-----------------|
-| Firecrawl scrape | 60 seconds |
-| AI calls (general) | 45 seconds |
-| Step 12 (assembly) | 120 seconds (in resume-report-run) |
-
-## Proposed Changes
-
-| Operation | New Timeout |
-|-----------|-------------|
-| Step 0 AI call | 90 seconds |
-| Steps 1-11 AI calls | 45 seconds (unchanged) |
-| Step 12 AI call | 120 seconds (unchanged) |
+1. **Add email template to database** for `ADMIN_INVITE`
+2. **Update `invite-admin` function** to send the magic link via Brevo API
 
 ## Implementation
 
-### File to Modify
+### Step 1: Add Email Template
 
-`supabase/functions/generate-report/index.ts`
+Run SQL migration to add the template mapping:
 
-### Changes
-
-1. **Modify `callAIWithRetry` to accept a custom timeout parameter**:
-
-```typescript
-async function callAIWithRetry(
-  prompt: string, 
-  stepNumber: number, 
-  systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
-  modelOverride?: string | null,
-  timeoutMs?: number  // NEW: optional custom timeout
-): Promise<string> {
-```
-
-2. **Add timeout logic based on step number**:
-
-```typescript
-// Determine timeout based on step complexity
-function getTimeoutForStep(stepNumber: number): number {
-  if (stepNumber === 0) return 90000;  // 90s for source pack
-  if (stepNumber === 12) return 120000; // 120s for assembly
-  return 45000; // 45s default
-}
-```
-
-3. **Update the `fetchWithTimeout` call inside `callAIWithRetry`**:
-
-```typescript
-const timeout = timeoutMs ?? getTimeoutForStep(stepNumber);
-
-const response = await fetchWithTimeout(
-  "https://ai.gateway.lovable.dev/v1/chat/completions",
-  { ... },
-  timeout  // Use step-specific timeout
+```sql
+INSERT INTO email_templates (template_key, brevo_template_id, description)
+VALUES (
+  'ADMIN_INVITE',
+  0,  -- Placeholder - will use fallback HTML
+  'Invitation email for new admin users with magic link'
 );
 ```
 
-4. **Also increase Firecrawl timeout for reliability**:
+### Step 2: Update invite-admin Function
 
-Change line 497 from `60000` to `75000` (75 seconds) since the article scrape happens before Step 0 AI call and can sometimes be slow.
+Add Brevo email sending after generating the magic link:
 
-## Summary of Changes
+```typescript
+// After generating magic link (around line 178)
 
-```text
-File: supabase/functions/generate-report/index.ts
+// Send invitation email via Brevo
+const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
+if (!BREVO_API_KEY) {
+  logStep("Warning: BREVO_API_KEY not configured, cannot send email");
+} else {
+  const magicLinkUrl = linkData?.properties?.action_link;
+  
+  const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": BREVO_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+      to: [{ email: email, name: fullName || email }],
+      subject: "You've been invited to Grant Genius Admin",
+      htmlContent: `
+<!DOCTYPE html>
+<html>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="text-align: center; margin-bottom: 30px;">
+    <h1 style="color: #4F46E5;">🎓 Grant Genius</h1>
+  </div>
+  
+  <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; border-radius: 12px; margin-bottom: 30px;">
+    <h2 style="color: white; margin: 0;">You're Invited!</h2>
+    <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">
+      You've been invited to join Grant Genius as an ${role === 'super_admin' ? 'Super Admin' : 'Admin'}.
+    </p>
+  </div>
+  
+  <p>Hi${fullName ? ' ' + fullName : ''},</p>
+  
+  <p>Click the button below to set up your account and access the admin dashboard:</p>
+  
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="${magicLinkUrl}" style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600;">
+      Accept Invitation
+    </a>
+  </div>
+  
+  <p style="color: #666; font-size: 14px;">
+    This link expires in 24 hours. If it doesn't work, copy and paste this URL:<br>
+    <a href="${magicLinkUrl}" style="color: #4F46E5; word-break: break-all;">${magicLinkUrl}</a>
+  </p>
+  
+  <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+  
+  <p style="color: #999; font-size: 12px; text-align: center;">
+    This invitation was sent by a Grant Genius Super Admin.
+  </p>
+</body>
+</html>
+      `,
+    }),
+  });
 
-1. Add getTimeoutForStep() function:
-   - Step 0: 90 seconds (source pack needs time to curate 12-25 sources)
-   - Step 12: 120 seconds (assembly of full report)
-   - Others: 45 seconds (simpler tasks)
-
-2. Update callAIWithRetry() to use step-specific timeouts
-
-3. Increase Firecrawl timeout: 60s → 75s
+  if (brevoResponse.ok) {
+    logStep("Invitation email sent successfully");
+    
+    // Log to email_outbox for tracking
+    await adminClient.from("email_outbox").insert({
+      user_id: newUser.user.id,
+      to_email: email,
+      template_key: "ADMIN_INVITE",
+      subject: "You've been invited to Grant Genius Admin",
+      status: "sent",
+      sent_at: new Date().toISOString(),
+      variables_json: {
+        role: role,
+        full_name: fullName || null,
+        invited_by: requesterId,
+      },
+    });
+  } else {
+    const errorText = await brevoResponse.text();
+    logStep("Failed to send invitation email", { error: errorText });
+  }
+}
 ```
 
-## Expected Outcome
+## Files to Modify
 
-- Step 0 will have 90 seconds to complete the source pack curation
-- Combined with the 75-second Firecrawl timeout, the total Step 0 phase can take up to ~165 seconds before failing
-- This accommodates the observed 50-70 second successful runs with comfortable margin
-- Retry logic remains in place for rate limits
+| File | Changes |
+|------|---------|
+| `supabase/functions/invite-admin/index.ts` | Add Brevo API call to send magic link email |
+| Database migration | Add `ADMIN_INVITE` template row (optional, for tracking) |
+
+## Email Content
+
+- **Subject**: "You've been invited to Grant Genius Admin"
+- **From**: Grant Genius <grantgenius@disruptorsco.com>
+- **Contains**:
+  - Welcome message with role (Admin/Super Admin)
+  - Magic link button to accept invitation
+  - Fallback plain text link
+  - 24-hour expiry notice
+
+## Expected Flow After Fix
+
+```text
+Super Admin clicks "Add Admin"
+    ↓
+invite-admin function runs
+    ↓
+User created in auth.users ✓
+Magic link generated ✓
+    ↓
+Brevo API sends email with link ✓
+Email logged to email_outbox ✓
+    ↓
+New admin receives email and clicks to log in
+```
