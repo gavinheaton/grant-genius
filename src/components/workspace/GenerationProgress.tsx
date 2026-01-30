@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2 } from "lucide-react";
 import { ReportRunStep } from "@/hooks/useReportGeneration";
 
 const AUTO_RETRY_SECONDS = 30;
@@ -18,6 +18,9 @@ interface GenerationProgressProps {
   errorMessage?: string;
   onCancel?: () => void;
   onRestart?: () => void;
+  onResume?: () => void;
+  onClearAndRestart?: () => void;
+  isSuperAdmin?: boolean;
   emailOnComplete?: boolean;
   onToggleEmailOnComplete?: (enabled: boolean) => void;
   startedAt?: string | null;
@@ -56,6 +59,9 @@ export function GenerationProgress({
   errorMessage, 
   onCancel, 
   onRestart,
+  onResume,
+  onClearAndRestart,
+  isSuperAdmin = false,
   emailOnComplete = false,
   onToggleEmailOnComplete,
   startedAt,
@@ -189,38 +195,56 @@ export function GenerationProgress({
             )}
             {/* Fallback to general error message */}
             {!stepErrorMessage && errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
-            {onRestart && (
-              <>
-                {/* Auto-retry countdown */}
-                {shouldShowAutoRetry && (
-                  <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">
-                        {isPaused ? "Auto-retry paused" : `Retrying automatically in ${countdown}s...`}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Your credit was refunded. The system will retry automatically.
-                      </p>
-                    </div>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={handlePauseToggle}
-                      className="gap-1"
-                    >
-                      {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
-                      {isPaused ? "Resume" : "Pause"}
-                    </Button>
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <Button variant="default" size="sm" onClick={handleManualRetry} className="gap-2">
-                    <RefreshCw className="h-4 w-4" />
-                    Try Again Now
-                  </Button>
+            
+            {/* Auto-retry countdown */}
+            {onRestart && shouldShowAutoRetry && (
+              <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
+                <div className="flex-1">
+                  <p className="text-sm font-medium">
+                    {isPaused ? "Auto-retry paused" : `Retrying automatically in ${countdown}s...`}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Your credit was refunded. The system will retry automatically.
+                  </p>
                 </div>
-              </>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={handlePauseToggle}
+                  className="gap-1"
+                >
+                  {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
+                  {isPaused ? "Resume" : "Pause"}
+                </Button>
+              </div>
             )}
+            
+            {/* Action buttons */}
+            <div className="flex flex-wrap gap-2">
+              {/* Resume button - available to all users */}
+              {onResume && (
+                <Button variant="default" size="sm" onClick={onResume} className="gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Resume Report
+                </Button>
+              )}
+              
+              {/* Fallback to onRestart if no onResume provided */}
+              {!onResume && onRestart && (
+                <Button variant="default" size="sm" onClick={handleManualRetry} className="gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Try Again Now
+                </Button>
+              )}
+              
+              {/* Clear & Restart - Super Admin only */}
+              {isSuperAdmin && onClearAndRestart && (
+                <Button variant="outline" size="sm" onClick={onClearAndRestart} className="gap-2">
+                  <Trash2 className="h-4 w-4" />
+                  Clear & Restart
+                </Button>
+              )}
+            </div>
           </div>
           );
         })()}

@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.enqueue-report]
 verify_jwt = false
+
+[functions.clear-and-restart-run]
+verify_jwt = false

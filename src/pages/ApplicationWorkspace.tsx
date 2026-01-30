@@ -15,6 +15,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { useEntitlements } from "@/hooks/useEntitlements";
 import { useReportGeneration } from "@/hooks/useReportGeneration";
+import { useAuth } from "@/hooks/useAuth";
 import { PurchaseModal } from "@/components/PurchaseModal";
 import { ReportInputs } from "@/components/workspace/ReportInputs";
 import { GenerationProgress } from "@/components/workspace/GenerationProgress";
@@ -59,6 +60,7 @@ export default function ApplicationWorkspace() {
   const progressRef = useRef<HTMLDivElement>(null);
   
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
+  const { isSuperAdmin } = useAuth();
   
   // Callback when user runs out of credits - opens purchase modal
   const handleNoCredits = useCallback(() => {
@@ -79,6 +81,8 @@ export default function ApplicationWorkspace() {
     cancelRun,
     retryFromFailedStep,
     toggleEmailOnComplete,
+    resumeReport,
+    clearAndRestart,
   } = useReportGeneration(id, { onNoCredits: handleNoCredits });
 
   useEffect(() => {
@@ -364,6 +368,17 @@ export default function ApplicationWorkspace() {
                   ? () => retryFromFailedStep(activeRun.id) 
                   : undefined
               }
+              onResume={
+                (activeRun.status === "failed" || activeRun.status === "stalled")
+                  ? () => resumeReport(activeRun.id)
+                  : undefined
+              }
+              onClearAndRestart={
+                (activeRun.status === "failed" || activeRun.status === "stalled")
+                  ? () => clearAndRestart(activeRun.id)
+                  : undefined
+              }
+              isSuperAdmin={isSuperAdmin}
               emailOnComplete={activeRun.email_on_complete}
               onToggleEmailOnComplete={toggleEmailOnComplete}
               startedAt={activeRun.started_at}
