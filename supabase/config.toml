@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.enqueue-cloud-run]
 verify_jwt = false
+
+[functions.enqueue-report]
+verify_jwt = false
