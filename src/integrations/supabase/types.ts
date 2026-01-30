@@ -765,6 +765,44 @@ export type Database = {
         }
         Relationships: []
       }
+      report_logs: {
+        Row: {
+          created_at: string | null
+          details: Json | null
+          id: string
+          level: string
+          message: string
+          report_run_id: string
+          timestamp: string
+        }
+        Insert: {
+          created_at?: string | null
+          details?: Json | null
+          id?: string
+          level: string
+          message: string
+          report_run_id: string
+          timestamp: string
+        }
+        Update: {
+          created_at?: string | null
+          details?: Json | null
+          id?: string
+          level?: string
+          message?: string
+          report_run_id?: string
+          timestamp?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "report_logs_report_run_id_fkey"
+            columns: ["report_run_id"]
+            isOneToOne: false
+            referencedRelation: "report_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       report_run_steps: {
         Row: {
           citations_json: Json | null
