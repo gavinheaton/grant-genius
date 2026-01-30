@@ -1,75 +1,41 @@
 
-# Fix: PostgREST 404 on Admin Dashboard Queries
+# Add Execution Engine Database Columns
 
-## Problem
-The Admin Dashboard queries are failing with 404 because PostgREST cannot resolve the embedded resource `profiles:user_id(email)` in queries like:
+## Overview
+Add the missing database columns that enable the dual-engine architecture (Cloud Run vs Edge Functions) for report generation. This will fix the current `generate-report` failures and enable the Admin UI settings that are already built.
 
-```sql
-applications!inner(title, user_id, profiles:user_id(email))
-```
+## Database Migration
 
-## Root Cause
-PostgREST uses **foreign key relationships** to enable embedded resources. While the database has:
-- `report_runs.application_id` → `applications.id` (works)
-- `applications.user_id` → `auth.users.id` (exists but points to auth schema)
-- `profiles.user_id` → `auth.users.id` (exists but points to auth schema)
-
-There is **no direct foreign key** from `applications` to `profiles`. PostgREST cannot infer that `applications.user_id` and `profiles.user_id` share the same values.
-
-## Solution
-
-### Option A: Add a foreign key from profiles to itself as a lookup table (Recommended)
-Create a FK relationship so PostgREST can navigate from `applications.user_id` to `profiles.user_id`:
+### SQL to execute:
 
 ```sql
-ALTER TABLE public.applications
-ADD CONSTRAINT applications_user_id_profiles_fkey
-FOREIGN KEY (user_id) REFERENCES public.profiles(user_id)
-ON DELETE CASCADE;
+-- Add execution engine configuration columns to grant_versions
+ALTER TABLE public.grant_versions 
+ADD COLUMN IF NOT EXISTS execution_engine_default TEXT DEFAULT 'cloud_run',
+ADD COLUMN IF NOT EXISTS edge_allowed BOOLEAN DEFAULT true;
+
+-- Add execution engine tracking columns to report_runs
+ALTER TABLE public.report_runs
+ADD COLUMN IF NOT EXISTS execution_engine TEXT DEFAULT 'cloud_run',
+ADD COLUMN IF NOT EXISTS execution_engine_reason TEXT;
 ```
 
-**Prerequisite**: The `profiles.user_id` column must have a UNIQUE constraint (it likely does since it references auth.users which is unique).
+## What This Enables
 
-### Option B: Rewrite queries to avoid nested embedding
-Change the Admin Dashboard queries to fetch profiles separately:
+### For Super Admins (Admin Console → Grants → Edit → Advanced tab)
+- **Edge Allowed Toggle**: Enable/disable Edge function execution for debugging
+- **Default Engine Dropdown**: Choose between Cloud Run (recommended) or Edge
 
-```typescript
-// Instead of:
-.select(`..., applications!inner(title, user_id, profiles:user_id(email))`)
+### For Report Tracking
+- **execution_engine**: Records which engine processed each run
+- **execution_engine_reason**: Logs why that engine was selected (grant default, admin override, etc.)
 
-// Use:
-.select(`..., applications!inner(title, user_id)`)
-// Then fetch emails separately via profiles table
-```
+## Default Behavior
+- All grants will default to **Cloud Run** (production-ready, no timeout limits)
+- Edge functions will be **allowed** by default for debugging purposes
+- Super Admins can change these per grant version
 
-This is more verbose but avoids schema changes.
-
-## Implementation Steps
-
-### Step 1: Add UNIQUE constraint on profiles.user_id (if missing)
-```sql
-ALTER TABLE public.profiles
-ADD CONSTRAINT profiles_user_id_unique UNIQUE (user_id);
-```
-
-### Step 2: Add foreign key from applications to profiles
-```sql
-ALTER TABLE public.applications
-ADD CONSTRAINT applications_user_id_profiles_fkey
-FOREIGN KEY (user_id) REFERENCES public.profiles(user_id)
-ON DELETE CASCADE;
-```
-
-### Step 3: Verify the query works
-Test that the Admin Dashboard query now resolves correctly.
-
-## Why 404 Specifically?
-PostgREST returns 404 when it cannot find a valid relationship path for the embedded resource syntax. The `profiles:user_id` hint tells PostgREST "join profiles using the user_id column", but without a FK, PostgREST doesn't know how to make that join.
-
-## Files Affected
-- Database migration (new SQL migration file)
-- No frontend code changes needed - the queries are already correct, they just need the FK to exist
-
-## Risk Assessment
-- **Low risk**: Adding a FK is a constraint that validates existing data; if all `applications.user_id` values already exist in `profiles.user_id`, the migration will succeed
-- **If migration fails**: It means there are orphaned applications without matching profiles, which would need cleanup first
+## Technical Notes
+- Uses `IF NOT EXISTS` to be idempotent (safe to re-run)
+- Cloud Run is the recommended default as it has no timeout limits
+- Edge functions have a 60-second timeout, suitable only for debugging short runs
