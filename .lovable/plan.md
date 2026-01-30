@@ -1,147 +1,252 @@
 
 
-# Enhanced Real-time Report Progress with Error Display
+# Enhanced Failure Handling with Resume and Clear & Restart Options
 
 ## Overview
-Enhance the current Realtime implementation to also subscribe to `report_runs` status changes and display step-level error messages when failures occur.
+Add two new action buttons to the report generation failure UI:
+1. **Resume Report** - Re-enqueues the existing run to continue from where it stopped
+2. **Clear & Restart** (Super Admin only) - Deletes all step data and starts fresh from Step 1
 
-## Current State (Already Implemented)
-- Realtime enabled for both `report_runs` and `report_run_steps` tables
-- Hook subscribes to `report_run_steps` changes for progress updates
-- Progress bar uses `completedSteps / totalSteps` calculation
-- Step status updates in real-time
+## Current Architecture
 
-## Gaps to Address
-1. No subscription to `report_runs` for instant status change detection (completed/failed)
-2. `error_message` field not included in step data
-3. Failed step error message not displayed in UI
+```text
++---------------------+     +-----------------------+     +--------------------+
+| ApplicationWorkspace| --> | useReportGeneration   | --> | GenerationProgress |
+|                     |     | - retryFromFailedStep | --> | - onRestart        |
++---------------------+     | - cancelRun           |     | - onCancel         |
+                            +-----------------------+     +--------------------+
+                                      |
+                                      v
+                            +-------------------+
+                            | resume-report-run |
+                            | edge function     |
+                            +-------------------+
+```
 
 ## Implementation Plan
 
-### Phase 1: Update ReportRunStep Interface
+### Phase 1: Add New Hook Functions
+
 **File:** `src/hooks/useReportGeneration.ts`
 
-Add `error_message` to the step interface:
+Add two new callback functions:
+
+1. **resumeReport** - Directly calls `enqueue-report` edge function:
 ```typescript
-export interface ReportRunStep {
-  step_number: number;
-  step_name: string;
-  status: "pending" | "running" | "completed" | "failed";
-  started_at: string | null;
-  completed_at: string | null;
-  error_message: string | null;  // NEW
+const resumeReport = useCallback(async (runId: string) => {
+  try {
+    setIsGenerating(true);
+    
+    // Reset status to pending
+    await supabase
+      .from("report_runs")
+      .update({ status: "pending" })
+      .eq("id", runId);
+
+    // Call enqueue-report to re-trigger the worker
+    const { error } = await supabase.functions.invoke("enqueue-report", {
+      body: { report_run_id: runId },
+    });
+
+    if (error) throw error;
+
+    toast({
+      title: "Resuming report",
+      description: "Re-triggering the report generation worker.",
+    });
+
+    checkActiveRun();
+  } catch (error) {
+    console.error("Error resuming report:", error);
+    setIsGenerating(false);
+    toast({
+      title: "Resume failed",
+      description: "Failed to resume report. Please try again.",
+      variant: "destructive",
+    });
+  }
+}, [toast, checkActiveRun]);
+```
+
+2. **clearAndRestart** - Deletes steps and restarts from Step 1:
+```typescript
+const clearAndRestart = useCallback(async (runId: string) => {
+  try {
+    setIsGenerating(true);
+
+    // Delete all steps for this run (requires service role or RLS update)
+    // Since RLS prevents user deletion, call an edge function
+    const { error } = await supabase.functions.invoke("clear-and-restart-run", {
+      body: { reportRunId: runId },
+    });
+
+    if (error) throw error;
+
+    setSteps([]);
+    toast({
+      title: "Run cleared",
+      description: "Starting fresh from Step 1.",
+    });
+
+    checkActiveRun();
+  } catch (error) {
+    console.error("Error clearing run:", error);
+    setIsGenerating(false);
+    toast({
+      title: "Clear failed",
+      description: "Failed to clear run. Please try again.",
+      variant: "destructive",
+    });
+  }
+}, [toast, checkActiveRun]);
+```
+
+### Phase 2: Create Edge Function for Clear & Restart
+
+**File:** `supabase/functions/clear-and-restart-run/index.ts`
+
+A new edge function that:
+1. Verifies the user is a Super Admin
+2. Deletes all `report_run_steps` for the given run
+3. Resets `report_runs.current_step` to 0 and `status` to "pending"
+4. Clears checkpoint data
+5. Calls the worker to start fresh
+
+```typescript
+// Verify super admin via user_roles table
+const { data: roleData } = await supabaseAdmin
+  .from("user_roles")
+  .select("role")
+  .eq("user_id", user.id)
+  .single();
+
+if (roleData?.role !== "super_admin") {
+  return new Response(
+    JSON.stringify({ error: "Super Admin access required" }),
+    { status: 403, headers: corsHeaders }
+  );
+}
+
+// Delete all steps
+await supabaseAdmin
+  .from("report_run_steps")
+  .delete()
+  .eq("report_run_id", reportRunId);
+
+// Reset the run
+await supabaseAdmin
+  .from("report_runs")
+  .update({
+    status: "pending",
+    current_step: 0,
+    checkpoint_data_json: {},
+    checkpoint_citations_json: [],
+  })
+  .eq("id", reportRunId);
+
+// Trigger worker
+// Call enqueue-report...
+```
+
+### Phase 3: Update GenerationProgress Component
+
+**File:** `src/components/workspace/GenerationProgress.tsx`
+
+1. Add new props for the additional actions and super admin status:
+```typescript
+interface GenerationProgressProps {
+  // ... existing props
+  onResume?: () => void;         // NEW
+  onClearAndRestart?: () => void; // NEW
+  isSuperAdmin?: boolean;         // NEW
 }
 ```
 
-### Phase 2: Update fetchSteps to Include error_message
-**File:** `src/hooks/useReportGeneration.ts`
-
-Update the query to include `error_message`:
+2. Update the failed state UI to show both buttons:
 ```typescript
-const { data, error } = await supabase
-  .from("report_run_steps")
-  .select("step_number, step_name, status, started_at, completed_at, error_message")
-  .eq("report_run_id", runId)
-  .order("step_number", { ascending: true });
-```
-
-### Phase 3: Add Realtime Subscription for report_runs
-**File:** `src/hooks/useReportGeneration.ts`
-
-Subscribe to `report_runs` status changes for instant detection of completion or failure:
-```typescript
-useEffect(() => {
-  if (!isGenerating || !activeRun?.id) return;
-
-  const channel = supabase
-    .channel(`report-run-${activeRun.id}`)
-    .on(
-      'postgres_changes',
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'report_runs',
-        filter: `id=eq.${activeRun.id}`,
-      },
-      (payload) => {
-        const updated = payload.new as ReportRun;
-        setActiveRun(prev => prev ? { ...prev, ...updated } : null);
-        
-        // Detect completion
-        if (updated.status === 'completed') {
-          setIsGenerating(false);
-          fetchReports();
-          toast({ title: "Report ready!", ... });
-        }
-        
-        // Detect failure
-        if (updated.status === 'failed') {
-          setIsGenerating(false);
-        }
-      }
-    )
-    .subscribe();
-
-  return () => supabase.removeChannel(channel);
-}, [isGenerating, activeRun?.id]);
-```
-
-### Phase 4: Display Failed Step Error in UI
-**File:** `src/components/workspace/GenerationProgress.tsx`
-
-Extract error message from failed step and display:
-```typescript
-// Find failed step and its error message
-const failedStep = steps.find(s => s.status === 'failed');
-const stepErrorMessage = failedStep?.error_message;
-
-// In the failed state section:
 {status === "failed" && (
   <div className="space-y-3">
-    {stepErrorMessage && (
-      <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">
-        <strong>Step {failedStep.step_number} failed:</strong> {stepErrorMessage}
-      </div>
-    )}
-    {/* existing error message fallback */}
-    {!stepErrorMessage && errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
-    ...
+    {/* Error message display (already implemented) */}
+    
+    {/* Action buttons */}
+    <div className="flex flex-wrap gap-2">
+      {onResume && (
+        <Button variant="default" size="sm" onClick={onResume} className="gap-2">
+          <RefreshCw className="h-4 w-4" />
+          Resume Report
+        </Button>
+      )}
+      {isSuperAdmin && onClearAndRestart && (
+        <Button variant="outline" size="sm" onClick={onClearAndRestart} className="gap-2">
+          <Trash2 className="h-4 w-4" />
+          Clear & Restart
+        </Button>
+      )}
+    </div>
   </div>
 )}
 ```
 
-### Phase 5: Update ApplicationWorkspace
+### Phase 4: Update ApplicationWorkspace
+
 **File:** `src/pages/ApplicationWorkspace.tsx`
 
-Ensure error messages from steps are accessible (already handled via props).
+1. Import and use `useAuth` to get `isSuperAdmin`:
+```typescript
+import { useAuth } from "@/hooks/useAuth";
 
-## Files to Modify
-| File | Changes |
-|------|---------|
-| `src/hooks/useReportGeneration.ts` | Add error_message to interface, update fetch query, add report_runs Realtime subscription |
-| `src/components/workspace/GenerationProgress.tsx` | Display failed step error message from database |
+// In component:
+const { isSuperAdmin } = useAuth();
+```
 
-## Technical Details
+2. Destructure new functions from hook:
+```typescript
+const { 
+  // ...existing
+  resumeReport,
+  clearAndRestart,
+} = useReportGeneration(id, { onNoCredits: handleNoCredits });
+```
 
-### Realtime Channel Structure
-Two separate channels for optimal filtering:
-- `report-steps-{runId}` - Step-level progress (INSERT/UPDATE on `report_run_steps`)
-- `report-run-{runId}` - Overall status (UPDATE on `report_runs`)
+3. Pass new props to GenerationProgress:
+```typescript
+<GenerationProgress
+  // ...existing props
+  onResume={() => activeRun && resumeReport(activeRun.id)}
+  onClearAndRestart={() => activeRun && clearAndRestart(activeRun.id)}
+  isSuperAdmin={isSuperAdmin}
+/>
+```
 
-### Error Message Priority
-1. First: Show `error_message` from the failed step in `report_run_steps`
-2. Fallback: Show general `errorMessage` prop if no step-level error
+## Files to Create/Modify
 
-### Toast on Completion
-When `report_runs.status` changes to `completed` via Realtime, immediately:
-- Set `isGenerating = false`
-- Refresh reports list
-- Show success toast
+| File | Action | Changes |
+|------|--------|---------|
+| `supabase/functions/clear-and-restart-run/index.ts` | Create | New edge function for Super Admin clear and restart |
+| `src/hooks/useReportGeneration.ts` | Modify | Add `resumeReport` and `clearAndRestart` functions |
+| `src/components/workspace/GenerationProgress.tsx` | Modify | Add new action buttons, `isSuperAdmin` prop |
+| `src/pages/ApplicationWorkspace.tsx` | Modify | Import useAuth, pass new props |
+
+## Security Considerations
+
+- The `clear-and-restart-run` edge function must validate Super Admin role server-side
+- Uses the `user_roles` table (not client-side checks) for role verification
+- Regular users only see the "Resume Report" button
+- Service role key used in edge function to delete steps (bypasses RLS)
+
+## Button Behavior Summary
+
+| Button | Visible To | Action |
+|--------|-----------|--------|
+| Resume Report | All Users | Calls `enqueue-report` with existing `report_run_id` to re-trigger worker |
+| Clear & Restart | Super Admin Only | Deletes all steps, resets run to step 0, then triggers fresh generation |
 
 ## Acceptance Criteria
-- Progress bar updates instantly as steps complete (no polling delay)
-- When a step fails, the UI shows the `error_message` from that specific step
-- When the run completes, the UI instantly shows the success state
-- Total steps value comes from `report_runs.total_steps`
-- Realtime subscriptions are cleaned up on unmount
+
+- When a step fails, the error message is displayed prominently
+- "Resume Report" button appears for all users on failure
+- "Clear & Restart" button only appears for Super Admins
+- Clicking "Resume Report" re-enqueues the run and shows progress
+- Clicking "Clear & Restart" clears step data and starts from Step 1
+- Both actions update the UI via Realtime subscriptions
 
