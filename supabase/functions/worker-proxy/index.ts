@@ -16,6 +16,7 @@ const VALID_ACTIONS = [
   "save_report",
   "refund_credit",
   "get_prompt_bundle",
+  "log_message",
 ] as const;
 
 type Action = typeof VALID_ACTIONS[number];
@@ -121,6 +122,8 @@ serve(async (req) => {
         return await handleRefundCredit(supabase, params);
       case "get_prompt_bundle":
         return await handleGetPromptBundle(supabase);
+      case "log_message":
+        return await handleLogMessage(supabase, params);
       default:
         return errorResponse("Unknown action");
     }
@@ -587,4 +590,51 @@ async function handleGetPromptBundle(supabase: any) {
     system_prompt: bundle.system_prompt,
     steps: stepsWithModel,
   });
+}
+
+async function handleLogMessage(supabase: any, params: Record<string, unknown>) {
+  const { report_run_id, timestamp, level, message, details } = params;
+
+  if (!report_run_id || typeof report_run_id !== "string" || !isValidUUID(report_run_id)) {
+    return errorResponse("Invalid report_run_id");
+  }
+
+  if (!timestamp) {
+    return errorResponse("timestamp is required");
+  }
+
+  if (!level || !["info", "warn", "error"].includes(level as string)) {
+    return errorResponse("Invalid level. Must be 'info', 'warn', or 'error'");
+  }
+
+  if (!message || typeof message !== "string") {
+    return errorResponse("message is required");
+  }
+
+  // Parse details if it's a string
+  let parsedDetails = null;
+  if (details) {
+    try {
+      parsedDetails = typeof details === "string" ? JSON.parse(details) : details;
+    } catch {
+      parsedDetails = { raw: details };
+    }
+  }
+
+  const { error } = await supabase
+    .from("report_logs")
+    .insert({
+      report_run_id,
+      timestamp,
+      level,
+      message,
+      details: parsedDetails,
+    });
+
+  if (error) {
+    console.error("Failed to insert log:", error);
+    return errorResponse("Failed to insert log: " + error.message, 500);
+  }
+
+  return jsonResponse({ success: true });
 }
