@@ -52,18 +52,21 @@ function getModelForStep(stepNumber: number): string {
 }
 
 // Timeout selection based on step complexity (with configurable override)
+// CRITICAL: Must leave ~15-20s headroom within 60s platform limit for:
+// - Function boot time (~100-200ms)
+// - Database queries (fetch bundle, grant context)
+// - Response parsing and checkpoint save
 function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = null): number {
   // If there's a configured override, use it
   if (overrideSeconds !== null) {
     return overrideSeconds * 1000; // Convert to ms
   }
-  // Step 0: Source pack needs more time for complex source curation
-  if (stepNumber === 0) return 55000; // 55 seconds (under 60s limit)
-  // Steps 12-14: Assembly sub-steps - each must complete within 60s limit
-  if (stepNumber === 12 || stepNumber === 13) return 55000; // 55 seconds
-  if (stepNumber === 14) return 45000; // 45 seconds (simpler merge task)
-  // All other steps use default timeout
-  return 45000; // 45 seconds
+  // Steps 0, 12, 13: Complex tasks - 42s max to stay safely under 60s limit
+  if (stepNumber === 0 || stepNumber === 12 || stepNumber === 13) return 42000;
+  // Steps 6-8: TAM/SAM/SOM calculations - 38s
+  if (stepNumber >= 6 && stepNumber <= 8) return 38000;
+  // All other steps - 35s
+  return 35000;
 }
 
 // Default system prompt (fallback if no active bundle)
@@ -783,10 +786,12 @@ async function callAIWithRetry(
         continue;
       }
       
-      // If it's a timeout and we have retries left, continue
-      if (msg.includes("timed out") && attempt < RETRY_DELAYS.length) {
-        console.log(`Request timed out on attempt ${attempt + 1}, will retry`);
-        continue;
+      // FAIL FAST on timeout - do NOT retry within this function invocation.
+      // Retrying timeouts within edge function extends execution past 60s limit.
+      // The frontend auto-resume mechanism will trigger a new function call.
+      if (msg.includes("timed out")) {
+        console.error(`AI request timed out for step ${stepNumber} after ${customTimeoutMs || getTimeoutForStep(stepNumber)}ms - failing fast`);
+        throw new Error(`AI request timed out for step ${stepNumber}. Please try again.`);
       }
       
       throw error;
