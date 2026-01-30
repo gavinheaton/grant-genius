@@ -460,26 +460,39 @@ serve(async (req) => {
       report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
-    // DISPATCHER LOGIC: Route based on execution engine
-    // For now, Cloud Run falls back to Edge since Cloud Run is not yet configured
-    if (reportRun.execution_engine === "cloud_run") {
-      // TODO: When Cloud Run is ready, call enqueue-cloud-run here
-      // For now, fall back to edge execution
-      console.log(`Report run ${reportRun.id}: Cloud Run requested but not configured, using Edge fallback`);
-    }
+    // DISPATCHER LOGIC: Always use enqueue-report to trigger external worker
+    try {
+      console.log(`Dispatching report run ${reportRun.id} to enqueue-report`);
+      
+      const enqueueResponse = await fetch(
+        `${Deno.env.get("SUPABASE_URL")}/functions/v1/enqueue-report`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+          },
+          body: JSON.stringify({ report_run_id: reportRun.id }),
+        }
+      );
 
-    // Start async processing - 15-PHASE ARCHITECTURE: Phase 0 runs ONLY Step 0, then checkpoints
-    processStep0Only(
-      reportRun.id,
-      applicationId,
-      application.grant_version_id,
-      inputs
-    ).catch((e) => console.error("Background processing error:", e));
+      if (!enqueueResponse.ok) {
+        const errorText = await enqueueResponse.text();
+        console.error(`enqueue-report failed: ${enqueueResponse.status} - ${errorText}`);
+        // Don't fail the request - the run is created and can be manually retried
+      } else {
+        console.log(`Report run ${reportRun.id} successfully enqueued`);
+      }
+    } catch (enqueueError) {
+      console.error("Error calling enqueue-report:", enqueueError);
+      // Don't fail the request - the run is created and can be manually retried
+    }
 
     return new Response(
       JSON.stringify({ 
         success: true, 
         reportRunId: reportRun.id,
+        status: "enqueued",
         executionEngine: reportRun.execution_engine,
         message: "Report generation started" 
       }),
