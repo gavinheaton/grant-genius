@@ -235,7 +235,13 @@ export function useReportGeneration(
     try {
       const response = await fetch(url, {
         method: "OPTIONS",
-        headers: { "Content-Type": "application/json" },
+        // Mirror headers the client may send so preflight reflects reality.
+        headers: {
+          "Content-Type": "application/json",
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "",
+          "x-client-info": "grant-genius-web",
+          "x-supabase-client-platform": "web",
+        },
       });
       
       // 200, 204, 401, 405 all indicate the function exists
@@ -270,15 +276,26 @@ export function useReportGeneration(
       });
 
       if (error) {
-        // Extract more details from FunctionsHttpError
-        const httpError = error as { status?: number; message?: string; context?: { body?: string } };
-        const status = httpError.status;
-        const body = httpError.context?.body;
-        
+        // Extract more details from the Supabase FunctionsHttpError shape
+        // (structure can differ slightly across versions)
+        const anyErr = error as unknown as {
+          name?: string;
+          message?: string;
+          status?: number;
+          context?: { status?: number; body?: unknown };
+          details?: unknown;
+        };
+
+        const status = anyErr.status ?? anyErr.context?.status;
+        const rawBody = anyErr.context?.body;
+        const bodyText =
+          typeof rawBody === "string" ? rawBody : rawBody ? JSON.stringify(rawBody) : undefined;
+
         console.error("generate-report invocation failed:", {
+          name: anyErr.name,
           status,
-          message: error.message,
-          body,
+          message: anyErr.message,
+          body: bodyText,
           backendUrl: import.meta.env.VITE_SUPABASE_URL,
         });
         
