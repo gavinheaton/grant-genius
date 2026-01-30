@@ -39,19 +39,18 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: authHeader } },
     });
 
-    // Verify JWT and get user claims
-    const token = authHeader.replace("Bearer ", "");
-    const { data: claimsData, error: claimsError } = await userClient.auth.getClaims(token);
+    // Verify JWT and get user
+    const { data: userData, error: userError } = await userClient.auth.getUser();
     
-    if (claimsError || !claimsData?.claims) {
-      console.error("Claims verification failed:", claimsError);
+    if (userError || !userData?.user) {
+      console.error("User verification failed:", userError);
       return new Response(
         JSON.stringify({ error: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    const adminUserId = claimsData.claims.sub;
+    const adminUserId = userData.user.id;
 
     // Use service role client for database operations
     const serviceClient = createClient(supabaseUrl, supabaseServiceKey);
