@@ -38,7 +38,10 @@ serve(async (req) => {
     console.log(`Enqueuing report run: ${report_run_id}`);
 
     // 3. Trigger the Worker via the /enqueue-run endpoint
-    const response = await fetch(`${workerUrl}/enqueue-run`, {
+    const fullUrl = `${workerUrl}/enqueue-run`;
+    console.log(`Calling worker at: ${fullUrl}`);
+
+    const response = await fetch(fullUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -47,9 +50,26 @@ serve(async (req) => {
       body: JSON.stringify({ report_run_id }),
     });
 
-    const result = await response.json();
+    const responseText = await response.text();
+    console.log(`Worker response status: ${response.status}`);
 
-    console.log(`Worker response status: ${response.status}`, result);
+    // Try to parse as JSON, fall back to raw text on failure
+    let result;
+    try {
+      result = JSON.parse(responseText);
+    } catch {
+      console.error(`Worker returned non-JSON response: ${responseText.substring(0, 500)}`);
+      return new Response(
+        JSON.stringify({ 
+          error: "Worker returned invalid response",
+          status: response.status,
+          preview: responseText.substring(0, 200),
+        }),
+        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log(`Worker result:`, result);
 
     return new Response(JSON.stringify(result), {
       status: response.status,
