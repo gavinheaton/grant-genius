@@ -310,10 +310,19 @@ serve(async (req) => {
       );
     }
 
-    // Fetch application and verify ownership
+    // Fetch application and verify ownership, including grant version for execution engine
     const { data: application, error: appError } = await supabaseClient
       .from("applications")
-      .select("id, user_id, inputs_json, grant_version_id")
+      .select(`
+        id, 
+        user_id, 
+        inputs_json, 
+        grant_version_id,
+        grant_version:grant_versions!inner(
+          execution_engine_default,
+          edge_allowed
+        )
+      `)
       .eq("id", applicationId)
       .maybeSingle();
 
@@ -395,7 +404,14 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Create report run with 15 total steps (0-14)
+    // Determine execution engine from grant version settings
+    // deno-lint-ignore no-explicit-any
+    const grantVersionData = (application as any).grant_version;
+    const grantVersion = Array.isArray(grantVersionData) ? grantVersionData[0] : grantVersionData;
+    const executionEngine = grantVersion?.execution_engine_default || "cloud_run";
+    const executionEngineReason = "grant_version_default";
+
+    // Create report run with 15 total steps (0-14) and execution engine
     const { data: reportRun, error: runError } = await supabaseAdmin
       .from("report_runs")
       .insert({
@@ -405,8 +421,10 @@ serve(async (req) => {
         current_step: 0,
         total_steps: RESEARCH_STEPS.length, // 15 steps (0-14)
         started_at: new Date().toISOString(),
+        execution_engine: executionEngine,
+        execution_engine_reason: executionEngineReason,
       })
-      .select("id")
+      .select("id, execution_engine")
       .single();
 
     if (runError || !reportRun) {
@@ -416,6 +434,8 @@ serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    console.log(`Report run ${reportRun.id} created with execution_engine: ${reportRun.execution_engine}`);
 
     // Create step records (0-14)
     const stepRecords = RESEARCH_STEPS.map((step, index) => ({
@@ -440,6 +460,14 @@ serve(async (req) => {
       report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
+    // DISPATCHER LOGIC: Route based on execution engine
+    // For now, Cloud Run falls back to Edge since Cloud Run is not yet configured
+    if (reportRun.execution_engine === "cloud_run") {
+      // TODO: When Cloud Run is ready, call enqueue-cloud-run here
+      // For now, fall back to edge execution
+      console.log(`Report run ${reportRun.id}: Cloud Run requested but not configured, using Edge fallback`);
+    }
+
     // Start async processing - 15-PHASE ARCHITECTURE: Phase 0 runs ONLY Step 0, then checkpoints
     processStep0Only(
       reportRun.id,
@@ -452,6 +480,7 @@ serve(async (req) => {
       JSON.stringify({ 
         success: true, 
         reportRunId: reportRun.id,
+        executionEngine: reportRun.execution_engine,
         message: "Report generation started" 
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
