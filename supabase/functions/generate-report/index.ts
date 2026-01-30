@@ -7,21 +7,23 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// 13-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Step 12 (assembly)
+// 15-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Steps 12-14 (assembly)
 const RESEARCH_STEPS = [
   { name: "build_source_pack", description: "Building Australia-first source pack" },
   { name: "extract_context", description: "Extracting research context from article" },
   { name: "competitor_research", description: "Searching for competing research" },
   { name: "market_segments", description: "Identifying market segments" },
   { name: "find_competitors", description: "Finding existing competitors" },
-  { name: "market_sizing_source_pack", description: "Building market sizing source pack" }, // NEW Step 5
+  { name: "market_sizing_source_pack", description: "Building market sizing source pack" },
   { name: "calculate_tam", description: "Calculating Total Addressable Market" },
   { name: "calculate_sam", description: "Calculating Serviceable Addressable Market" },
   { name: "calculate_som", description: "Calculating Serviceable Obtainable Market" },
   { name: "economic_impact", description: "Analyzing Australian economic impact" },
   { name: "competitor_table", description: "Building competitor comparison" },
   { name: "partner_businesses", description: "Finding Australian partner businesses" },
-  { name: "assemble_report", description: "Assembling final grant report" },
+  { name: "assemble_sections", description: "Assembling report sections" },
+  { name: "build_tables_sources", description: "Building tables and source list" },
+  { name: "finalize_report", description: "Finalizing report" },
 ];
 
 // Model selection based on step complexity
@@ -34,13 +36,17 @@ function getModelForStep(stepNumber: number): string {
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
-  // Steps 4-8: Complex market analysis (including new Step 5) - use heavier model
+  // Steps 4-8: Complex market analysis (including Step 5) - use heavier model
   if (stepNumber <= 8) {
     return "google/gemini-3-flash-preview";
   }
-  // Step 12: Final assembly - use most capable model
-  if (stepNumber === 12) {
-    return "google/gemini-3-pro-preview";
+  // Steps 12-13: Assembly steps - use flash-preview for good speed
+  if (stepNumber === 12 || stepNumber === 13) {
+    return "google/gemini-3-flash-preview";
+  }
+  // Step 14: Final merge - use lite model (simple task)
+  if (stepNumber === 14) {
+    return "google/gemini-2.5-flash-lite";
   }
   return "google/gemini-2.5-flash-lite";
 }
@@ -51,10 +57,11 @@ function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = 
   if (overrideSeconds !== null) {
     return overrideSeconds * 1000; // Convert to ms
   }
-  // Step 0: Source pack needs more time for complex source curation (50-70s observed)
-  if (stepNumber === 0) return 90000; // 90 seconds
-  // Step 12: Final assembly needs extended time for full report generation
-  if (stepNumber === 12) return 120000; // 120 seconds
+  // Step 0: Source pack needs more time for complex source curation
+  if (stepNumber === 0) return 55000; // 55 seconds (under 60s limit)
+  // Steps 12-14: Assembly sub-steps - each must complete within 60s limit
+  if (stepNumber === 12 || stepNumber === 13) return 55000; // 55 seconds
+  if (stepNumber === 14) return 45000; // 45 seconds (simpler merge task)
   // All other steps use default timeout
   return 45000; // 45 seconds
 }
@@ -386,7 +393,7 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Create report run with 13 total steps (0-12)
+    // Create report run with 15 total steps (0-14)
     const { data: reportRun, error: runError } = await supabaseAdmin
       .from("report_runs")
       .insert({
@@ -394,7 +401,7 @@ serve(async (req) => {
         report_template_version_id: templateVersion.id,
         status: "running",
         current_step: 0,
-        total_steps: RESEARCH_STEPS.length, // 13 steps (0-12)
+        total_steps: RESEARCH_STEPS.length, // 15 steps (0-14)
         started_at: new Date().toISOString(),
       })
       .select("id")
@@ -408,10 +415,10 @@ serve(async (req) => {
       );
     }
 
-    // Create step records (0-12)
+    // Create step records (0-14)
     const stepRecords = RESEARCH_STEPS.map((step, index) => ({
       report_run_id: reportRun.id,
-      step_number: index, // 0-12
+      step_number: index, // 0-14
       step_name: step.name,
       status: "pending" as const,
     }));
@@ -431,7 +438,7 @@ serve(async (req) => {
       report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
-    // Start async processing - 13-PHASE ARCHITECTURE: Phase 0 runs ONLY Step 0, then checkpoints
+    // Start async processing - 15-PHASE ARCHITECTURE: Phase 0 runs ONLY Step 0, then checkpoints
     processStep0Only(
       reportRun.id,
       applicationId,
@@ -457,7 +464,7 @@ serve(async (req) => {
 });
 
 /**
- * 13-PHASE ARCHITECTURE: Phase 0
+ * 15-PHASE ARCHITECTURE: Phase 0
  * Runs ONLY Step 0 (build source pack), then checkpoints.
  * The frontend will detect the checkpoint and invoke resume-report-run for Step 1.
  */

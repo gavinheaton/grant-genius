@@ -6,21 +6,23 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
 
-// 13-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Step 12 (assembly)
+// 15-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Steps 12-14 (assembly)
 const RESEARCH_STEPS = [
   "Building Australia-first source pack",
   "Extracting research context from article",
   "Searching for competing research",
   "Identifying market segments",
   "Finding existing competitors",
-  "Building market sizing source pack",  // NEW Step 5
-  "Calculating Total Addressable Market", // Now Step 6
+  "Building market sizing source pack",
+  "Calculating Total Addressable Market",
   "Calculating Serviceable Addressable Market",
   "Calculating Serviceable Obtainable Market",
   "Analyzing Australian economic impact",
   "Building competitor comparison",
   "Finding Australian partner businesses",
-  "Assembling final report",             // Now Step 12
+  "Assembling report sections",
+  "Building tables and source list",
+  "Finalizing report",
 ];
 
 const AUTO_RETRY_SECONDS = 30;
@@ -108,9 +110,9 @@ export function GenerationProgress({
   // Progress is based on completed steps (currentStep represents last completed step, 0-12)
   // Total steps is 13 (0-12), so we calculate progress as (currentStep + 1) / 13 when running
   const progressPercent = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;
-  // currentStep is 0-indexed (0-12), map to RESEARCH_STEPS array
+  // currentStep is 0-indexed (0-14), map to RESEARCH_STEPS array
   const currentStepName = currentStep >= 0 && currentStep < RESEARCH_STEPS.length 
-    ? RESEARCH_STEPS[currentStep] + (currentStep === 12 ? " (this step takes longer)" : "")
+    ? RESEARCH_STEPS[currentStep]
     : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending";
