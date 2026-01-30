@@ -80,9 +80,10 @@ export function useAuth() {
     // Set up auth state change listener FIRST
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        if (event === "SIGNED_IN" && session?.user) {
+        if (session?.user) {
           await updateAuthState(session.user.id, session.user.email);
-        } else if (event === "SIGNED_OUT") {
+        } else {
+          // No session - clear auth state (handles INITIAL_SESSION, SIGNED_OUT, etc.)
           await updateAuthState(null, undefined);
         }
       }
