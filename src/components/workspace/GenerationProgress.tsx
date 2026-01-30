@@ -38,6 +38,7 @@ interface GenerationProgressProps {
   onToggleEmailOnComplete?: (enabled: boolean) => void;
   startedAt?: string | null;
   completedAt?: string | null;
+  isStarting?: boolean;
 }
 
 // Format elapsed time between two dates
@@ -65,6 +66,7 @@ export function GenerationProgress({
   onToggleEmailOnComplete,
   startedAt,
   completedAt,
+  isStarting = false,
 }: GenerationProgressProps) {
   const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
   const [isPaused, setIsPaused] = useState(false);
@@ -115,7 +117,29 @@ export function GenerationProgress({
     ? RESEARCH_STEPS[currentStep]
     : "Initializing...";
 
-  const isInProgress = status === "running" || status === "pending";
+  const isInProgress = status === "running" || status === "pending" || isStarting;
+
+  // Show starting state
+  if (isStarting) {
+    return (
+      <Card className="shadow-card border-primary/20">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            Starting Generation...
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              Setting up your report generation. This will only take a moment...
+            </p>
+            <Progress value={0} className="h-2" />
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="shadow-card border-primary/20">

@@ -67,6 +67,7 @@ export default function ApplicationWorkspace() {
   }, [refetchEntitlements]);
   
   const { 
+    isStarting,
     isGenerating, 
     activeRun, 
     reports, 
@@ -314,11 +315,11 @@ export default function ApplicationWorkspace() {
 
         {/* Generate Report Button */}
         <div className="flex flex-col items-center gap-4">
-          {!isGenerating && (
+          {!isGenerating && !isStarting && (
             <Button 
               size="lg" 
               onClick={handleGenerateReport}
-              disabled={!inputsComplete || isGenerating}
+              disabled={!inputsComplete || isGenerating || isStarting}
               className="min-w-[200px]"
             >
               <Sparkles className="h-4 w-4 mr-2" />
@@ -326,7 +327,7 @@ export default function ApplicationWorkspace() {
             </Button>
           )}
           
-          {!inputsComplete && !isGenerating && (
+          {!inputsComplete && !isGenerating && !isStarting && (
             <p className="text-sm text-muted-foreground">
               Please fill in the Article URL and Summary to generate your report.
             </p>
@@ -335,7 +336,18 @@ export default function ApplicationWorkspace() {
 
         {/* Progress Indicator */}
         <div ref={progressRef}>
-        {(isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
+          {/* Show starting state */}
+          {isStarting && (
+            <GenerationProgress
+              currentStep={0}
+              totalSteps={15}
+              status="pending"
+              isStarting={true}
+            />
+          )}
+          
+          {/* Show processing/failed/stalled state */}
+          {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
             <GenerationProgress
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}

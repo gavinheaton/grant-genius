@@ -35,6 +35,7 @@ export function useReportGeneration(
   options?: UseReportGenerationOptions
 ) {
   const { toast } = useToast();
+  const [isStarting, setIsStarting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeRun, setActiveRun] = useState<ReportRun | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
@@ -108,7 +109,7 @@ export function useReportGeneration(
   const startGeneration = useCallback(async () => {
     if (!applicationId) return;
 
-    setIsGenerating(true);
+    setIsStarting(true);
 
     try {
       const { data, error } = await supabase.functions.invoke("generate-report", {
@@ -123,6 +124,10 @@ export function useReportGeneration(
         throw new Error(data.error);
       }
 
+      // Successfully enqueued - switch to processing state
+      setIsStarting(false);
+      setIsGenerating(true);
+
       toast({
         title: "Report generation started",
         description: "This typically takes 2-3 minutes. You'll see progress updates below.",
@@ -132,6 +137,7 @@ export function useReportGeneration(
       checkActiveRun();
     } catch (error) {
       console.error("Error starting generation:", error);
+      setIsStarting(false);
       setIsGenerating(false);
       
       const errorMessage = error instanceof Error ? error.message : "Failed to start report generation";
@@ -406,6 +412,7 @@ export function useReportGeneration(
   }, [activeRun, toast]);
 
   return {
+    isStarting,
     isGenerating,
     activeRun,
     reports,
