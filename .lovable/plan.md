@@ -1,35 +1,66 @@
-# Fix Step 12 Timeout: Split Final Assembly into Sub-Steps
 
-## ✅ COMPLETED
+# Fix Step 0 Timeout: Switch to Faster Model
 
-The 15-step pipeline is now implemented to resolve the Step 12 timeout issue.
+## Problem Identified
 
-### Changes Made
+The report generation is stuck because Step 0 (Build Source Pack) is timing out:
 
-1. **Database Migration**
-   - Updated `prompt_bundle_steps` constraint to allow steps 0-14
-   - Changed `report_runs.total_steps` default from 13 to 15
-   - Added Step 13 (build_tables_sources) and Step 14 (finalize_report) to active bundle
-   - Updated Step 12 prompt to generate markdown sections only (slimmed down)
+1. **Model Issue**: Step 0 uses `google/gemini-3-pro-preview` (configured in database)
+2. **Platform Limit**: Supabase Edge Functions have ~60 second wall-clock limit
+3. **Silent Death**: When the platform kills the function at 60s, the AI call dies with no error log
+4. **Current behavior**: Function boots → starts Step 0 at 03:45:23 → killed at 03:46:01 (38s of AI wait time)
 
-2. **Edge Functions**
-   - `generate-report/index.ts`: Updated RESEARCH_STEPS to 15 steps, adjusted model/timeout logic
-   - `resume-report-run/index.ts`: Split Step 12 into Steps 12-14, updated checkpoint/recovery logic
+The Gemini-3-Pro-Preview model is too slow for the 60-second edge function limit.
 
-3. **Frontend**
-   - `GenerationProgress.tsx`: Updated step labels for 15-step display
+---
 
-### New Pipeline Structure
+## Solution
 
-| Step | Name | Purpose | Model | Timeout |
-|------|------|---------|-------|---------|
-| 0-11 | (unchanged) | Research steps | Various | 45-55s |
-| **12** | `assemble_sections` | Generate report markdown only | Gemini-3-Flash-Preview | 55s |
-| **13** | `build_tables_sources` | Extract tables + dedupe sources | Gemini-3-Flash-Preview | 55s |
-| **14** | `finalize_report` | Merge into final JSON | Gemini-2.5-Flash-Lite | 45s |
+Update the Step 0 model override in the database from the heavy `gemini-3-pro-preview` to the faster `gemini-3-flash-preview`.
 
-### Expected Outcome
+### Database Change
 
-- Each sub-step completes well within the 60s edge function limit
-- Checkpoints at Steps 12 and 13 provide recovery points
-- Existing runs with 13 steps continue to work (backward compatible)
+```sql
+UPDATE prompt_bundle_steps 
+SET model_override = 'google/gemini-3-flash-preview'
+WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
+  AND step_number = 0;
+```
+
+**Rationale**:
+- `gemini-3-flash-preview` is significantly faster while maintaining quality
+- Already used successfully for Steps 4-13 in the same pipeline
+- Step 0 (source curation) doesn't require the absolute heaviest reasoning model
+
+---
+
+## Additional Robustness (Optional)
+
+Consider also updating Step 3 (market_segments) which also uses `gemini-3-pro-preview`:
+
+```sql
+UPDATE prompt_bundle_steps 
+SET model_override = 'google/gemini-3-flash-preview'
+WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
+  AND step_number IN (0, 3);
+```
+
+---
+
+## Testing After Fix
+
+1. Mark the current stuck run as failed
+2. Generate a new report
+3. Verify Step 0 completes within ~30-40 seconds
+4. Confirm checkpoint saves and Step 1 resumes
+
+---
+
+## Why This Fixes the Issue
+
+| Before | After |
+|--------|-------|
+| Model: gemini-3-pro-preview (slowest) | Model: gemini-3-flash-preview (faster) |
+| Response time: 40-60+ seconds | Response time: 15-35 seconds |
+| Edge function killed before completion | Completes within 60s limit |
+| No checkpoint saved | Checkpoint saves, Step 1 resumes |
