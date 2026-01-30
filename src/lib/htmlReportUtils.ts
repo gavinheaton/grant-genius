@@ -40,6 +40,91 @@ export interface ExtractedHtmlReport {
   isLegacy: boolean;
 }
 
+interface SectionEntry {
+  title: string;
+  content: string;
+}
+
+/**
+ * Extract HTML content from a section's content field
+ * Handles raw HTML, markdown, or JSON-wrapped content
+ */
+function extractHtmlFromSectionContent(content: string): string | null {
+  if (!content || typeof content !== "string") return null;
+  
+  const trimmed = content.trim();
+  
+  // Case 1: Already HTML (starts with < tag)
+  if (trimmed.startsWith("<")) {
+    return trimmed;
+  }
+  
+  // Case 2: JSON-wrapped content
+  if (trimmed.startsWith("{") || trimmed.startsWith("```json")) {
+    try {
+      let jsonStr = trimmed;
+      // Remove code fences if present
+      const fenceMatch = trimmed.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
+      if (fenceMatch) {
+        jsonStr = fenceMatch[1];
+      }
+      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+      if (parsed.report_html && typeof parsed.report_html === "string") {
+        return parsed.report_html;
+      }
+      if (parsed.html && typeof parsed.html === "string") {
+        return parsed.html;
+      }
+    } catch {
+      // Not valid JSON, treat as markdown
+    }
+  }
+  
+  // Case 3: Markdown content - convert it
+  return convertMarkdownToHtml(trimmed);
+}
+
+/**
+ * Extract sources from build_source_pack section content
+ */
+function extractSourcesFromSection(content: string | undefined): ExtractedHtmlReport["sources"] {
+  if (!content) return undefined;
+  
+  try {
+    let jsonStr = content.trim();
+    
+    // Remove code fences if present
+    const fenceMatch = jsonStr.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
+    if (fenceMatch) {
+      jsonStr = fenceMatch[1];
+    }
+    
+    const parsed = JSON.parse(jsonStr);
+    
+    // Handle array of sources directly
+    if (Array.isArray(parsed)) {
+      return parsed.map((src, idx) => ({
+        id: src.id || String(idx + 1),
+        mla_citation: src.mla_citation || src.citation || src.title || "",
+        url: src.url || src.link,
+      }));
+    }
+    
+    // Handle object with sources array
+    if (parsed.sources && Array.isArray(parsed.sources)) {
+      return parsed.sources.map((src: Record<string, unknown>, idx: number) => ({
+        id: (src.id as string) || String(idx + 1),
+        mla_citation: (src.mla_citation || src.citation || src.title || "") as string,
+        url: (src.url || src.link) as string | undefined,
+      }));
+    }
+  } catch {
+    // Failed to parse sources
+  }
+  
+  return undefined;
+}
+
 export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | null {
   if (!contentJson || typeof contentJson !== "object") {
     return null;
@@ -47,7 +132,7 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
 
   const content = contentJson as Record<string, unknown>;
   
-  // New HTML format: content.assembledReport.report_html
+  // Case 1: New HTML format - content.assembledReport.report_html
   const assembledReport = content.assembledReport as Record<string, unknown> | undefined;
   
   if (assembledReport?.report_html && typeof assembledReport.report_html === "string") {
@@ -60,7 +145,7 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
     };
   }
 
-  // Legacy markdown format: try to extract and convert
+  // Case 2: Legacy markdown format in assembledReport
   if (assembledReport?.report_markdown) {
     const markdown = extractMarkdownFromNested(assembledReport.report_markdown);
     if (markdown) {
@@ -71,6 +156,37 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
         dataGaps: assembledReport.data_gaps as string[],
         isLegacy: true,
       };
+    }
+  }
+
+  // Case 3: Sections array format (from Replit worker)
+  if (content.sections && Array.isArray(content.sections)) {
+    const sections = content.sections as SectionEntry[];
+    
+    // Priority order for finding the main report content
+    const assemblyTitles = ["finalize_report", "assemble_sections", "build_tables_sources"];
+    
+    let assemblySection: SectionEntry | undefined;
+    for (const title of assemblyTitles) {
+      assemblySection = sections.find(s => s.title === title);
+      if (assemblySection?.content) break;
+    }
+    
+    if (assemblySection?.content) {
+      const html = extractHtmlFromSectionContent(assemblySection.content);
+      
+      // Extract sources from build_source_pack if present
+      const sourceSection = sections.find(s => s.title === "build_source_pack");
+      const sources = extractSourcesFromSection(sourceSection?.content);
+      
+      if (html) {
+        return {
+          html,
+          sources,
+          dataGaps: [],
+          isLegacy: true,
+        };
+      }
     }
   }
 
