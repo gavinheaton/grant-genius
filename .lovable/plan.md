@@ -1,102 +1,144 @@
 
+# Fix Report Formatting and DOCX Generation for Sections Format
 
-# Fix JSON Fence Parsing for Report Content
+## Problems Identified
 
-## Problem
+### Problem 1: Tables Stop Rendering After Section 5
 
-The Replit worker returns report content wrapped in ` ```json ` code fences, but:
-1. Sometimes the closing ` ``` ` fence is missing (output truncation)
-2. The current regex requires exact fence format: `^```json?\s*\n([\s\S]*?)\n```\s*$`
+**Root Cause:** The markdown-to-HTML conversion in `htmlReportUtils.ts` has two issues:
+1. The `convertMarkdownToHtml()` function splits by `\n\n` (double newline) and wraps content in `<p>` tags, but tables can be split across blocks and get incorrectly wrapped
+2. The table conversion runs after paragraph wrapping, so table rows that got wrapped in `<p>` tags are not recognized as table syntax
 
-This causes the parser to fail and fall back to treating raw JSON as markdown, which displays the literal `{` and `"report_markdown":` text to the user.
+**Evidence:** Report markdown contains properly formatted tables like:
+```
+| Segment | TAM Method Used | Candidate Market Category |
+|---|---|---|
+| Relapsed/Resistant Solid Tumours | Method 4 | N/A |
+```
+
+But after ~section 5, the tables appear as plain text because the paragraph wrapping interferes.
+
+### Problem 2: DOCX Generation Completely Broken
+
+**Root Cause:** The `generate-docx` edge function only handles `content.assembledReport` structure but the Replit worker outputs `content.sections` array format.
+
+**Evidence:** Edge function logs show:
+```
+Missing assembledReport in content_json after extraction
+```
+
+The data exists in `content_json.sections[14]` (finalize_report) but the DOCX function never looks there.
 
 ## Solution
 
-Update `extractHtmlFromSectionContent()` in `htmlReportUtils.ts` to be more forgiving:
+### Fix 1: Improve Table Parsing in `htmlReportUtils.ts`
 
-1. **Strip opening fence if present** - Handle ` ```json\n ` at the start even without closing fence
-2. **Try to extract valid JSON** - Use a more flexible approach to find and parse JSON content
-3. **Handle incomplete JSON gracefully** - If the JSON is truncated, extract what we can
+Update `convertMarkdownToHtml()` to:
+1. Process tables FIRST before paragraph wrapping
+2. Preserve table blocks as atomic units
+3. Handle escaped newlines (`\\n`) from JSON string encoding
 
-## Implementation
+### Fix 2: Add Sections Format Support to `generate-docx`
 
-### File: `src/lib/htmlReportUtils.ts`
+Update `extractAssembledReport()` to:
+1. Check for `content.assembledReport` first (existing format)
+2. Fall back to extracting from `content.sections` array (Replit format)
+3. Find the `finalize_report` section and parse its JSON content
+4. Build the `AssembledReport` structure from sections data
 
-Update `extractHtmlFromSectionContent()` function (lines 52-89):
+## Implementation Details
 
-```typescript
-function extractHtmlFromSectionContent(content: string): string | null {
-  if (!content || typeof content !== "string") return null;
-  
-  let trimmed = content.trim();
-  
-  // Case 1: Already HTML (starts with < tag)
-  if (trimmed.startsWith("<")) {
-    return trimmed;
+### File 1: `src/lib/htmlReportUtils.ts`
+
+Update `convertMarkdownToHtml()` function:
+
+```text
+Current (broken):
+1. Headers replacement
+2. Bold/italic replacement
+3. Links replacement
+4. Lists replacement
+5. Split by \n\n and wrap in <p>
+6. Convert tables
+
+Fixed:
+1. Unescape JSON string escapes (\\n -> \n)
+2. Extract and preserve table blocks FIRST
+3. Process remaining content
+4. Reinsert tables in correct positions
+```
+
+Key changes:
+- Add initial unescape step for `\\n`, `\\"`, `\\\\`
+- Detect table blocks (consecutive lines starting with `|`) before any processing
+- Replace tables with placeholders
+- Do paragraph wrapping
+- Restore tables from placeholders
+
+### File 2: `supabase/functions/generate-docx/index.ts`
+
+Add sections format handling:
+
+```text
+function extractAssembledReport(content: ReportContent): AssembledReport | null {
+  // Case 1: Direct assembledReport (existing)
+  if (content.assembledReport) {
+    return handleAssembledReport(content.assembledReport);
   }
-  
-  // Case 2: Code-fenced content - strip fences regardless of completeness
-  // Handle ```json or ```json\n at the start
-  if (trimmed.startsWith("```")) {
-    // Remove opening fence (```json or ```)
-    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
-    // Remove closing fence if present
-    trimmed = trimmed.replace(/\n?```\s*$/, "");
-    trimmed = trimmed.trim();
-  }
-  
-  // Case 3: Try to parse as JSON (with or without fences)
-  if (trimmed.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      
-      if (parsed.report_html && typeof parsed.report_html === "string") {
-        return parsed.report_html;
-      }
-      if (parsed.html && typeof parsed.html === "string") {
-        return parsed.html;
-      }
-      if (parsed.report_markdown && typeof parsed.report_markdown === "string") {
-        return convertMarkdownToHtml(parsed.report_markdown);
-      }
-    } catch {
-      // JSON parse failed - try to extract markdown field with regex
-      const markdownMatch = trimmed.match(/"report_markdown"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/);
-      if (markdownMatch?.[1]) {
-        // Unescape JSON string escapes
-        const markdown = markdownMatch[1]
-          .replace(/\\n/g, "\n")
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, "\\");
-        return convertMarkdownToHtml(markdown);
-      }
+
+  // Case 2: Sections array format (Replit worker)
+  if (content.sections && Array.isArray(content.sections)) {
+    const finalizeSection = content.sections.find(
+      s => s.title === 'finalize_report'
+    );
+    if (finalizeSection?.content) {
+      // Parse JSON from section content (strip code fences if present)
+      const parsed = parseJsonFromSection(finalizeSection.content);
+      return {
+        title: parsed.title,
+        report_markdown: parsed.report_markdown || parsed.report_html,
+        tables: [], // Tables are in markdown
+        all_sources: extractSourcesFromSections(content.sections),
+        data_gaps: []
+      };
     }
   }
-  
-  // Case 4: Plain markdown content - convert it
-  return convertMarkdownToHtml(trimmed);
+
+  return null;
 }
 ```
 
-### Key Changes
-
-| Issue | Fix |
-|-------|-----|
-| Fence regex too strict | Use simple `replace()` calls to strip fences |
-| Missing closing fence | Strip opening fence independently of closing |
-| Truncated JSON | Fall back to regex extraction of `report_markdown` field |
-| Escaped newlines in markdown | Unescape `\n`, `\"`, `\\` when extracting via regex |
-
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `src/lib/htmlReportUtils.ts` | Update `extractHtmlFromSectionContent()` to handle incomplete JSON fences |
+| File | Change Type | Description |
+|------|-------------|-------------|
+| `src/lib/htmlReportUtils.ts` | Modify | Fix table extraction order, add JSON unescape, preserve table blocks |
+| `supabase/functions/generate-docx/index.ts` | Modify | Add sections array format support |
 
-## Testing
+## Technical Notes
+
+**Table Block Detection:**
+```typescript
+// Find consecutive lines starting with | (table block)
+const tableBlockRegex = /(?:^|\n)((?:\|[^\n]+\|(?:\n|$))+)/g;
+```
+
+**JSON Unescape:**
+```typescript
+// Handle common JSON escapes in content from Replit
+content = content.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+```
+
+**Sections Format Parsing:**
+The DOCX function needs to:
+1. Strip ` ```json ` and ` ``` ` fences from section content
+2. Parse the JSON object
+3. Extract `report_markdown` for the document body
+4. Optionally extract sources from `build_source_pack` section
+
+## Testing Plan
 
 After implementation:
-1. The existing report should now render correctly
-2. Future reports with proper JSON should continue to work
-3. Truncated reports will show as much content as can be extracted
-
+1. View existing report - tables should render correctly in all sections
+2. Download DOCX - should generate successfully instead of error
+3. Generate new report - verify both HTML viewer and DOCX work
