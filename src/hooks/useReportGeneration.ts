@@ -536,6 +536,81 @@ export function useReportGeneration(
     }
   }, [activeRun, toast]);
 
+  // Resume report - re-enqueue the run to continue from checkpoint
+  const resumeReport = useCallback(async (runId: string) => {
+    try {
+      setIsGenerating(true);
+
+      // Reset status to pending
+      const { error: updateError } = await supabase
+        .from("report_runs")
+        .update({ status: "pending" })
+        .eq("id", runId);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      // Call enqueue-report to re-trigger the worker
+      const { error } = await supabase.functions.invoke("enqueue-report", {
+        body: { report_run_id: runId },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      toast({
+        title: "Resuming report",
+        description: "Re-triggering the report generation worker.",
+      });
+
+      checkActiveRun();
+    } catch (error) {
+      console.error("Error resuming report:", error);
+      setIsGenerating(false);
+      toast({
+        title: "Resume failed",
+        description: "Failed to resume report. Please try again.",
+        variant: "destructive",
+      });
+    }
+  }, [toast, checkActiveRun]);
+
+  // Clear and restart - Super Admin only (deletes all steps and starts fresh)
+  const clearAndRestart = useCallback(async (runId: string) => {
+    try {
+      setIsGenerating(true);
+
+      // Call edge function (validates super admin server-side)
+      const { error } = await supabase.functions.invoke("clear-and-restart-run", {
+        body: { reportRunId: runId },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setSteps([]);
+      toast({
+        title: "Run cleared",
+        description: "Starting fresh from Step 1.",
+      });
+
+      checkActiveRun();
+    } catch (error) {
+      console.error("Error clearing run:", error);
+      setIsGenerating(false);
+      toast({
+        title: "Clear failed",
+        description: error instanceof Error && error.message.includes("Super Admin") 
+          ? "Super Admin access required." 
+          : "Failed to clear run. Please try again.",
+        variant: "destructive",
+      });
+    }
+  }, [toast, checkActiveRun]);
+
   return {
     isStarting,
     isGenerating,
@@ -549,6 +624,8 @@ export function useReportGeneration(
     cancelRun,
     retryFromFailedStep,
     toggleEmailOnComplete,
+    resumeReport,
+    clearAndRestart,
     refetch: fetchReports,
   };
 }
