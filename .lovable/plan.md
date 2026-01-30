@@ -1,55 +1,95 @@
 
-# Add Cancel Button During Report Generation
+# Fix Report Viewer and PDF Renderer for New Content Structure
 
-## Problem
-Currently, the cancel button only appears when a report run is "stalled" (no progress for 5+ minutes). During normal "pending" or "running" status, users have no way to cancel and must wait for a timeout.
+## Problem Analysis
+The report generation now produces content in a new structure:
+```json
+{
+  "assembledReport": {
+    "report_markdown": "# Full markdown report...",
+    "tables": [...],
+    "all_sources": [...],
+    "data_gaps": [...]
+  },
+  "sourcePack": {...},
+  ...other checkpoint data...
+}
+```
+
+But the `ReportViewer` and `PdfReportRenderer` components expect the old structure:
+```json
+{
+  "researchContext": "...",
+  "marketSegments": [...],
+  "tam": {...},
+  ...
+}
+```
+
+This causes the report to display raw JSON/markdown instead of rendered content.
 
 ## Solution
-Add a cancel button to the progress card that's visible during active generation, allowing users to immediately stop the process and get their credit refunded.
+Update both viewer components to detect and handle the new `assembledReport` structure:
 
-## Changes Required
+1. **Check for `assembledReport.report_markdown`** - if present, use the unified markdown format
+2. **Render markdown as formatted content** - parse and display sections from the markdown
+3. **Display tables from `assembledReport.tables`** - use the structured tables array
+4. **Show sources from `assembledReport.all_sources`** - use the MLA-formatted citations
+5. **Fall back to old structure** - for backward compatibility with existing reports
 
-### 1. ApplicationWorkspace.tsx
-Pass `onCancel` for all in-progress states, not just "stalled":
+## Technical Changes
 
-**Before:**
-```tsx
-onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
+### 1. ReportViewer.tsx
+Add detection for the new structure and a markdown-based rendering path:
+
+```typescript
+// Detect new unified format
+const hasAssembledReport = content.assembledReport?.report_markdown;
+
+if (hasAssembledReport) {
+  // Render the unified markdown report
+  return <MarkdownReportView assembledReport={content.assembledReport} />;
+}
+
+// Fall back to structured field rendering for old reports
+return <StructuredReportView content={content} />;
 ```
 
-**After:**
-```tsx
-onCancel={() => cancelRun(activeRun.id)}
+### 2. PdfReportRenderer.tsx
+Similar update to handle the `assembledReport.report_markdown` format:
+
+```typescript
+// Extract from assembledReport if present
+const assembledReport = content.assembledReport;
+if (assembledReport?.report_markdown) {
+  // Parse markdown into sections for PDF
+  sections = parseMarkdownSections(assembledReport.report_markdown);
+}
 ```
 
-### 2. GenerationProgress.tsx
-Add a cancel button to the in-progress section (where the email checkbox is shown):
+### 3. New Helper Function
+Add a utility to parse markdown sections:
 
-**Add to the `isInProgress` block (after the email checkbox section):**
-```tsx
-{/* Cancel button for in-progress runs */}
-{onCancel && (
-  <Button 
-    variant="ghost" 
-    size="sm" 
-    onClick={onCancel} 
-    className="gap-2 text-muted-foreground hover:text-destructive"
-  >
-    <XCircle className="h-4 w-4" />
-    Cancel Generation
-  </Button>
-)}
+```typescript
+function parseMarkdownSections(markdown: string): ReportSection[] {
+  // Split by ## headings
+  // Extract title, content pairs
+  // Handle tables within sections
+}
 ```
 
-## UI Design
-- **Location**: Below the email notification checkbox in the progress card
-- **Style**: Ghost button with muted text, turns red on hover to indicate destructive action
-- **Behavior**: Calls `cancel-report-run` edge function which:
-  - Marks the run as "failed"
-  - Marks all pending/running steps as failed
-  - Refunds the consumed credit
+## Files to Modify
+1. `src/components/workspace/ReportViewer.tsx` - Add detection and rendering for new format
+2. `src/components/workspace/PdfReportRenderer.tsx` - Add parsing for assembledReport
+3. `src/lib/markdownUtils.ts` - Add section parsing utility
 
-## Technical Details
-- The `cancel-report-run` edge function already handles credit refunds by calling `decrement_entitlement` and deleting the consumption record
-- The hook's `cancelRun` function clears `activeRun` and `isGenerating` state after successful cancellation
-- Toast notification confirms cancellation to the user
+## Backward Compatibility
+- Old reports with structured fields (researchContext, marketSegments, etc.) continue to work
+- New reports with `assembledReport.report_markdown` use the new rendering path
+- Both formats produce properly formatted output
+
+## Testing
+After implementation:
+1. View the latest report to verify it renders correctly
+2. Export to PDF to verify the document structure
+3. Test an older report (if available) to verify backward compatibility
