@@ -406,27 +406,38 @@ serve(async (req) => {
     const inputs = Array.isArray(appData) ? appData[0]?.inputs_json : appData?.inputs_json;
     const grantVersionId = Array.isArray(appData) ? appData[0]?.grant_version_id : appData?.grant_version_id;
 
-    // Start async processing for the next single step
-    processSingleStep(
-      reportRunId,
-      reportRun.application_id,
-      grantVersionId,
-      reportRun.report_template_version_id,
-      userId,
-      inputs || {},
-      reportRun.checkpoint_data_json || {},
-      reportRun.checkpoint_citations_json || [],
-      effectiveResumeFromStep,
-      reportRun.email_on_complete ?? false
-    ).catch((e) => console.error(`Step processing error (from step ${effectiveResumeFromStep}):`, e));
+    // Process the next single step - MUST await to keep edge function alive
+    try {
+      await processSingleStep(
+        reportRunId,
+        reportRun.application_id,
+        grantVersionId,
+        reportRun.report_template_version_id,
+        userId,
+        inputs || {},
+        reportRun.checkpoint_data_json || {},
+        reportRun.checkpoint_citations_json || [],
+        effectiveResumeFromStep,
+        reportRun.email_on_complete ?? false
+      );
 
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
-        message: `Report generation resumed from step ${effectiveResumeFromStep}, running step ${effectiveResumeFromStep + 1}` 
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+      return new Response(
+        JSON.stringify({ 
+          success: true, 
+          message: `Step ${effectiveResumeFromStep + 1} completed successfully` 
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    } catch (stepError) {
+      console.error(`Step processing error (from step ${effectiveResumeFromStep}):`, stepError);
+      return new Response(
+        JSON.stringify({ 
+          error: stepError instanceof Error ? stepError.message : "Step processing failed",
+          step: effectiveResumeFromStep + 1
+        }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
   } catch (error) {
     console.error("Error in resume-report-run:", error);
     return new Response(
