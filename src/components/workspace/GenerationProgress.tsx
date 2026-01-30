@@ -173,9 +173,22 @@ export function GenerationProgress({
           <Progress value={progressPercent} className="h-2" />
         </div>
 
-        {status === "failed" && (
+{status === "failed" && (() => {
+          // Find failed step and its error message
+          const failedStep = steps.find(s => s.status === 'failed');
+          const stepErrorMessage = failedStep?.error_message;
+          
+          return (
           <div className="space-y-3">
-            {errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
+            {/* Step-specific error message from database */}
+            {stepErrorMessage && (
+              <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">
+                <strong>Step {failedStep.step_number} ({formatStepName(failedStep.step_name)}) failed:</strong>{" "}
+                {stepErrorMessage}
+              </div>
+            )}
+            {/* Fallback to general error message */}
+            {!stepErrorMessage && errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
             {onRestart && (
               <>
                 {/* Auto-retry countdown */}
@@ -209,7 +222,8 @@ export function GenerationProgress({
               </>
             )}
           </div>
-        )}
+          );
+        })()}
 
         {status === "stalled" && (
           <div className="space-y-3">

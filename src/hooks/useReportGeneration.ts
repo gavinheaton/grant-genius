@@ -29,6 +29,7 @@ export interface ReportRunStep {
   status: "pending" | "running" | "completed" | "failed";
   started_at: string | null;
   completed_at: string | null;
+  error_message: string | null;
 }
 
 // 5 minutes stale threshold
@@ -75,7 +76,7 @@ export function useReportGeneration(
   const fetchSteps = useCallback(async (runId: string) => {
     const { data, error } = await supabase
       .from("report_run_steps")
-      .select("step_number, step_name, status, started_at, completed_at")
+      .select("step_number, step_name, status, started_at, completed_at, error_message")
       .eq("report_run_id", runId)
       .order("step_number", { ascending: true });
 
@@ -167,6 +168,64 @@ export function useReportGeneration(
       supabase.removeChannel(channel);
     };
   }, [isGenerating, activeRun?.id]);
+
+  // Subscribe to Realtime changes for report_runs (instant status detection)
+  useEffect(() => {
+    if (!isGenerating || !activeRun?.id) return;
+
+    const channel = supabase
+      .channel(`report-run-${activeRun.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'report_runs',
+          filter: `id=eq.${activeRun.id}`,
+        },
+        (payload) => {
+          const updated = payload.new as {
+            id: string;
+            status: "pending" | "running" | "completed" | "failed";
+            current_step: number;
+            total_steps: number;
+            created_at: string;
+            started_at: string | null;
+            completed_at: string | null;
+            email_on_complete: boolean;
+          };
+
+          // Update activeRun state with new data
+          setActiveRun(prev => prev ? {
+            ...prev,
+            status: updated.status,
+            current_step: updated.current_step,
+            total_steps: updated.total_steps,
+            completed_at: updated.completed_at,
+          } : null);
+
+          // Detect completion
+          if (updated.status === 'completed') {
+            setIsGenerating(false);
+            fetchReports();
+            toast({
+              title: "Report ready!",
+              description: "Your report has been generated successfully.",
+            });
+          }
+
+          // Detect failure
+          if (updated.status === 'failed') {
+            setIsGenerating(false);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isGenerating, activeRun?.id, fetchReports, toast]);
 
   // Start report generation
   const startGeneration = useCallback(async () => {
