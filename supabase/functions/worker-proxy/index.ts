@@ -38,6 +38,35 @@ function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+// Map Lovable AI models to Replit-compatible Gemini models
+function mapToReplitModel(lovableModel: string | null | undefined): string {
+  if (!lovableModel) {
+    return "gemini-2.0-flash"; // Default
+  }
+  
+  // Direct mapping from Lovable AI identifiers to Replit-supported models
+  const mapping: Record<string, string> = {
+    // Pro tier → gemini-1.5-pro
+    "google/gemini-3-pro-preview": "gemini-1.5-pro",
+    "google/gemini-2.5-pro": "gemini-1.5-pro",
+    // Flash tier → gemini-2.0-flash (latest)
+    "google/gemini-3-flash-preview": "gemini-2.0-flash",
+    "google/gemini-2.5-flash": "gemini-2.0-flash",
+    // Lite/fast tier → gemini-1.5-flash (cheaper/faster)
+    "google/gemini-2.5-flash-lite": "gemini-1.5-flash",
+  };
+  
+  return mapping[lovableModel] || "gemini-2.0-flash";
+}
+
+// Get default Lovable model based on step number (from UI logic in PromptStepEditor)
+function getDefaultModelForStep(stepNumber: number): string {
+  if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
+  if (stepNumber <= 7) return "google/gemini-3-flash-preview";
+  if (stepNumber === 11) return "google/gemini-3-pro-preview";
+  return "google/gemini-2.5-flash-lite";
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -233,6 +262,15 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     console.error("Failed to fetch steps:", stepsError);
   }
 
+  // Compute effective model for each step (mapped to Replit-compatible names)
+  const stepsWithModel = bundle.steps?.map((step: any) => {
+    const effectiveModel = step.model_override || getDefaultModelForStep(step.step_number);
+    return {
+      ...step,
+      model: mapToReplitModel(effectiveModel), // Replit-compatible model name
+    };
+  }) || [];
+
   return jsonResponse({
     run: {
       id: run.id,
@@ -247,7 +285,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     prompt_bundle: {
       id: bundle.id,
       system_prompt: bundle.system_prompt,
-      steps: bundle.steps,
+      steps: stepsWithModel,  // Now includes `model` field
     },
     grant_context: grantContext,
     existing_steps: steps || [],
@@ -534,10 +572,19 @@ async function handleGetPromptBundle(supabase: any) {
   // Sort steps by step_number
   bundle.steps?.sort((a: any, b: any) => a.step_number - b.step_number);
 
+  // Compute effective model for each step (mapped to Replit-compatible names)
+  const stepsWithModel = bundle.steps?.map((step: any) => {
+    const effectiveModel = step.model_override || getDefaultModelForStep(step.step_number);
+    return {
+      ...step,
+      model: mapToReplitModel(effectiveModel),
+    };
+  }) || [];
+
   return jsonResponse({
     id: bundle.id,
     name: bundle.name,
     system_prompt: bundle.system_prompt,
-    steps: bundle.steps,
+    steps: stepsWithModel,
   });
 }
