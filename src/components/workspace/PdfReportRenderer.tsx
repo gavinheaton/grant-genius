@@ -2,7 +2,7 @@ import { forwardRef, useMemo } from "react";
 import { type Report } from "@/hooks/useReportGeneration";
 import { type PdfTemplate } from "@/hooks/usePdfTemplates";
 import { format } from "date-fns";
-import { parseMarkdownTablesForPdf, parseMarkdownSections } from "@/lib/markdownUtils";
+import { parseMarkdownTablesForPdf, parseMarkdownSections, extractNestedReportMarkdown } from "@/lib/markdownUtils";
 import { supabase } from "@/integrations/supabase/client";
 
 interface ReportSection {
@@ -129,24 +129,40 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
     // Check branding settings
     const showBranding = (template as any).show_grant_genius_branding ?? true;
 
+    // Extract assembled report from potentially nested JSON wrapper
+    const extractedReport = useMemo((): AssembledReport | null => {
+      const assembledReport = content.assembledReport;
+      if (!assembledReport?.report_markdown) return null;
+
+      const extracted = extractNestedReportMarkdown(assembledReport.report_markdown);
+      if (!extracted || !extracted.report_markdown) return null;
+
+      return {
+        report_markdown: extracted.report_markdown as string,
+        tables: (extracted.tables || assembledReport.tables || []) as AssembledReport['tables'],
+        all_sources: (extracted.all_sources || assembledReport.all_sources || []) as AssembledReport['all_sources'],
+        data_gaps: (extracted.data_gaps || assembledReport.data_gaps || []) as AssembledReport['data_gaps'],
+      };
+    }, [content.assembledReport]);
+
     // Build sections array from content
     const sections: ReportSection[] = useMemo(() => {
-      // Check for new unified format first
-      if (content.assembledReport?.report_markdown) {
-        const parsedSections = parseMarkdownSections(content.assembledReport.report_markdown);
+      // Check for new unified format first (using extracted report)
+      if (extractedReport?.report_markdown) {
+        const parsedSections = parseMarkdownSections(extractedReport.report_markdown);
         
         // Add data gaps section if present
-        if (content.assembledReport.data_gaps && content.assembledReport.data_gaps.length > 0) {
+        if (extractedReport.data_gaps && extractedReport.data_gaps.length > 0) {
           parsedSections.push({
             title: "Data Gaps & Limitations",
-            content: content.assembledReport.data_gaps.map(gap => `• ${gap}`).join('\n')
+            content: extractedReport.data_gaps.map(gap => typeof gap === 'string' ? `• ${gap}` : `• ${(gap as any).gap || JSON.stringify(gap)}`).join('\n')
           });
         }
         
         // Add references section if present
-        if (content.assembledReport.all_sources && content.assembledReport.all_sources.length > 0) {
-          const refsContent = content.assembledReport.all_sources
-            .map(src => `[${src.id}] ${src.mla_citation}`)
+        if (extractedReport.all_sources && extractedReport.all_sources.length > 0) {
+          const refsContent = extractedReport.all_sources
+            .map(src => `[${(src as any).id}] ${(src as any).mla_citation || (src as any).mla || ''}`)
             .join('\n\n');
           parsedSections.push({
             title: "References",

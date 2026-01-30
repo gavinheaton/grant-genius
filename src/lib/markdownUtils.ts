@@ -285,3 +285,62 @@ export function parseMarkdownSections(markdown: string): ParsedSection[] {
   
   return sections.filter(s => s.content.length > 0);
 }
+
+/**
+ * Extract assembled report from potentially nested JSON wrapper
+ * Handles multiple formats:
+ * - Raw JSON string starting with {
+ * - Code-fenced JSON (```json ... ```)
+ * - Object passed directly
+ * - Plain markdown starting with #
+ */
+export interface ExtractedReportData {
+  report_markdown: string;
+  tables?: unknown[];
+  all_sources?: unknown[];
+  data_gaps?: unknown[];
+  section_metadata?: unknown;
+}
+
+export function extractNestedReportMarkdown(markdownContent: string | unknown): ExtractedReportData | null {
+  // Case 1: Already a plain string starting with # (markdown heading)
+  if (typeof markdownContent === 'string' && markdownContent.trim().startsWith('#')) {
+    return { report_markdown: markdownContent };
+  }
+
+  // Case 2: String that's actually JSON (starts with {)
+  if (typeof markdownContent === 'string' && markdownContent.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(markdownContent);
+      return parsed;
+    } catch (e) {
+      console.error('Failed to parse JSON from report_markdown:', e);
+      return null;
+    }
+  }
+
+  // Case 3: Code-fenced JSON (```json ... ```)
+  if (typeof markdownContent === 'string') {
+    const match = markdownContent.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
+    if (match) {
+      try {
+        return JSON.parse(match[1]);
+      } catch (e) {
+        console.error('Failed to parse code-fenced JSON:', e);
+        return null;
+      }
+    }
+  }
+
+  // Case 4: Object passed directly
+  if (typeof markdownContent === 'object' && markdownContent !== null) {
+    return markdownContent as ExtractedReportData;
+  }
+
+  // Case 5: Plain string that doesn't start with # - return as-is
+  if (typeof markdownContent === 'string' && markdownContent.trim()) {
+    return { report_markdown: markdownContent };
+  }
+
+  return null;
+}

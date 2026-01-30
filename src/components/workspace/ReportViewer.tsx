@@ -20,7 +20,7 @@ import {
 import { Copy, Check, TrendingUp, Users, Building2, Globe, DollarSign, Handshake, FileText, AlertTriangle, Link } from "lucide-react";
 import { format } from "date-fns";
 import { type Report } from "@/hooks/useReportGeneration";
-import { parseMarkdownTables, parseMarkdownSections } from "@/lib/markdownUtils";
+import { parseMarkdownTables, parseMarkdownSections, extractNestedReportMarkdown } from "@/lib/markdownUtils";
 
 // Types for the new unified assembledReport structure
 interface AssembledReport {
@@ -234,8 +234,24 @@ export function ReportViewer({ report, isOpen, onClose }: ReportViewerProps) {
 
   const content = (report.content_json || {}) as ReportContent;
   
+  // Extract assembled report from potentially nested JSON wrapper
+  const extractedReport = useMemo((): AssembledReport | null => {
+    const assembledReport = content.assembledReport;
+    if (!assembledReport?.report_markdown) return null;
+
+    const extracted = extractNestedReportMarkdown(assembledReport.report_markdown);
+    if (!extracted || !extracted.report_markdown) return null;
+
+    return {
+      report_markdown: extracted.report_markdown as string,
+      tables: (extracted.tables || assembledReport.tables || []) as AssembledReport['tables'],
+      all_sources: (extracted.all_sources || assembledReport.all_sources || []) as AssembledReport['all_sources'],
+      data_gaps: (extracted.data_gaps || assembledReport.data_gaps || []) as AssembledReport['data_gaps'],
+    };
+  }, [content.assembledReport]);
+  
   // Check if this is the new unified format
-  const hasAssembledReport = Boolean(content.assembledReport?.report_markdown);
+  const hasAssembledReport = Boolean(extractedReport?.report_markdown);
 
   const copyToClipboard = async (text: string, sectionId: string) => {
     await navigator.clipboard.writeText(text);
@@ -335,10 +351,10 @@ export function ReportViewer({ report, isOpen, onClose }: ReportViewerProps) {
 
         <ScrollArea className="h-[calc(90vh-120px)] px-6 pb-6">
           {/* Render based on content structure */}
-          {hasAssembledReport ? (
+          {hasAssembledReport && extractedReport ? (
             <div className="py-4">
               <UnifiedReportView 
-                assembledReport={content.assembledReport!}
+                assembledReport={extractedReport}
                 copiedSection={copiedSection}
                 onCopy={copyToClipboard}
               />

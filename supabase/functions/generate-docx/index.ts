@@ -55,7 +55,7 @@ interface ReportContent {
 }
 
 // Extract assembled report from potentially nested JSON wrapper
-// Step 11 sometimes outputs a ```json code block containing the actual data
+// Handles both code-fenced JSON (```json ... ```) and raw JSON object (starts with {)
 function extractAssembledReport(content: ReportContent): AssembledReport | null {
   const assembledReport = content.assembledReport;
   if (!assembledReport) return null;
@@ -63,23 +63,38 @@ function extractAssembledReport(content: ReportContent): AssembledReport | null 
   const markdownContent = assembledReport.report_markdown;
   if (!markdownContent) return null;
 
-  // Pattern: ```json\n{...}\n``` (the entire content is wrapped)
+  // Helper to merge nested JSON with original structure
+  function mergeWithNested(original: AssembledReport, nested: any): AssembledReport {
+    return {
+      title: nested.title || original.title,
+      report_markdown: nested.report_markdown || "",
+      tables: nested.tables || original.tables || [],
+      all_sources: nested.all_sources || original.all_sources || [],
+      data_gaps: nested.data_gaps || original.data_gaps || [],
+    };
+  }
+
+  // Pattern 1: Code-fenced JSON (```json\n{...}\n```)
   const jsonBlockMatch = markdownContent.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
-  
   if (jsonBlockMatch) {
-    console.log("Detected nested JSON wrapper in report_markdown, extracting...");
+    console.log("Detected code-fenced JSON wrapper in report_markdown, extracting...");
     try {
       const nestedJson = JSON.parse(jsonBlockMatch[1]);
-      // Merge the nested structure with the outer structure
-      return {
-        title: nestedJson.title || assembledReport.title,
-        report_markdown: nestedJson.report_markdown || "",
-        tables: nestedJson.tables || assembledReport.tables || [],
-        all_sources: nestedJson.all_sources || assembledReport.all_sources || [],
-        data_gaps: nestedJson.data_gaps || assembledReport.data_gaps || [],
-      };
+      return mergeWithNested(assembledReport, nestedJson);
     } catch (e) {
-      console.error("Failed to parse nested JSON in report_markdown:", e);
+      console.error("Failed to parse code-fenced JSON in report_markdown:", e);
+      // Fall through to try other patterns
+    }
+  }
+
+  // Pattern 2: Raw JSON object (starts with {)
+  if (markdownContent.trim().startsWith('{')) {
+    console.log("Detected raw JSON object in report_markdown, extracting...");
+    try {
+      const nestedJson = JSON.parse(markdownContent);
+      return mergeWithNested(assembledReport, nestedJson);
+    } catch (e) {
+      console.error("Failed to parse raw JSON in report_markdown:", e);
       // Fall back to original structure
       return assembledReport;
     }
