@@ -23,6 +23,14 @@ export interface Report {
   content_json?: Json;
 }
 
+export interface ReportRunStep {
+  step_number: number;
+  step_name: string;
+  status: "pending" | "running" | "completed" | "failed";
+  started_at: string | null;
+  completed_at: string | null;
+}
+
 // 5 minutes stale threshold
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
@@ -40,6 +48,10 @@ export function useReportGeneration(
   const [activeRun, setActiveRun] = useState<ReportRun | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(true);
+  const [steps, setSteps] = useState<ReportRunStep[]>([]);
+
+  // Calculate completed steps from steps array
+  const completedSteps = steps.filter(s => s.status === 'completed').length;
 
   // Fetch existing reports for this application
   const fetchReports = useCallback(async () => {
@@ -58,6 +70,21 @@ export function useReportGeneration(
     }
     setIsLoadingReports(false);
   }, [applicationId]);
+
+  // Fetch steps for the active run
+  const fetchSteps = useCallback(async (runId: string) => {
+    const { data, error } = await supabase
+      .from("report_run_steps")
+      .select("step_number, step_name, status, started_at, completed_at")
+      .eq("report_run_id", runId)
+      .order("step_number", { ascending: true });
+
+    if (error) {
+      console.error("Error fetching steps:", error);
+    } else {
+      setSteps((data as ReportRunStep[]) || []);
+    }
+  }, []);
 
   // Check for active report runs with stale detection
   const checkActiveRun = useCallback(async () => {
@@ -83,33 +110,70 @@ export function useReportGeneration(
       const now = new Date();
       const isStale = now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS;
 
-      if (isStale) {
-        // Mark as stalled for UI
-        setActiveRun({
-          ...data,
-          status: "stalled" as const,
-          completed_at: data.completed_at ?? null,
-          email_on_complete: data.email_on_complete ?? false,
-        } as ReportRun);
-      } else {
-        setActiveRun({
-          ...data,
-          completed_at: data.completed_at ?? null,
-          email_on_complete: data.email_on_complete ?? false,
-        } as ReportRun);
-      }
+      const runData: ReportRun = {
+        ...data,
+        status: isStale ? "stalled" : data.status,
+        completed_at: data.completed_at ?? null,
+        email_on_complete: data.email_on_complete ?? false,
+      } as ReportRun;
+
+      setActiveRun(runData);
       setIsGenerating(true);
+      
+      // Fetch steps for this run
+      fetchSteps(data.id);
     } else {
       setActiveRun(null);
       setIsGenerating(false);
+      setSteps([]);
     }
-  }, [applicationId]);
+  }, [applicationId, fetchSteps]);
+
+  // Subscribe to Realtime changes for steps
+  useEffect(() => {
+    if (!isGenerating || !activeRun?.id) return;
+
+    const channel = supabase
+      .channel(`report-steps-${activeRun.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'report_run_steps',
+          filter: `report_run_id=eq.${activeRun.id}`,
+        },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newStep = payload.new as ReportRunStep;
+            setSteps(prev => {
+              // Avoid duplicates
+              if (prev.some(s => s.step_number === newStep.step_number)) {
+                return prev.map(s => s.step_number === newStep.step_number ? newStep : s);
+              }
+              return [...prev, newStep].sort((a, b) => a.step_number - b.step_number);
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedStep = payload.new as ReportRunStep;
+            setSteps(prev => prev.map(s => 
+              s.step_number === updatedStep.step_number ? updatedStep : s
+            ));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [isGenerating, activeRun?.id]);
 
   // Start report generation
   const startGeneration = useCallback(async () => {
     if (!applicationId) return;
 
     setIsStarting(true);
+    setSteps([]); // Clear previous steps
 
     try {
       const { data, error } = await supabase.functions.invoke("generate-report", {
@@ -168,7 +232,7 @@ export function useReportGeneration(
         });
       }
     }
-  }, [applicationId, toast, checkActiveRun]);
+  }, [applicationId, toast, checkActiveRun, options]);
 
   // Auto-resume from checkpoint when detected
   const resumeFromCheckpoint = useCallback(async (runId: string) => {
@@ -215,6 +279,7 @@ export function useReportGeneration(
         // Clear resume tracking to prevent stale state
         resumeAttemptedRef.current.clear();
         setActiveRun(null);
+        setSteps([]);
         
         // Cancel the stuck run (this refunds the credit)
         await supabase.functions.invoke("cancel-report-run", {
@@ -292,14 +357,14 @@ export function useReportGeneration(
     }
   }, [toast, checkActiveRun, startGeneration]);
 
-  // Poll for updates when generating
+  // Poll for updates when generating (backup for Realtime)
   useEffect(() => {
     if (!isGenerating || !applicationId) return;
 
     const pollInterval = setInterval(async () => {
       await checkActiveRun();
       await fetchReports();
-    }, 3000);
+    }, 5000); // Increased to 5s since we have Realtime now
 
     return () => clearInterval(pollInterval);
   }, [isGenerating, applicationId, checkActiveRun, fetchReports]);
@@ -370,6 +435,7 @@ export function useReportGeneration(
 
       setActiveRun(null);
       setIsGenerating(false);
+      setSteps([]);
       toast({
         title: "Generation cancelled",
         description: "You can try again when ready.",
@@ -417,6 +483,8 @@ export function useReportGeneration(
     activeRun,
     reports,
     isLoadingReports,
+    steps,
+    completedSteps,
     startGeneration,
     downloadReport,
     cancelRun,

@@ -72,6 +72,8 @@ export default function ApplicationWorkspace() {
     activeRun, 
     reports, 
     isLoadingReports, 
+    steps,
+    completedSteps,
     startGeneration, 
     downloadReport,
     cancelRun,
@@ -341,6 +343,8 @@ export default function ApplicationWorkspace() {
             <GenerationProgress
               currentStep={0}
               totalSteps={15}
+              completedSteps={0}
+              steps={[]}
               status="pending"
               isStarting={true}
             />
@@ -351,6 +355,8 @@ export default function ApplicationWorkspace() {
             <GenerationProgress
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}
+              completedSteps={completedSteps}
+              steps={steps}
               status={activeRun.status}
               onCancel={() => cancelRun(activeRun.id)}
               onRestart={
