@@ -14,13 +14,17 @@ function getModelForStep(stepNumber: number): string {
   if (stepNumber <= 3) {
     return "google/gemini-2.5-flash-lite";
   }
-  // Steps 4-8: Complex market analysis (including new Step 5) - use heavier model
+  // Steps 4-8: Complex market analysis (including Step 5) - use heavier model
   if (stepNumber <= 8) {
     return "google/gemini-3-flash-preview";
   }
-  // Step 12: Final assembly - use most capable model
-  if (stepNumber === 12) {
-    return "google/gemini-3-pro-preview";
+  // Steps 12-13: Assembly steps - use flash-preview for good speed
+  if (stepNumber === 12 || stepNumber === 13) {
+    return "google/gemini-3-flash-preview";
+  }
+  // Step 14: Final merge - use lite model (simple task)
+  if (stepNumber === 14) {
+    return "google/gemini-2.5-flash-lite";
   }
   return "google/gemini-2.5-flash-lite";
 }
@@ -41,9 +45,10 @@ function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = 
     return overrideSeconds * 1000; // Convert to ms
   }
   // Step 0: Source pack needs more time for complex source curation
-  if (stepNumber === 0) return 90000; // 90 seconds
-  // Step 12: Final assembly needs extended time for full report generation
-  if (stepNumber === 12) return 120000; // 120 seconds
+  if (stepNumber === 0) return 55000; // 55 seconds (under 60s limit)
+  // Steps 12-14: Assembly sub-steps - each must complete within 60s limit
+  if (stepNumber === 12 || stepNumber === 13) return 55000; // 55 seconds
+  if (stepNumber === 14) return 45000; // 45 seconds (simpler merge task)
   // All other steps use default timeout
   return 45000; // 45 seconds
 }
@@ -321,11 +326,11 @@ serve(async (req) => {
       );
     }
 
-    // 13-PHASE ARCHITECTURE: Accept any checkpoint from steps 0-11, plus recovery for step 12
+    // 15-PHASE ARCHITECTURE: Accept any checkpoint from steps 0-13, plus recovery for step 14
     let effectiveResumeFromStep = reportRun.current_step;
 
-    // STEP 12 RECOVERY: Handle case where final step stalled without completing
-    if (effectiveResumeFromStep >= 12) {
+    // STEP 14 RECOVERY: Handle case where final step stalled without completing
+    if (effectiveResumeFromStep >= 14) {
       // Check if a report already exists for this run
       const { data: existingReport } = await supabaseAdmin
         .from("reports")
@@ -353,10 +358,10 @@ serve(async (req) => {
         );
       }
 
-      // No report exists - step 12 stalled. Reset to resume from step 11 (re-run step 12)
-      console.log(`Step 12 recovery: Run ${reportRunId} stuck at step 12 without report. Resetting to resume from step 11.`);
+      // No report exists - step 14 stalled. Reset to resume from step 13 (re-run step 14)
+      console.log(`Step 14 recovery: Run ${reportRunId} stuck at step 14 without report. Resetting to resume from step 13.`);
       
-      // Reset step 12 row so it can be re-run
+      // Reset step 14 row so it can be re-run
       await supabaseAdmin
         .from("report_run_steps")
         .update({
@@ -367,14 +372,14 @@ serve(async (req) => {
           outputs_json: {},
         })
         .eq("report_run_id", reportRunId)
-        .eq("step_number", 12);
+        .eq("step_number", 14);
 
-      // Treat as resuming from step 11 so next step executed is 12
-      effectiveResumeFromStep = 11;
+      // Treat as resuming from step 13 so next step executed is 14
+      effectiveResumeFromStep = 13;
     }
 
-    // Validate checkpoint range (steps 0-11 are valid checkpoints)
-    if (effectiveResumeFromStep < 0 || effectiveResumeFromStep > 11) {
+    // Validate checkpoint range (steps 0-13 are valid checkpoints, step 14 is final)
+    if (effectiveResumeFromStep < 0 || effectiveResumeFromStep > 13) {
       return new Response(
         JSON.stringify({ error: "Report run is not at a valid checkpoint" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -430,9 +435,9 @@ serve(async (req) => {
 });
 
 /**
- * 13-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
- * This function is called for steps 1-12.
- * Step 12 completes the report instead of checkpointing.
+ * 15-PHASE ARCHITECTURE: Run exactly ONE step, then checkpoint
+ * This function is called for steps 1-14.
+ * Step 14 completes the report instead of checkpointing.
  */
 async function processSingleStep(
   reportRunId: string,
@@ -466,7 +471,7 @@ async function processSingleStep(
   const citations = [...checkpointCitations];
   
   const nextStep = resumeFromStep + 1;
-  console.log(`12-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
+  console.log(`15-PHASE: Executing step ${nextStep} (resumed from ${resumeFromStep})`);
 
   // Fetch grant context for prompt interpolation
   const grantContext = await fetchGrantContext(supabase, grantVersionId);
@@ -504,7 +509,7 @@ async function processSingleStep(
     partnerBusinesses: String(reportContent.partnerBusinesses || ""),
     // NEW: Market Sizing Source Pack from Step 5
     marketSizingSourcePack: String(reportContent.marketSizingSourcePack || ""),
-    // Assembly variables (JSON stringified for Step 12)
+    // Assembly variables (JSON stringified for Steps 12-14)
     step0: JSON.stringify(reportContent.sourcePack || {}),
     step1: JSON.stringify(reportContent.researchContext || {}),
     step2: JSON.stringify(reportContent.competitorResearch || {}),
@@ -517,6 +522,9 @@ async function processSingleStep(
     step9: JSON.stringify(reportContent.economicImpact || {}),
     step10: JSON.stringify(reportContent.competitorTable || {}),
     step11: JSON.stringify(reportContent.partnerBusinesses || {}),
+    // New assembly step outputs
+    step12: JSON.stringify(reportContent.assembledSections || {}),
+    step13: JSON.stringify(reportContent.tablesSources || {}),
   });
 
   // Helper function to get prompt for a step
@@ -897,20 +905,18 @@ Use the ANZSIC hierarchy for classification.`);
         break;
 
       case 12:
-        // Step 12: Assemble Final Report (was Step 11) - FINAL STEP
-        // Uses extended timeout (120s) due to large context and complex processing
+        // Step 12: Assemble Report Sections (markdown only)
+        // This step generates the 11 report sections as markdown
         await executeStep(supabase, reportRunId, 12, async () => {
-          console.log("Step 12: Final assembly starting with extended 120s timeout");
+          console.log("Step 12: Assembling report sections (markdown only)");
           
-          const defaultAssemblyPrompt = `You are assembling a final grant report for Australian government assessors.
+          const defaultSectionsPrompt = `You are assembling report sections for Australian government assessors.
 
 Grant: {{grantName}} ({{grantVersionLabel}})
 
-## SOURCE PACK (from Step 0)
-{{step0}}
-
 ## STEP OUTPUTS (raw JSON from research pipeline)
 
+Step 0 - Source Pack: {{step0}}
 Step 1 - Research Context: {{step1}}
 Step 2 - Competitor Research: {{step2}}
 Step 3 - Market Segments: {{step3}}
@@ -925,46 +931,42 @@ Step 11 - Partner Businesses: {{step11}}
 
 ## TASK
 
-Parse and merge these outputs into ONE coherent report for Australian government grant assessors.
+Generate the 11 report sections as well-formatted markdown.
 
 RULES:
 - Use ONLY validated facts from step outputs
-- Every numeric claim must have a citation marker [S#] referencing sources from Step 0 or Step 5
+- Every numeric claim must have a citation marker [S#] referencing sources
 - If an output contains an assumption, label it (High/Med/Low confidence)
-- Remove internal process phrasing ("in Step X", "your instructions")
-- Eliminate placeholders - add missing items to Data Gaps section
+- Remove internal process phrasing
 
-## MANDATORY REPORT STRUCTURE
+## SECTIONS TO GENERATE
 
 1. Executive Summary (8-12 bullets, each with [S#] citation)
 2. Research Context and Innovation
 3. Unmet Need and Australian Relevance
 4. Commercialisation Pathways (3 Segments: product, customer, value prop, AU angle, GTM hypothesis)
 5. Competitive Landscape and Differentiation (2-5 comparators per segment with evidence)
-6. Market Sizing (TAM/SAM/SOM consolidated table + Assumptions table)
+6. Market Sizing (TAM/SAM/SOM narrative - tables will be added in next step)
 7. Indicative Economic Impact to Australia (2+ quantified pathways)
-8. Potential Australian Partners (ANZSIC mapping + candidates table)
+8. Potential Australian Partners (ANZSIC mapping - table will be added in next step)
 9. Key Risks and Mitigations
 10. Data Gaps and Validation Needs
-11. References (MLA, deduplicated by URL, with Accessed date)
+11. References placeholder (sources list will be added in next step)
 
 ## OUTPUT FORMAT
 
-Return ONLY valid JSON with this schema:
+Return ONLY valid JSON:
 {
-  "title": string,
-  "report_markdown": string,
-  "tables": [{"title": string, "markdown": string, "section": string}],
-  "all_sources": [{"id": "S1", "mla": string, "url": string}],
-  "data_gaps": [{"gap": string, "why_missing": string, "needed_source": string}]
-}
+  "report_markdown": "Full markdown content of all sections...",
+  "section_metadata": {
+    "sections_generated": ["Executive Summary", "Research Context", ...],
+    "citation_markers_used": ["S1", "S2", ...]
+  }
+}`;
 
-STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about assumptions and confidence.`;
-
-          const assemblyPrompt = getStepPrompt(12, defaultAssemblyPrompt);
-          // Use configurable timeout for Step 12 (default 120s)
-          const assemblyResult = await callAIWithRetry(
-            assemblyPrompt, 
+          const sectionsPrompt = getStepPrompt(12, defaultSectionsPrompt);
+          const sectionsResult = await callAIWithRetry(
+            sectionsPrompt, 
             12, 
             systemPrompt, 
             getStepModel(12),
@@ -972,15 +974,153 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
           );
           
           // Parse the JSON response
+          let parsedSections;
+          try {
+            parsedSections = JSON.parse(sectionsResult);
+          } catch {
+            // If JSON parsing fails, wrap raw output
+            parsedSections = { 
+              report_markdown: sectionsResult, 
+              section_metadata: { sections_generated: [], citation_markers_used: [] }
+            };
+          }
+          
+          reportContent.assembledSections = parsedSections;
+          return { assembledSections: parsedSections };
+        });
+        break;
+
+      case 13:
+        // Step 13: Build Tables and Sources
+        // Extract all tables and build deduplicated source list
+        await executeStep(supabase, reportRunId, 13, async () => {
+          console.log("Step 13: Building tables and source list");
+          
+          const defaultTablesPrompt = `You are building the tables and source list for a grant report.
+
+## STEP OUTPUTS (JSON from research pipeline)
+
+Step 0 - Source Pack: {{step0}}
+Step 4 - Existing Competitors: {{step4}}
+Step 5 - Market Sizing Source Pack: {{step5}}
+Step 6 - TAM: {{step6}}
+Step 7 - SAM: {{step7}}
+Step 8 - SOM: {{step8}}
+Step 9 - Economic Impact: {{step9}}
+Step 10 - Competitor Table: {{step10}}
+Step 11 - Partner Businesses: {{step11}}
+Step 12 - Assembled Sections: {{step12}}
+
+## TASK
+
+Extract and consolidate ALL tables and sources from the step outputs.
+
+For TABLES:
+1. Market Sizing Table (TAM/SAM/SOM consolidated with sources)
+2. Assumptions Table (all assumptions with confidence levels)
+3. Competitor Comparison Table
+4. Partner Businesses Table
+5. Economic Impact Table
+6. Any additional tables from step outputs
+
+For SOURCES:
+1. Collect ALL sources referenced in any step output
+2. Deduplicate by URL
+3. Format each in MLA style with Accessed date
+4. Assign sequential IDs (S1, S2, etc.)
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON:
+{
+  "tables": [
+    {"title": "string", "markdown": "string", "section": "string"}
+  ],
+  "all_sources": [
+    {"id": "S1", "mla": "string", "url": "string"}
+  ]
+}`;
+
+          const tablesPrompt = getStepPrompt(13, defaultTablesPrompt);
+          const tablesResult = await callAIWithRetry(
+            tablesPrompt, 
+            13, 
+            systemPrompt, 
+            getStepModel(13),
+            getStepTimeout(13)
+          );
+          
+          // Parse the JSON response
+          let parsedTables;
+          try {
+            parsedTables = JSON.parse(tablesResult);
+          } catch {
+            parsedTables = { tables: [], all_sources: [] };
+          }
+          
+          reportContent.tablesSources = parsedTables;
+          return { tablesSources: parsedTables };
+        });
+        break;
+
+      case 14:
+        // Step 14: Finalize Report - FINAL STEP
+        // Merge sections + tables + sources into final JSON
+        await executeStep(supabase, reportRunId, 14, async () => {
+          console.log("Step 14: Finalizing report");
+          
+          const defaultFinalizePrompt = `You are finalizing a grant report for Australian government assessors.
+
+## INPUTS
+
+Step 12 - Report Sections: {{step12}}
+
+Step 13 - Tables and Sources: {{step13}}
+
+## TASK
+
+Merge the report sections with the tables and sources into the final report structure.
+
+1. Take report_markdown from Step 12
+2. Integrate tables from Step 13 into appropriate sections
+3. Add the all_sources list from Step 13
+4. Collect all data_gaps mentioned across steps into data_gaps array
+5. Validate that citation markers [S#] in the markdown match IDs in all_sources
+
+## OUTPUT FORMAT
+
+Return ONLY valid JSON matching this exact schema:
+{
+  "title": "string",
+  "report_markdown": "string",
+  "tables": [{"title": "string", "markdown": "string", "section": "string"}],
+  "all_sources": [{"id": "S1", "mla": "string", "url": "string"}],
+  "data_gaps": [{"gap": "string", "why_missing": "string", "needed_source": "string"}]
+}
+
+CRITICAL: Ensure report_markdown is a complete, assessor-ready document.`;
+
+          const finalizePrompt = getStepPrompt(14, defaultFinalizePrompt);
+          const finalizeResult = await callAIWithRetry(
+            finalizePrompt, 
+            14, 
+            systemPrompt, 
+            getStepModel(14),
+            getStepTimeout(14)
+          );
+          
+          // Parse the JSON response
           let parsedReport;
           try {
-            parsedReport = JSON.parse(assemblyResult);
+            parsedReport = JSON.parse(finalizeResult);
           } catch {
-            // If JSON parsing fails, store raw output
+            // If JSON parsing fails, try to construct from previous steps
+            const sections = reportContent.assembledSections as { report_markdown?: string } || {};
+            const tablesSources = reportContent.tablesSources as { tables?: unknown[]; all_sources?: unknown[] } || {};
             parsedReport = { 
-              report_markdown: assemblyResult, 
-              tables: [], 
-              all_sources: [], 
+              report_markdown: sections.report_markdown || finalizeResult, 
+              tables: tablesSources.tables || [], 
+              all_sources: tablesSources.all_sources || [], 
               data_gaps: [] 
             };
           }
@@ -1003,11 +1143,11 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
           emailOnComplete
         );
         
-        console.log(`13-PHASE: Report run ${reportRunId} completed successfully`);
+        console.log(`15-PHASE: Report run ${reportRunId} completed successfully`);
         return; // No checkpoint needed - we're done
     }
 
-    // For steps 1-11: Save checkpoint and exit
+    // For steps 1-13: Save checkpoint and exit
     // Frontend will detect pending status and call resume-report-run again
     await supabase
       .from("report_runs")
@@ -1019,10 +1159,10 @@ STYLE: Formal, concise, assessor-ready. Australia-first framing. Explicit about 
       })
       .eq("id", reportRunId);
 
-    console.log(`13-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
+    console.log(`15-PHASE: Checkpoint saved at step ${nextStep} for report run ${reportRunId}`);
 
   } catch (error) {
-    console.error(`13-PHASE: Step ${nextStep} failed:`, error);
+    console.error(`15-PHASE: Step ${nextStep} failed:`, error);
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     await updateRunStatus(supabase, reportRunId, "failed", errorMessage);
     
@@ -1110,7 +1250,7 @@ async function createFinalReport(
     .from("report_runs")
     .update({
       status: "completed",
-      current_step: 12,
+      current_step: 14, // Final step is now 14
       completed_at: new Date().toISOString(),
     })
     .eq("id", reportRunId);
