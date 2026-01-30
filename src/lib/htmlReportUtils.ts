@@ -256,76 +256,63 @@ function extractMarkdownFromNested(markdownContent: unknown): string | null {
 
 /**
  * Simple markdown to HTML conversion for legacy reports
+ * Processes tables FIRST to prevent paragraph wrapping from breaking table syntax
  */
 function convertMarkdownToHtml(markdown: string): string {
   if (!markdown) return "";
 
-  let html = markdown;
+  // Step 1: Unescape JSON string escapes that may be present from Replit worker output
+  let html = markdown
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
 
-  // Headers
+  // Step 2: Extract table blocks FIRST and replace with placeholders
+  const tableBlocks: string[] = [];
+  const tableBlockRegex = /(?:^|\n)((?:\|[^\n]+\|\n?)+)/g;
+  
+  html = html.replace(tableBlockRegex, (match, tableContent) => {
+    const tableHtml = buildHtmlTable(tableContent.trim().split("\n"));
+    const placeholder = `<!--TABLE_PLACEHOLDER_${tableBlocks.length}-->`;
+    tableBlocks.push(tableHtml);
+    return `\n${placeholder}\n`;
+  });
+
+  // Step 3: Process headers
   html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
   html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
   html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
 
-  // Bold and italic
+  // Step 4: Bold and italic
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
 
-  // Links
+  // Step 5: Links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 
-  // Lists (simple handling)
+  // Step 6: Lists (simple handling)
   html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
   html = html.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
 
-  // Paragraphs (wrap non-HTML lines)
+  // Step 7: Paragraphs (wrap non-HTML lines, skip placeholders)
   html = html.split("\n\n").map(block => {
     const trimmed = block.trim();
     if (!trimmed) return "";
     if (trimmed.startsWith("<")) return trimmed;
+    if (trimmed.startsWith("<!--TABLE_PLACEHOLDER_")) return trimmed;
     return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
   }).join("\n");
 
-  // Tables (simple conversion)
-  html = convertMarkdownTables(html);
+  // Step 8: Restore table blocks from placeholders
+  for (let i = 0; i < tableBlocks.length; i++) {
+    html = html.replace(`<!--TABLE_PLACEHOLDER_${i}-->`, tableBlocks[i]);
+  }
 
   return html;
 }
 
-/**
- * Convert markdown tables to HTML tables
- */
-function convertMarkdownTables(html: string): string {
-  const lines = html.split("\n");
-  const result: string[] = [];
-  let inTable = false;
-  let tableLines: string[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    
-    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
-      if (!inTable) {
-        inTable = true;
-        tableLines = [];
-      }
-      tableLines.push(trimmed);
-    } else {
-      if (inTable) {
-        result.push(buildHtmlTable(tableLines));
-        inTable = false;
-        tableLines = [];
-      }
-      result.push(line);
-    }
-  }
-
-  if (inTable) {
-    result.push(buildHtmlTable(tableLines));
-  }
-
-  return result.join("\n");
-}
+// Note: convertMarkdownTables was removed - tables are now processed
+// BEFORE paragraph wrapping in convertMarkdownToHtml() to fix rendering issues
 
 function buildHtmlTable(lines: string[]): string {
   if (lines.length < 2) return lines.join("\n");
