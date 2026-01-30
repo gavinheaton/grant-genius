@@ -75,6 +75,10 @@ function extractHtmlFromSectionContent(content: string): string | null {
       if (parsed.html && typeof parsed.html === "string") {
         return parsed.html;
       }
+      // Handle report_markdown - convert to HTML
+      if (parsed.report_markdown && typeof parsed.report_markdown === "string") {
+        return convertMarkdownToHtml(parsed.report_markdown);
+      }
     } catch {
       // Not valid JSON, treat as markdown
     }
