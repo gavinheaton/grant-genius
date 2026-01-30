@@ -351,6 +351,7 @@ export default function ApplicationWorkspace() {
               steps={[]}
               status="pending"
               isStarting={true}
+              activeRunId={activeRun?.id}
             />
           )}
           
@@ -383,6 +384,7 @@ export default function ApplicationWorkspace() {
               onToggleEmailOnComplete={toggleEmailOnComplete}
               startedAt={activeRun.started_at}
               completedAt={activeRun.completed_at}
+              activeRunId={activeRun.id}
             />
           )}
         </div>
