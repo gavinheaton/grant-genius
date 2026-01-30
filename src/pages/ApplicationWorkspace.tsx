@@ -340,7 +340,7 @@ export default function ApplicationWorkspace() {
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}
               status={activeRun.status}
-              onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
+              onCancel={() => cancelRun(activeRun.id)}
               onRestart={
                 (activeRun.status === "failed" || activeRun.status === "stalled") 
                   ? () => retryFromFailedStep(activeRun.id) 

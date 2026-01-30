@@ -254,6 +254,19 @@ export function GenerationProgress({
                 </Label>
               </div>
             )}
+            
+            {/* Cancel button for in-progress runs */}
+            {onCancel && (
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={onCancel} 
+                className="gap-2 text-muted-foreground hover:text-destructive"
+              >
+                <XCircle className="h-4 w-4" />
+                Cancel Generation
+              </Button>
+            )}
           </div>
         )}
       </CardContent>
