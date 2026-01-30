@@ -1,66 +1,136 @@
 
-# Fix Step 0 Timeout: Switch to Faster Model
 
-## Problem Identified
+# Fix Step 6 Timeout: Refactor Edge Function for 60s Platform Limit
 
-The report generation is stuck because Step 0 (Build Source Pack) is timing out:
+## Problem Analysis
 
-1. **Model Issue**: Step 0 uses `google/gemini-3-pro-preview` (configured in database)
-2. **Platform Limit**: Supabase Edge Functions have ~60 second wall-clock limit
-3. **Silent Death**: When the platform kills the function at 60s, the AI call dies with no error log
-4. **Current behavior**: Function boots → starts Step 0 at 03:45:23 → killed at 03:46:01 (38s of AI wait time)
+Step 6 (`calculate_tam`) is failing silently because:
 
-The Gemini-3-Pro-Preview model is too slow for the 60-second edge function limit.
+1. **AI timeout of 45s + processing overhead = >60s total execution time**
+2. **Retry mechanism on timeout extends function life past platform limit**
+3. Platform kills function at ~60s wall-clock time with no error logged
+4. Checkpoint never saves, step appears stuck
 
----
-
-## Solution
-
-Update the Step 0 model override in the database from the heavy `gemini-3-pro-preview` to the faster `gemini-3-flash-preview`.
-
-### Database Change
-
-```sql
-UPDATE prompt_bundle_steps 
-SET model_override = 'google/gemini-3-flash-preview'
-WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
-  AND step_number = 0;
+### Timeline from Logs
+```text
+03:56:43 - Function boots
+03:56:46 - Step 6 starts with 45s AI timeout
+03:57:17 - Shutdown (killed at ~34s of AI wait)
+03:57:47 - Shutdown (another attempt killed)
+03:58:18 - Shutdown (another attempt killed)
 ```
 
-**Rationale**:
-- `gemini-3-flash-preview` is significantly faster while maintaining quality
-- Already used successfully for Steps 4-13 in the same pipeline
-- Step 0 (source curation) doesn't require the absolute heaviest reasoning model
+The function gets killed before the AI call completes, and the retry logic keeps it alive past the 60s limit.
 
 ---
 
-## Additional Robustness (Optional)
+## Solution: Remove Timeout Retries + Reduce AI Timeouts
 
-Consider also updating Step 3 (market_segments) which also uses `gemini-3-pro-preview`:
+### Change 1: Remove Timeout Retries from `callAIWithRetry`
 
-```sql
-UPDATE prompt_bundle_steps 
-SET model_override = 'google/gemini-3-flash-preview'
-WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
-  AND step_number IN (0, 3);
+**Current behavior**: Retries on timeout (up to 3 attempts)
+**New behavior**: Only retry on rate limits (429), fail immediately on timeout
+
+```typescript
+// BEFORE - Retries timeouts
+if (msg.includes("timed out") && attempt < RETRY_DELAYS.length) {
+  console.log(`Request timed out on attempt ${attempt + 1}, will retry`);
+  continue;
+}
+
+// AFTER - Fail immediately on timeout
+if (msg.includes("timed out")) {
+  throw new Error(`AI request timed out for step ${stepNumber}`);
+}
+```
+
+**Rationale**: Retrying a timeout within an edge function doesn't help because the platform limit is per-invocation. The frontend auto-resume mechanism will trigger a new edge function call anyway.
+
+### Change 2: Reduce Default AI Timeouts to 35-40 seconds
+
+Current timeouts don't leave enough headroom for:
+- Function boot time (~100-200ms)
+- Database queries (fetch prompt bundle, grant context)
+- Response parsing
+- Checkpoint save
+
+**New timeout structure:**
+
+| Step | Current Timeout | New Timeout | Rationale |
+|------|-----------------|-------------|-----------|
+| 0 | 55s | 40s | Source pack, heavy but one attempt |
+| 1-4 | 45s | 35s | Context extraction, lighter tasks |
+| 5 | 45s | 35s | Market sizing pack |
+| 6-8 | 45s | 38s | TAM/SAM/SOM calculations |
+| 9-11 | 45s | 35s | Impact, tables, partners |
+| 12-13 | 55s | 42s | Assembly steps |
+| 14 | 45s | 35s | Final merge (simple) |
+
+### Change 3: Update `getTimeoutForStep` Function
+
+```typescript
+function getTimeoutForStep(stepNumber: number, overrideSeconds: number | null = null): number {
+  if (overrideSeconds !== null) {
+    return overrideSeconds * 1000;
+  }
+  
+  // Reduced timeouts to leave headroom within 60s platform limit
+  // Steps 0, 12, 13 are complex - 42s max
+  if (stepNumber === 0 || stepNumber === 12 || stepNumber === 13) return 42000;
+  
+  // TAM/SAM/SOM calculations - 38s
+  if (stepNumber >= 6 && stepNumber <= 8) return 38000;
+  
+  // All other steps - 35s
+  return 35000;
+}
 ```
 
 ---
 
-## Testing After Fix
+## Files to Modify
 
-1. Mark the current stuck run as failed
-2. Generate a new report
-3. Verify Step 0 completes within ~30-40 seconds
-4. Confirm checkpoint saves and Step 1 resumes
+### 1. `supabase/functions/resume-report-run/index.ts`
+
+- Update `getTimeoutForStep()` function with reduced default timeouts
+- Modify `callAIWithRetry()` to NOT retry on timeouts (only rate limits)
+- Add more aggressive fail-fast behavior
+
+### 2. `supabase/functions/generate-report/index.ts`
+
+- Apply same changes for Step 0 consistency
 
 ---
 
-## Why This Fixes the Issue
+## Expected Outcome
 
 | Before | After |
 |--------|-------|
-| Model: gemini-3-pro-preview (slowest) | Model: gemini-3-flash-preview (faster) |
-| Response time: 40-60+ seconds | Response time: 15-35 seconds |
-| Edge function killed before completion | Completes within 60s limit |
-| No checkpoint saved | Checkpoint saves, Step 1 resumes |
+| 45s AI timeout + retry = 50-90s execution | 35-42s AI timeout, no retry = ~50s max |
+| Platform kills function mid-request | Function completes within 60s limit |
+| Silent death, no checkpoint | Clean timeout error, checkpoint on failure |
+| Stuck at step indefinitely | Fails fast, frontend retries cleanly |
+
+---
+
+## Alternative Consideration: Use Lighter Models
+
+If timeouts persist after this fix, consider switching Steps 6-8 (TAM/SAM/SOM) to `gemini-2.5-flash-lite` instead of `gemini-3-flash-preview`. The lighter model responds faster, trading some quality for reliability.
+
+This can be done via database update:
+```sql
+UPDATE prompt_bundle_steps 
+SET model_override = 'google/gemini-2.5-flash-lite'
+WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
+  AND step_number IN (6, 7, 8);
+```
+
+---
+
+## Post-Fix Testing
+
+1. Mark the current stuck run as failed
+2. Generate a new report
+3. Monitor logs for Step 6 completing within 40-50 seconds
+4. Verify all 15 steps complete successfully
+
