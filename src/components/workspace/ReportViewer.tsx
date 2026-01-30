@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -17,10 +17,26 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Copy, Check, TrendingUp, Users, Building2, Globe, DollarSign, Handshake } from "lucide-react";
+import { Copy, Check, TrendingUp, Users, Building2, Globe, DollarSign, Handshake, FileText, AlertTriangle, Link } from "lucide-react";
 import { format } from "date-fns";
 import { type Report } from "@/hooks/useReportGeneration";
-import { parseMarkdownTables } from "@/lib/markdownUtils";
+import { parseMarkdownTables, parseMarkdownSections } from "@/lib/markdownUtils";
+
+// Types for the new unified assembledReport structure
+interface AssembledReport {
+  report_markdown: string;
+  tables?: Array<{
+    id: string;
+    title: string;
+    markdown: string;
+  }>;
+  all_sources?: Array<{
+    id: string;
+    mla_citation: string;
+    url?: string;
+  }>;
+  data_gaps?: string[];
+}
 
 // Flexible types to handle both string and structured data
 interface MarketSegment {
@@ -66,24 +82,21 @@ interface Citation {
 }
 
 interface ReportContent {
-  researchContext?: string;
+  // New unified format
+  assembledReport?: AssembledReport;
   
-  // Can be structured array OR raw AI text
+  // Legacy structured fields
+  researchContext?: string;
   marketSegments?: string | MarketSegment[];
   competitorResearch?: string;
   existingCompetitors?: string | Competitor[];
   competitors?: string | Competitor[];
-  
-  // Can be structured object OR raw AI text
   tam?: string | MarketSize;
   sam?: string | MarketSize;
   som?: string | MarketSize;
   economicImpact?: string | EconomicImpact;
-  
-  // Partner data may use different field name
   partners?: string | Partner[];
   partnerBusinesses?: string;
-  
   competitorTable?: string;
   citations?: string | Citation[];
 }
@@ -96,10 +109,7 @@ interface ReportViewerProps {
 
 // Helper component for rendering text content with markdown table support
 function TextContent({ content, className = "" }: { content: string; className?: string }) {
-  // Parse markdown tables into HTML
   const parsedContent = parseMarkdownTables(content);
-  
-  // Check if content contains parsed tables (has <table tag)
   const hasTable = parsedContent.includes('<table');
   
   if (hasTable) {
@@ -117,12 +127,115 @@ function TextContent({ content, className = "" }: { content: string; className?:
   );
 }
 
+// Component to render the new unified markdown format
+function UnifiedReportView({ 
+  assembledReport, 
+  copiedSection, 
+  onCopy 
+}: { 
+  assembledReport: AssembledReport; 
+  copiedSection: string | null;
+  onCopy: (text: string, id: string) => void;
+}) {
+  const sections = useMemo(() => 
+    parseMarkdownSections(assembledReport.report_markdown), 
+    [assembledReport.report_markdown]
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Report Sections */}
+      {sections.map((section, idx) => (
+        <section key={idx}>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-lg font-semibold flex items-center gap-2">
+              <FileText className="h-5 w-5 text-primary" />
+              {section.title}
+            </h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onCopy(section.content, `section-${idx}`)}
+              className="h-6 px-2"
+            >
+              {copiedSection === `section-${idx}` ? (
+                <Check className="h-3 w-3 text-success" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </Button>
+          </div>
+          <TextContent content={section.content} />
+          {idx < sections.length - 1 && <Separator className="mt-6" />}
+        </section>
+      ))}
+
+      {/* Data Gaps Warning */}
+      {assembledReport.data_gaps && assembledReport.data_gaps.length > 0 && (
+        <>
+          <Separator />
+          <section>
+            <h3 className="text-lg font-semibold flex items-center gap-2 mb-3">
+              <AlertTriangle className="h-5 w-5 text-warning" />
+              Data Gaps & Limitations
+            </h3>
+            <div className="bg-warning/10 border border-warning/20 rounded-lg p-4">
+              <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
+                {assembledReport.data_gaps.map((gap, idx) => (
+                  <li key={idx}>{gap}</li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* Sources / References */}
+      {assembledReport.all_sources && assembledReport.all_sources.length > 0 && (
+        <>
+          <Separator />
+          <section>
+            <h3 className="text-lg font-semibold flex items-center gap-2 mb-3">
+              <Link className="h-5 w-5 text-primary" />
+              References & Citations
+            </h3>
+            <div className="space-y-2">
+              {assembledReport.all_sources.map((source, idx) => (
+                <div
+                  key={source.id || idx}
+                  className="text-sm text-muted-foreground p-2 bg-muted/30 rounded flex items-start gap-2"
+                >
+                  <span className="font-medium text-foreground">[{source.id}]</span>
+                  <span className="flex-1">{source.mla_citation}</span>
+                  {source.url && (
+                    <a
+                      href={source.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline shrink-0"
+                    >
+                      View
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ReportViewer({ report, isOpen, onClose }: ReportViewerProps) {
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
 
   if (!report || !report.content_json) return null;
 
   const content = (report.content_json || {}) as ReportContent;
+  
+  // Check if this is the new unified format
+  const hasAssembledReport = Boolean(content.assembledReport?.report_markdown);
 
   const copyToClipboard = async (text: string, sectionId: string) => {
     await navigator.clipboard.writeText(text);
@@ -221,8 +334,17 @@ export function ReportViewer({ report, isOpen, onClose }: ReportViewerProps) {
         </DialogHeader>
 
         <ScrollArea className="h-[calc(90vh-120px)] px-6 pb-6">
+          {/* Render based on content structure */}
+          {hasAssembledReport ? (
+            <div className="py-4">
+              <UnifiedReportView 
+                assembledReport={content.assembledReport!}
+                copiedSection={copiedSection}
+                onCopy={copyToClipboard}
+              />
+            </div>
+          ) : (
           <div className="space-y-8 py-4">
-            {/* Research Context / Executive Summary */}
             {content.researchContext && (
               <section>
                 <div className="flex items-center justify-between mb-3">
@@ -506,6 +628,7 @@ export function ReportViewer({ report, isOpen, onClose }: ReportViewerProps) {
               </>
             )}
           </div>
+          )}
         </ScrollArea>
       </DialogContent>
     </Dialog>

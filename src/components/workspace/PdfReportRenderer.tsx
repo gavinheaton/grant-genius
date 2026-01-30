@@ -2,12 +2,28 @@ import { forwardRef, useMemo } from "react";
 import { type Report } from "@/hooks/useReportGeneration";
 import { type PdfTemplate } from "@/hooks/usePdfTemplates";
 import { format } from "date-fns";
-import { parseMarkdownTablesForPdf } from "@/lib/markdownUtils";
+import { parseMarkdownTablesForPdf, parseMarkdownSections } from "@/lib/markdownUtils";
 import { supabase } from "@/integrations/supabase/client";
 
 interface ReportSection {
   title: string;
   content: string;
+}
+
+// Types for the new unified assembledReport structure
+interface AssembledReport {
+  report_markdown: string;
+  tables?: Array<{
+    id: string;
+    title: string;
+    markdown: string;
+  }>;
+  all_sources?: Array<{
+    id: string;
+    mla_citation: string;
+    url?: string;
+  }>;
+  data_gaps?: string[];
 }
 
 interface MarketSegment {
@@ -44,6 +60,10 @@ interface Citation {
 }
 
 interface ContentJson {
+  // New unified format
+  assembledReport?: AssembledReport;
+  
+  // Legacy fields
   researchContext?: string;
   marketSegments?: string | MarketSegment[];
   competitorResearch?: string;
@@ -111,6 +131,33 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
 
     // Build sections array from content
     const sections: ReportSection[] = useMemo(() => {
+      // Check for new unified format first
+      if (content.assembledReport?.report_markdown) {
+        const parsedSections = parseMarkdownSections(content.assembledReport.report_markdown);
+        
+        // Add data gaps section if present
+        if (content.assembledReport.data_gaps && content.assembledReport.data_gaps.length > 0) {
+          parsedSections.push({
+            title: "Data Gaps & Limitations",
+            content: content.assembledReport.data_gaps.map(gap => `• ${gap}`).join('\n')
+          });
+        }
+        
+        // Add references section if present
+        if (content.assembledReport.all_sources && content.assembledReport.all_sources.length > 0) {
+          const refsContent = content.assembledReport.all_sources
+            .map(src => `[${src.id}] ${src.mla_citation}`)
+            .join('\n\n');
+          parsedSections.push({
+            title: "References",
+            content: refsContent
+          });
+        }
+        
+        return parsedSections;
+      }
+      
+      // Legacy format handling
       const result: ReportSection[] = [];
       
       // Research Context / Executive Summary

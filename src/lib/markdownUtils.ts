@@ -236,3 +236,52 @@ export function parseMarkdownTablesForPdf(content: string, primaryColor?: string
   
   return result.join('\n');
 }
+
+/**
+ * Parse markdown content into sections by ## headings
+ * For the new unified report_markdown format
+ */
+export interface ParsedSection {
+  title: string;
+  content: string;
+}
+
+export function parseMarkdownSections(markdown: string): ParsedSection[] {
+  if (!markdown) return [];
+  
+  const sections: ParsedSection[] = [];
+  const lines = markdown.split('\n');
+  
+  let currentTitle = '';
+  let currentContent: string[] = [];
+  
+  for (const line of lines) {
+    // Check for ## or ### section headers
+    const headerMatch = line.match(/^#{1,3}\s+(.+)$/);
+    
+    if (headerMatch) {
+      // Save previous section if exists
+      if (currentTitle || currentContent.length > 0) {
+        sections.push({
+          title: currentTitle || 'Introduction',
+          content: currentContent.join('\n').trim()
+        });
+      }
+      
+      currentTitle = headerMatch[1].trim();
+      currentContent = [];
+    } else {
+      currentContent.push(line);
+    }
+  }
+  
+  // Don't forget the last section
+  if (currentTitle || currentContent.length > 0) {
+    sections.push({
+      title: currentTitle || 'Content',
+      content: currentContent.join('\n').trim()
+    });
+  }
+  
+  return sections.filter(s => s.content.length > 0);
+}
