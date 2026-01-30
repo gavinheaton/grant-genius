@@ -55,13 +55,127 @@ interface AssembledReport {
   } | string>;
 }
 
+interface SectionEntry {
+  title: string;
+  content: string;
+}
+
 interface ReportContent {
   assembledReport?: AssembledReport;
+  sections?: SectionEntry[];
+}
+
+// Helper to strip code fences and parse JSON from section content
+function parseJsonFromSection(content: string): Record<string, unknown> | null {
+  if (!content) return null;
+  
+  let trimmed = content.trim();
+  
+  // Strip code fences if present
+  if (trimmed.startsWith("```")) {
+    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
+    trimmed = trimmed.replace(/\n?```\s*$/, "");
+    trimmed = trimmed.trim();
+  }
+  
+  if (trimmed.startsWith("{")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // Try regex extraction for truncated JSON
+      const markdownMatch = trimmed.match(/"report_markdown"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/);
+      if (markdownMatch?.[1]) {
+        const markdown = markdownMatch[1]
+          .replace(/\\n/g, "\n")
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, "\\");
+        return { report_markdown: markdown };
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Extract sources from build_source_pack section
+function extractSourcesFromSections(sections: SectionEntry[]): AssembledReport["all_sources"] {
+  const sourceSection = sections.find(s => s.title === "build_source_pack");
+  if (!sourceSection?.content) return [];
+  
+  const parsed = parseJsonFromSection(sourceSection.content);
+  if (!parsed) return [];
+  
+  // Handle array of sources directly
+  if (Array.isArray(parsed)) {
+    return parsed.map((src: Record<string, unknown>, idx: number) => ({
+      id: (src.id as string) || String(idx + 1),
+      title: src.title as string,
+      publisher: src.publisher as string,
+      date: src.date as string,
+      url: (src.url || src.link) as string,
+      accessed_date: src.accessed_date as string,
+      mla: (src.mla_citation || src.mla || src.citation) as string,
+      mla_citation: (src.mla_citation || src.mla) as string,
+    }));
+  }
+  
+  // Handle object with sources array
+  if (parsed.sources && Array.isArray(parsed.sources)) {
+    return (parsed.sources as Record<string, unknown>[]).map((src, idx) => ({
+      id: (src.id as string) || String(idx + 1),
+      title: src.title as string,
+      publisher: src.publisher as string,
+      date: src.date as string,
+      url: (src.url || src.link) as string,
+      accessed_date: src.accessed_date as string,
+      mla: (src.mla_citation || src.mla || src.citation) as string,
+      mla_citation: (src.mla_citation || src.mla) as string,
+    }));
+  }
+  
+  return [];
 }
 
 // Extract assembled report from potentially nested JSON wrapper
 // Handles both HTML (new format) and markdown (legacy format)
+// Also supports sections array format from Replit worker
 function extractAssembledReport(content: ReportContent): AssembledReport | null {
+  // Case 1: Sections array format (Replit worker)
+  if (content.sections && Array.isArray(content.sections)) {
+    console.log("Detected sections array format, extracting from finalize_report...");
+    
+    // Priority order for finding the main report content
+    const assemblyTitles = ["finalize_report", "assemble_sections", "build_tables_sources"];
+    
+    let assemblySection: SectionEntry | undefined;
+    for (const title of assemblyTitles) {
+      assemblySection = content.sections.find(s => s.title === title);
+      if (assemblySection?.content) break;
+    }
+    
+    if (assemblySection?.content) {
+      const parsed = parseJsonFromSection(assemblySection.content);
+      
+      if (parsed) {
+        const reportMarkdown = (parsed.report_markdown as string) || 
+                               (parsed.report_html ? convertHtmlToSimpleText(parsed.report_html as string) : null);
+        
+        if (reportMarkdown) {
+          console.log("Successfully extracted report from sections format, markdown length:", reportMarkdown.length);
+          return {
+            title: parsed.title as string,
+            report_markdown: reportMarkdown,
+            report_html: parsed.report_html as string,
+            tables: [],
+            all_sources: extractSourcesFromSections(content.sections),
+            data_gaps: [],
+          };
+        }
+      }
+    }
+  }
+  
+  // Case 2: Direct assembledReport (existing format)
   const assembledReport = content.assembledReport;
   if (!assembledReport) return null;
 
