@@ -41,3 +41,6 @@ verify_jwt = false
 
 [functions.clear-and-restart-run]
 verify_jwt = false
+
+[functions.worker-proxy]
+verify_jwt = false
