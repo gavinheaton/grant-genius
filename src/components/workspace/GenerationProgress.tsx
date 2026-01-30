@@ -6,6 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2 } from "lucide-react";
 import { ReportRunStep } from "@/hooks/useReportGeneration";
+import { ReportLogViewer } from "./ReportLogViewer";
 
 const AUTO_RETRY_SECONDS = 30;
 
@@ -26,6 +27,7 @@ interface GenerationProgressProps {
   startedAt?: string | null;
   completedAt?: string | null;
   isStarting?: boolean;
+  activeRunId?: string | null;
 }
 
 // Format step name from snake_case to Title Case
@@ -67,6 +69,7 @@ export function GenerationProgress({
   startedAt,
   completedAt,
   isStarting = false,
+  activeRunId,
 }: GenerationProgressProps) {
   const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
   const [isPaused, setIsPaused] = useState(false);
@@ -314,7 +317,7 @@ export function GenerationProgress({
               </div>
             )}
             
-            {/* Cancel button for in-progress runs */}
+          {/* Cancel button for in-progress runs */}
             {onCancel && (
               <Button 
                 variant="ghost" 
@@ -327,6 +330,11 @@ export function GenerationProgress({
               </Button>
             )}
           </div>
+        )}
+
+        {/* Log Viewer - show during active generation or failed/stalled states */}
+        {(status === "running" || status === "pending" || status === "failed" || status === "stalled") && (
+          <ReportLogViewer reportRunId={activeRunId} />
         )}
       </CardContent>
     </Card>
