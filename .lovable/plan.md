@@ -1,45 +1,55 @@
 
+# Add Cancel Button During Report Generation
 
-# Phase 1: Database Timeout Configuration Update
+## Problem
+Currently, the cancel button only appears when a report run is "stalled" (no progress for 5+ minutes). During normal "pending" or "running" status, users have no way to cancel and must wait for a timeout.
 
-## Overview
-Update the `prompt_bundle_steps` table to increase timeout values for the research-heavy steps that are timing out. You'll handle the model changes separately through the admin UI.
+## Solution
+Add a cancel button to the progress card that's visible during active generation, allowing users to immediately stop the process and get their credit refunded.
 
-## Database Changes
+## Changes Required
 
-### SQL Update
-```sql
--- Increase timeouts for research-heavy steps (4, 5, 9, 10, 11) to 50 seconds
-UPDATE prompt_bundle_steps 
-SET timeout_seconds = 50
-WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
-  AND step_number IN (4, 5, 9, 10, 11);
+### 1. ApplicationWorkspace.tsx
+Pass `onCancel` for all in-progress states, not just "stalled":
 
--- Reduce assembly step timeouts to 45s for safety margin
-UPDATE prompt_bundle_steps 
-SET timeout_seconds = 45
-WHERE bundle_id = '90e0e5bd-f625-47c9-83a0-08821153c895'
-  AND step_number IN (12, 13);
+**Before:**
+```tsx
+onCancel={activeRun.status === "stalled" ? () => cancelRun(activeRun.id) : undefined}
 ```
 
-## Configuration Summary
+**After:**
+```tsx
+onCancel={() => cancelRun(activeRun.id)}
+```
 
-| Step | Name | Timeout Before | Timeout After |
-|------|------|----------------|---------------|
-| 4 | find_competitors | 35s (default) | 50s |
-| 5 | market_sizing_source_pack | 35s (default) | 50s |
-| 9 | economic_impact | 35s (default) | 50s |
-| 10 | competitor_table | 35s (default) | 50s |
-| 11 | partner_businesses | 35s (default) | 50s |
-| 12 | assemble_sections | 55s | 45s |
-| 13 | build_tables_sources | 55s | 45s |
+### 2. GenerationProgress.tsx
+Add a cancel button to the in-progress section (where the email checkbox is shown):
 
-## Your Manual Steps
-After the database update, you'll change the models in the Prompt Bundles admin UI:
-- Steps 4, 5, 9, 10, 11 → `gemini-2.5-flash-lite`
+**Add to the `isInProgress` block (after the email checkbox section):**
+```tsx
+{/* Cancel button for in-progress runs */}
+{onCancel && (
+  <Button 
+    variant="ghost" 
+    size="sm" 
+    onClick={onCancel} 
+    className="gap-2 text-muted-foreground hover:text-destructive"
+  >
+    <XCircle className="h-4 w-4" />
+    Cancel Generation
+  </Button>
+)}
+```
 
-## Post-Update Testing
-1. Mark the current stuck run as failed
-2. Generate a new report
-3. Monitor logs to verify steps complete within 50s
+## UI Design
+- **Location**: Below the email notification checkbox in the progress card
+- **Style**: Ghost button with muted text, turns red on hover to indicate destructive action
+- **Behavior**: Calls `cancel-report-run` edge function which:
+  - Marks the run as "failed"
+  - Marks all pending/running steps as failed
+  - Refunds the consumed credit
 
+## Technical Details
+- The `cancel-report-run` edge function already handles credit refunds by calling `decrement_entitlement` and deleting the consumption record
+- The hook's `cancelRun` function clears `activeRun` and `isGenerating` state after successful cancellation
+- Toast notification confirms cancellation to the user
