@@ -5,31 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play } from "lucide-react";
-
-// 15-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Steps 12-14 (assembly)
-const RESEARCH_STEPS = [
-  "Building Australia-first source pack",
-  "Extracting research context from article",
-  "Searching for competing research",
-  "Identifying market segments",
-  "Finding existing competitors",
-  "Building market sizing source pack",
-  "Calculating Total Addressable Market",
-  "Calculating Serviceable Addressable Market",
-  "Calculating Serviceable Obtainable Market",
-  "Analyzing Australian economic impact",
-  "Building competitor comparison",
-  "Finding Australian partner businesses",
-  "Assembling report sections",
-  "Building tables and source list",
-  "Finalizing report",
-];
+import { ReportRunStep } from "@/hooks/useReportGeneration";
 
 const AUTO_RETRY_SECONDS = 30;
 
 interface GenerationProgressProps {
   currentStep: number;
   totalSteps: number;
+  completedSteps: number;
+  steps: ReportRunStep[];
   status: "pending" | "running" | "completed" | "failed" | "stalled";
   errorMessage?: string;
   onCancel?: () => void;
@@ -39,6 +23,14 @@ interface GenerationProgressProps {
   startedAt?: string | null;
   completedAt?: string | null;
   isStarting?: boolean;
+}
+
+// Format step name from snake_case to Title Case
+function formatStepName(name: string): string {
+  return name
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 }
 
 // Format elapsed time between two dates
@@ -58,6 +50,8 @@ function formatElapsedTime(startedAt: string | null | undefined, completedAt: st
 export function GenerationProgress({ 
   currentStep, 
   totalSteps, 
+  completedSteps,
+  steps,
   status, 
   errorMessage, 
   onCancel, 
@@ -109,12 +103,15 @@ export function GenerationProgress({
     onRestart?.();
   }, [onRestart]);
 
-  // Progress is based on completed steps (currentStep represents last completed step, 0-12)
-  // Total steps is 13 (0-12), so we calculate progress as (currentStep + 1) / 13 when running
-  const progressPercent = totalSteps > 0 ? ((currentStep + 1) / totalSteps) * 100 : 0;
-  // currentStep is 0-indexed (0-14), map to RESEARCH_STEPS array
-  const currentStepName = currentStep >= 0 && currentStep < RESEARCH_STEPS.length 
-    ? RESEARCH_STEPS[currentStep]
+  // Calculate progress based on completed steps
+  const progressPercent = totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0;
+  
+  // Get current step name from steps array
+  const currentStepData = steps.find(s => s.step_number === currentStep);
+  const runningStep = steps.find(s => s.status === 'running');
+  const displayStep = runningStep || currentStepData;
+  const currentStepName = displayStep?.step_name 
+    ? formatStepName(displayStep.step_name)
     : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending" || isStarting;
@@ -165,11 +162,11 @@ export function GenerationProgress({
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">
-              {status === "running" && `Step ${currentStep}/${totalSteps}: ${currentStepName}`}
+              {status === "running" && `Step ${completedSteps + 1}/${totalSteps}: ${currentStepName}`}
               {status === "completed" && "Report generation complete!"}
               {status === "failed" && "Generation failed"}
-              {status === "pending" && (currentStep === 0 ? "Starting generation..." : `Preparing step ${currentStep + 1}...`)}
-              {status === "stalled" && `Stalled at step ${currentStep}/${totalSteps}`}
+              {status === "pending" && (completedSteps === 0 ? "Starting generation..." : `Preparing step ${completedSteps + 1}...`)}
+              {status === "stalled" && `Stalled at step ${completedSteps + 1}/${totalSteps}`}
             </span>
             <span className="font-medium">{Math.round(progressPercent)}%</span>
           </div>
