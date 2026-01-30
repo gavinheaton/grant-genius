@@ -419,6 +419,8 @@ export type Database = {
           ai_analysis_status: string | null
           ai_suggestions_json: Json | null
           created_at: string
+          edge_allowed: boolean | null
+          execution_engine_default: string | null
           grant_id: string
           guidelines_json: Json | null
           guidelines_raw_text: string | null
@@ -434,6 +436,8 @@ export type Database = {
           ai_analysis_status?: string | null
           ai_suggestions_json?: Json | null
           created_at?: string
+          edge_allowed?: boolean | null
+          execution_engine_default?: string | null
           grant_id: string
           guidelines_json?: Json | null
           guidelines_raw_text?: string | null
@@ -449,6 +453,8 @@ export type Database = {
           ai_analysis_status?: string | null
           ai_suggestions_json?: Json | null
           created_at?: string
+          edge_allowed?: boolean | null
+          execution_engine_default?: string | null
           grant_id?: string
           guidelines_json?: Json | null
           guidelines_raw_text?: string | null
@@ -818,6 +824,8 @@ export type Database = {
           created_at: string
           current_step: number
           email_on_complete: boolean | null
+          execution_engine: string | null
+          execution_engine_reason: string | null
           id: string
           report_template_version_id: string
           started_at: string | null
@@ -832,6 +840,8 @@ export type Database = {
           created_at?: string
           current_step?: number
           email_on_complete?: boolean | null
+          execution_engine?: string | null
+          execution_engine_reason?: string | null
           id?: string
           report_template_version_id: string
           started_at?: string | null
@@ -846,6 +856,8 @@ export type Database = {
           created_at?: string
           current_step?: number
           email_on_complete?: boolean | null
+          execution_engine?: string | null
+          execution_engine_reason?: string | null
           id?: string
           report_template_version_id?: string
           started_at?: string | null
