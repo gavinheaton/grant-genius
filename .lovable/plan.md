@@ -1,130 +1,102 @@
 
 
-# Live Log Viewer Component for Replit Worker Debugging
+# Fix JSON Fence Parsing for Report Content
 
-## Overview
+## Problem
 
-Create a collapsible real-time log viewer that displays status messages from the Replit worker during report generation. This will help debug issues like the Gemini API not being triggered.
+The Replit worker returns report content wrapped in ` ```json ` code fences, but:
+1. Sometimes the closing ` ``` ` fence is missing (output truncation)
+2. The current regex requires exact fence format: `^```json?\s*\n([\s\S]*?)\n```\s*$`
 
-## Architecture
+This causes the parser to fail and fall back to treating raw JSON as markdown, which displays the literal `{` and `"report_markdown":` text to the user.
 
-The log viewer will:
-1. Subscribe to `report_logs` table via Supabase Realtime
-2. Display logs in a scrollable panel with color-coded levels (info/warn/error)
-3. Auto-scroll to newest entries
-4. Show timestamps and optional expandable details
-5. Integrate into the existing `GenerationProgress` component
+## Solution
 
-## Implementation Plan
+Update `extractHtmlFromSectionContent()` in `htmlReportUtils.ts` to be more forgiving:
 
-### 1. Create Custom Hook: `useReportLogs`
+1. **Strip opening fence if present** - Handle ` ```json\n ` at the start even without closing fence
+2. **Try to extract valid JSON** - Use a more flexible approach to find and parse JSON content
+3. **Handle incomplete JSON gracefully** - If the JSON is truncated, extract what we can
 
-**File:** `src/hooks/useReportLogs.ts`
+## Implementation
 
-This hook will:
-- Accept a `reportRunId` parameter
-- Fetch initial logs from the database
-- Subscribe to realtime INSERT events on `report_logs` table
-- Return logs array sorted by timestamp
-- Handle cleanup on unmount
+### File: `src/lib/htmlReportUtils.ts`
+
+Update `extractHtmlFromSectionContent()` function (lines 52-89):
 
 ```typescript
-interface ReportLog {
-  id: string;
-  timestamp: string;
-  level: "info" | "warn" | "error";
-  message: string;
-  details?: Record<string, unknown>;
+function extractHtmlFromSectionContent(content: string): string | null {
+  if (!content || typeof content !== "string") return null;
+  
+  let trimmed = content.trim();
+  
+  // Case 1: Already HTML (starts with < tag)
+  if (trimmed.startsWith("<")) {
+    return trimmed;
+  }
+  
+  // Case 2: Code-fenced content - strip fences regardless of completeness
+  // Handle ```json or ```json\n at the start
+  if (trimmed.startsWith("```")) {
+    // Remove opening fence (```json or ```)
+    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
+    // Remove closing fence if present
+    trimmed = trimmed.replace(/\n?```\s*$/, "");
+    trimmed = trimmed.trim();
+  }
+  
+  // Case 3: Try to parse as JSON (with or without fences)
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      
+      if (parsed.report_html && typeof parsed.report_html === "string") {
+        return parsed.report_html;
+      }
+      if (parsed.html && typeof parsed.html === "string") {
+        return parsed.html;
+      }
+      if (parsed.report_markdown && typeof parsed.report_markdown === "string") {
+        return convertMarkdownToHtml(parsed.report_markdown);
+      }
+    } catch {
+      // JSON parse failed - try to extract markdown field with regex
+      const markdownMatch = trimmed.match(/"report_markdown"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/);
+      if (markdownMatch?.[1]) {
+        // Unescape JSON string escapes
+        const markdown = markdownMatch[1]
+          .replace(/\\n/g, "\n")
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, "\\");
+        return convertMarkdownToHtml(markdown);
+      }
+    }
+  }
+  
+  // Case 4: Plain markdown content - convert it
+  return convertMarkdownToHtml(trimmed);
 }
 ```
 
-### 2. Create Log Viewer Component
+### Key Changes
 
-**File:** `src/components/workspace/ReportLogViewer.tsx`
+| Issue | Fix |
+|-------|-----|
+| Fence regex too strict | Use simple `replace()` calls to strip fences |
+| Missing closing fence | Strip opening fence independently of closing |
+| Truncated JSON | Fall back to regex extraction of `report_markdown` field |
+| Escaped newlines in markdown | Unescape `\n`, `\"`, `\\` when extracting via regex |
 
-Features:
-- Collapsible card (collapsed by default, expands on click)
-- Color-coded log entries:
-  - `info` - gray/muted text
-  - `warn` - amber/yellow styling
-  - `error` - red/destructive styling
-- Scrollable area with max height (~200px)
-- Auto-scroll to bottom when new logs arrive
-- Relative timestamps (e.g., "2s ago", "1m ago")
-- Expandable details for entries with `details` JSON
+## Files Changed
 
-UI Structure:
-```text
-+------------------------------------------+
-| > Worker Logs (12 entries)         [^/v] |
-+------------------------------------------+
-| 10:32:15 [info]  Starting step 3...      |
-| 10:32:18 [info]  Calling Gemini API...   |
-| 10:32:19 [warn]  Rate limit approaching  |
-| 10:32:25 [error] API key invalid!        |
-|   > details: { code: 401, ... }          |
-+------------------------------------------+
-```
+| File | Change |
+|------|--------|
+| `src/lib/htmlReportUtils.ts` | Update `extractHtmlFromSectionContent()` to handle incomplete JSON fences |
 
-### 3. Integrate into GenerationProgress
+## Testing
 
-**File:** `src/components/workspace/GenerationProgress.tsx`
-
-- Import and render `ReportLogViewer` at the bottom of the card
-- Pass `activeRunId` prop when available
-- Only show during active generation or failed/stalled states
-
-### 4. Pass Run ID from Workspace
-
-**File:** `src/pages/ApplicationWorkspace.tsx`
-
-- Pass `activeRun?.id` to `GenerationProgress` component
-- Component will forward to `ReportLogViewer`
-
-## File Changes Summary
-
-| File | Action | Purpose |
-|------|--------|---------|
-| `src/hooks/useReportLogs.ts` | Create | Hook for fetching and subscribing to logs |
-| `src/components/workspace/ReportLogViewer.tsx` | Create | Visual log display component |
-| `src/components/workspace/GenerationProgress.tsx` | Modify | Add log viewer integration |
-| `src/pages/ApplicationWorkspace.tsx` | Modify | Pass run ID prop |
-
-## Technical Details
-
-### Realtime Subscription Pattern
-
-Following the existing pattern in `useReportGeneration.ts`:
-
-```typescript
-const channel = supabase
-  .channel(`report-logs-${reportRunId}`)
-  .on(
-    'postgres_changes',
-    {
-      event: 'INSERT',
-      schema: 'public',
-      table: 'report_logs',
-      filter: `report_run_id=eq.${reportRunId}`,
-    },
-    (payload) => {
-      // Add new log to state
-    }
-  )
-  .subscribe();
-```
-
-### Log Display Logic
-
-- Show newest logs at bottom (standard log convention)
-- Limit display to most recent 100 logs to prevent memory issues
-- Format timestamps relative to now for readability
-- Truncate long messages with expand option
-
-## Benefits
-
-1. **Real-time visibility** - See exactly what the Replit worker is doing
-2. **Debug API issues** - Immediately see if Gemini API calls are failing
-3. **No code changes on Replit** - Uses existing `log_message` action in worker-proxy
-4. **Non-intrusive** - Collapsed by default, doesn't clutter normal flow
+After implementation:
+1. The existing report should now render correctly
+2. Future reports with proper JSON should continue to work
+3. Truncated reports will show as much content as can be extracted
 
