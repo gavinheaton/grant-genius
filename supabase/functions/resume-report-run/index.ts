@@ -918,10 +918,10 @@ Use the ANZSIC hierarchy for classification.`);
         break;
 
       case 12:
-        // Step 12: Assemble Report Sections (markdown only)
-        // This step generates the 11 report sections as markdown
+        // Step 12: Assemble Report Sections (HTML)
+        // This step generates the 11 report sections as clean HTML
         await executeStep(supabase, reportRunId, 12, async () => {
-          console.log("Step 12: Assembling report sections (markdown only)");
+          console.log("Step 12: Assembling report sections (HTML)");
           
           const defaultSectionsPrompt = `You are assembling report sections for Australian government assessors.
 
@@ -944,17 +944,19 @@ Step 11 - Partner Businesses: {{step11}}
 
 ## TASK
 
-Generate the 11 report sections as well-formatted markdown.
+Generate the 11 report sections as well-formatted HTML.
 
 RULES:
 - Use ONLY validated facts from step outputs
 - Every numeric claim must have a citation marker [S#] referencing sources
 - If an output contains an assumption, label it (High/Med/Low confidence)
 - Remove internal process phrasing
+- Use semantic HTML elements (h1, h2, h3, p, ul, ol, li, table, th, td, strong, em)
+- Do NOT include <html>, <head>, <body> tags - just the content
 
 ## SECTIONS TO GENERATE
 
-1. Executive Summary (8-12 bullets, each with [S#] citation)
+1. Executive Summary (8-12 bullet points, each with [S#] citation)
 2. Research Context and Innovation
 3. Unmet Need and Australian Relevance
 4. Commercialisation Pathways (3 Segments: product, customer, value prop, AU angle, GTM hypothesis)
@@ -970,12 +972,18 @@ RULES:
 
 Return ONLY valid JSON:
 {
-  "report_markdown": "Full markdown content of all sections...",
+  "report_html": "<h1>Executive Summary</h1><ul><li>Point 1 [S1]</li>...</ul><h1>Research Context...</h1>...",
   "section_metadata": {
     "sections_generated": ["Executive Summary", "Research Context", ...],
     "citation_markers_used": ["S1", "S2", ...]
   }
-}`;
+}
+
+IMPORTANT: 
+- For tables, use proper <table>, <thead>, <tbody>, <tr>, <th>, <td> elements
+- Add inline styles for table borders: style="border: 1px solid #e5e7eb; padding: 10px;"
+- Use <strong> for bold, <em> for italic
+- Wrap paragraphs in <p> tags`;
 
           const sectionsPrompt = getStepPrompt(12, defaultSectionsPrompt);
           const sectionsResult = await callAIWithRetry(
@@ -991,9 +999,9 @@ Return ONLY valid JSON:
           try {
             parsedSections = JSON.parse(sectionsResult);
           } catch {
-            // If JSON parsing fails, wrap raw output
+            // If JSON parsing fails, wrap raw output as HTML
             parsedSections = { 
-              report_markdown: sectionsResult, 
+              report_html: sectionsResult, 
               section_metadata: { sections_generated: [], citation_markers_used: [] }
             };
           }
@@ -1004,10 +1012,10 @@ Return ONLY valid JSON:
         break;
 
       case 13:
-        // Step 13: Build Tables and Sources
+        // Step 13: Build Tables and Sources (HTML)
         // Extract all tables and build deduplicated source list
         await executeStep(supabase, reportRunId, 13, async () => {
-          console.log("Step 13: Building tables and source list");
+          console.log("Step 13: Building tables and source list (HTML)");
           
           const defaultTablesPrompt = `You are building the tables and source list for a grant report.
 
@@ -1028,7 +1036,7 @@ Step 12 - Assembled Sections: {{step12}}
 
 Extract and consolidate ALL tables and sources from the step outputs.
 
-For TABLES:
+For TABLES (as HTML):
 1. Market Sizing Table (TAM/SAM/SOM consolidated with sources)
 2. Assumptions Table (all assumptions with confidence levels)
 3. Competitor Comparison Table
@@ -1047,12 +1055,22 @@ For SOURCES:
 Return ONLY valid JSON:
 {
   "tables": [
-    {"title": "string", "markdown": "string", "section": "string"}
+    {
+      "id": "market-sizing",
+      "title": "Market Sizing Summary",
+      "section": "Market Sizing",
+      "html": "<table style='width:100%;border-collapse:collapse;'><thead><tr><th style='border:1px solid #e5e7eb;padding:10px;background:#1e3a5f;color:white;'>Metric</th>...</tr></thead><tbody>...</tbody></table>"
+    }
   ],
   "all_sources": [
-    {"id": "S1", "mla": "string", "url": "string"}
+    {"id": "S1", "mla_citation": "Author. Title. Publisher, Date. URL. Accessed Date.", "url": "https://..."}
   ]
-}`;
+}
+
+IMPORTANT:
+- Tables must be complete HTML with inline styles for borders and padding
+- Use background:#1e3a5f and color:white for header cells
+- Use alternating row backgrounds: #ffffff and #f9fafb`;
 
           const tablesPrompt = getStepPrompt(13, defaultTablesPrompt);
           const tablesResult = await callAIWithRetry(
@@ -1078,15 +1096,15 @@ Return ONLY valid JSON:
 
       case 14:
         // Step 14: Finalize Report - FINAL STEP
-        // Merge sections + tables + sources into final JSON
+        // Merge sections + tables + sources into final HTML
         await executeStep(supabase, reportRunId, 14, async () => {
-          console.log("Step 14: Finalizing report");
+          console.log("Step 14: Finalizing report (HTML)");
           
           const defaultFinalizePrompt = `You are finalizing a grant report for Australian government assessors.
 
 ## INPUTS
 
-Step 12 - Report Sections: {{step12}}
+Step 12 - Report Sections (HTML): {{step12}}
 
 Step 13 - Tables and Sources: {{step13}}
 
@@ -1094,24 +1112,27 @@ Step 13 - Tables and Sources: {{step13}}
 
 Merge the report sections with the tables and sources into the final report structure.
 
-1. Take report_markdown from Step 12
-2. Integrate tables from Step 13 into appropriate sections
+1. Take report_html from Step 12
+2. Insert HTML tables from Step 13 into their appropriate sections
 3. Add the all_sources list from Step 13
 4. Collect all data_gaps mentioned across steps into data_gaps array
-5. Validate that citation markers [S#] in the markdown match IDs in all_sources
+5. Validate that citation markers [S#] in the HTML match IDs in all_sources
 
 ## OUTPUT FORMAT
 
 Return ONLY valid JSON matching this exact schema:
 {
-  "title": "string",
-  "report_markdown": "string",
-  "tables": [{"title": "string", "markdown": "string", "section": "string"}],
-  "all_sources": [{"id": "S1", "mla": "string", "url": "string"}],
-  "data_gaps": [{"gap": "string", "why_missing": "string", "needed_source": "string"}]
+  "title": "Commercialisation Research Report",
+  "report_html": "<h1>Executive Summary</h1>...<h1>Market Sizing</h1><p>...</p>[TABLE_HERE]...",
+  "tables": [{"id": "string", "title": "string", "html": "string", "section": "string"}],
+  "all_sources": [{"id": "S1", "mla_citation": "string", "url": "string"}],
+  "data_gaps": ["Gap description 1", "Gap description 2"]
 }
 
-CRITICAL: Ensure report_markdown is a complete, assessor-ready document.`;
+CRITICAL: 
+- Ensure report_html is a complete, assessor-ready HTML document
+- Do NOT wrap in code blocks
+- The report_html should include the tables inline where appropriate`;
 
           const finalizePrompt = getStepPrompt(14, defaultFinalizePrompt);
           const finalizeResult = await callAIWithRetry(
@@ -1128,10 +1149,10 @@ CRITICAL: Ensure report_markdown is a complete, assessor-ready document.`;
             parsedReport = JSON.parse(finalizeResult);
           } catch {
             // If JSON parsing fails, try to construct from previous steps
-            const sections = reportContent.assembledSections as { report_markdown?: string } || {};
+            const sections = reportContent.assembledSections as { report_html?: string } || {};
             const tablesSources = reportContent.tablesSources as { tables?: unknown[]; all_sources?: unknown[] } || {};
             parsedReport = { 
-              report_markdown: sections.report_markdown || finalizeResult, 
+              report_html: sections.report_html || finalizeResult, 
               tables: tablesSources.tables || [], 
               all_sources: tablesSources.all_sources || [], 
               data_gaps: [] 

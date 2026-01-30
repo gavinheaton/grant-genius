@@ -1,16 +1,14 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FileText, Download, Loader2, Eye, FileType } from "lucide-react";
 import { format } from "date-fns";
-import { ReportViewer } from "./ReportViewer";
-import { PdfReportRenderer } from "./PdfReportRenderer";
+import { HtmlReportViewer } from "./HtmlReportViewer";
 import { type Report } from "@/hooks/useReportGeneration";
-import { useDefaultPdfTemplate } from "@/hooks/usePdfTemplates";
-import { generatePdfFromElement, downloadPdf } from "@/lib/generatePdfClient";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
+import { extractReportHtml, sanitizeHtml, REPORT_HTML_STYLES } from "@/lib/htmlReportUtils";
 
 interface ReportsListProps {
   reports: Report[];
@@ -23,58 +21,105 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
   const [viewingReport, setViewingReport] = useState<Report | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState<string | null>(null);
   const [generatingDocx, setGeneratingDocx] = useState<string | null>(null);
-  const [renderingReport, setRenderingReport] = useState<Report | null>(null);
-  const pdfRenderRef = useRef<HTMLDivElement>(null);
-  
-  const { data: pdfTemplate } = useDefaultPdfTemplate();
 
+  // Simple print-based PDF generation
   const handleGeneratePdf = useCallback(async (report: Report) => {
-    if (!pdfTemplate) {
-      toast({
-        title: "Template not loaded",
-        description: "Please wait for the PDF template to load and try again.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     setGeneratingPdf(report.id);
-    setRenderingReport(report);
-
-    // Wait for the component to render completely
-    await new Promise(resolve => setTimeout(resolve, 500));
 
     try {
-      if (!pdfRenderRef.current) {
-        throw new Error("PDF renderer not available");
+      const extracted = extractReportHtml(report.content_json);
+      if (!extracted) {
+        throw new Error("Could not extract report content");
       }
 
-      const blob = await generatePdfFromElement(pdfRenderRef.current, {
-        template: pdfTemplate,
-        grantName,
-        reportTitle: `Report v${report.version_number}`,
-        generatedDate: format(new Date(report.created_at), "yyyy-MM-dd"),
-      });
+      const sanitizedHtml = sanitizeHtml(extracted.html);
+      
+      // Create a printable document
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        throw new Error("Pop-up blocked. Please allow pop-ups for this site.");
+      }
 
-      const filename = `${grantName.replace(/\s+/g, "_")}_Report_v${report.version_number}.pdf`;
-      downloadPdf(blob, filename);
+      const printContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>${grantName} - Report v${report.version_number}</title>
+          <style>
+            ${REPORT_HTML_STYLES}
+            body {
+              font-family: 'Inter', system-ui, sans-serif;
+              margin: 40px;
+              line-height: 1.6;
+            }
+            .cover-page {
+              text-align: center;
+              padding: 100px 40px;
+              page-break-after: always;
+            }
+            .cover-title {
+              font-size: 28px;
+              font-weight: 700;
+              color: #1e3a5f;
+              margin-bottom: 20px;
+            }
+            .cover-subtitle {
+              font-size: 18px;
+              color: #d97706;
+              margin-bottom: 40px;
+            }
+            .cover-date {
+              font-size: 14px;
+              color: #666;
+            }
+            @media print {
+              body { margin: 20px; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="cover-page">
+            <div class="cover-title">Commercialisation Research Report</div>
+            <div class="cover-subtitle">${grantName}</div>
+            <div class="cover-date">Generated on ${format(new Date(report.created_at), "MMMM d, yyyy")}</div>
+            <div class="cover-date">Version ${report.version_number}</div>
+          </div>
+          <div class="report-html-content">
+            ${sanitizedHtml}
+          </div>
+          ${extracted.sources && extracted.sources.length > 0 ? `
+            <h1 style="margin-top: 40px; border-top: 2px solid #d97706; padding-top: 20px;">References</h1>
+            ${extracted.sources.map(s => `
+              <p style="margin-left: 40px; text-indent: -40px;">[${s.id}] ${s.mla_citation}</p>
+            `).join('')}
+          ` : ''}
+        </body>
+        </html>
+      `;
+
+      printWindow.document.write(printContent);
+      printWindow.document.close();
+      
+      // Wait for content to load then print
+      printWindow.onload = () => {
+        printWindow.print();
+      };
 
       toast({
-        title: "PDF Generated",
-        description: "Your report has been downloaded.",
+        title: "Print Dialog Opened",
+        description: "Use 'Save as PDF' in the print dialog to save your report.",
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("PDF generation error:", error);
       toast({
         title: "PDF Generation Failed",
-        description: error.message || "Failed to generate PDF. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to generate PDF. Please try again.",
         variant: "destructive",
       });
     } finally {
       setGeneratingPdf(null);
-      setRenderingReport(null);
     }
-  }, [pdfTemplate, grantName]);
+  }, [grantName]);
 
   const handleGenerateDocx = useCallback(async (report: Report) => {
     setGeneratingDocx(report.id);
@@ -204,7 +249,7 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
                     variant="outline"
                     size="sm"
                     onClick={() => handleGeneratePdf(report)}
-                    disabled={generatingPdf === report.id || !pdfTemplate}
+                    disabled={generatingPdf === report.id}
                   >
                     {generatingPdf === report.id ? (
                       <Loader2 className="h-4 w-4 mr-1 animate-spin" />
@@ -221,21 +266,15 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
       </Card>
 
       {/* Report Viewer Modal */}
-      <ReportViewer
+      <HtmlReportViewer
         report={viewingReport}
         isOpen={!!viewingReport}
         onClose={() => setViewingReport(null)}
+        onDownloadPdf={viewingReport ? () => handleGeneratePdf(viewingReport) : undefined}
+        onDownloadDocx={viewingReport ? () => handleGenerateDocx(viewingReport) : undefined}
+        isGeneratingPdf={generatingPdf === viewingReport?.id}
+        isGeneratingDocx={generatingDocx === viewingReport?.id}
       />
-
-      {/* Hidden PDF Renderer */}
-      {renderingReport && pdfTemplate && (
-        <PdfReportRenderer
-          ref={pdfRenderRef}
-          report={renderingReport}
-          template={pdfTemplate}
-          grantName={grantName}
-        />
-      )}
     </>
   );
 }

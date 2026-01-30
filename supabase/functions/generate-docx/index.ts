@@ -24,15 +24,19 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// Step 11 assembled report structure
+// Step 14 assembled report structure (supports both HTML and markdown)
 interface AssembledReport {
   title?: string;
-  report_markdown: string;
+  report_markdown?: string;
+  report_html?: string;
   tables?: Array<{
+    id?: string;
     title: string;
     section: string;
-    columns: string[];
-    rows: string[][];
+    columns?: string[];
+    rows?: string[][];
+    html?: string;
+    markdown?: string;
   }>;
   all_sources?: Array<{
     id: string;
@@ -41,13 +45,14 @@ interface AssembledReport {
     date?: string;
     url: string;
     accessed_date?: string;
-    mla: string;
+    mla?: string;
+    mla_citation?: string;
   }>;
   data_gaps?: Array<{
     gap: string;
     why_missing: string;
     needed_source: string;
-  }>;
+  } | string>;
 }
 
 interface ReportContent {
@@ -55,22 +60,32 @@ interface ReportContent {
 }
 
 // Extract assembled report from potentially nested JSON wrapper
-// Handles both code-fenced JSON (```json ... ```) and raw JSON object (starts with {)
+// Handles both HTML (new format) and markdown (legacy format)
 function extractAssembledReport(content: ReportContent): AssembledReport | null {
   const assembledReport = content.assembledReport;
   if (!assembledReport) return null;
+
+  // Check for HTML content first (new format)
+  if (assembledReport.report_html) {
+    return {
+      ...assembledReport,
+      // Convert HTML to markdown-like structure for the existing parser
+      report_markdown: convertHtmlToSimpleText(assembledReport.report_html),
+    };
+  }
 
   const markdownContent = assembledReport.report_markdown;
   if (!markdownContent) return null;
 
   // Helper to merge nested JSON with original structure
-  function mergeWithNested(original: AssembledReport, nested: any): AssembledReport {
+  function mergeWithNested(original: AssembledReport, nested: Record<string, unknown>): AssembledReport {
     return {
-      title: nested.title || original.title,
-      report_markdown: nested.report_markdown || "",
-      tables: nested.tables || original.tables || [],
-      all_sources: nested.all_sources || original.all_sources || [],
-      data_gaps: nested.data_gaps || original.data_gaps || [],
+      title: (nested.title as string) || original.title,
+      report_markdown: (nested.report_markdown as string) || (nested.report_html ? convertHtmlToSimpleText(nested.report_html as string) : ""),
+      report_html: (nested.report_html as string) || original.report_html,
+      tables: (nested.tables as AssembledReport["tables"]) || original.tables || [],
+      all_sources: (nested.all_sources as AssembledReport["all_sources"]) || original.all_sources || [],
+      data_gaps: (nested.data_gaps as AssembledReport["data_gaps"]) || original.data_gaps || [],
     };
   }
 
@@ -83,7 +98,6 @@ function extractAssembledReport(content: ReportContent): AssembledReport | null 
       return mergeWithNested(assembledReport, nestedJson);
     } catch (e) {
       console.error("Failed to parse code-fenced JSON in report_markdown:", e);
-      // Fall through to try other patterns
     }
   }
 
@@ -95,13 +109,46 @@ function extractAssembledReport(content: ReportContent): AssembledReport | null 
       return mergeWithNested(assembledReport, nestedJson);
     } catch (e) {
       console.error("Failed to parse raw JSON in report_markdown:", e);
-      // Fall back to original structure
       return assembledReport;
     }
   }
 
   // No nested JSON, use as-is
   return assembledReport;
+}
+
+// Convert HTML to simple text for the markdown parser
+function convertHtmlToSimpleText(html: string): string {
+  if (!html) return "";
+  
+  let text = html;
+  
+  // Convert headers
+  text = text.replace(/<h1[^>]*>(.*?)<\/h1>/gi, "## $1\n\n");
+  text = text.replace(/<h2[^>]*>(.*?)<\/h2>/gi, "### $1\n\n");
+  text = text.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "#### $1\n\n");
+  
+  // Convert paragraphs
+  text = text.replace(/<p[^>]*>(.*?)<\/p>/gi, "$1\n\n");
+  
+  // Convert lists
+  text = text.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1\n");
+  text = text.replace(/<\/?ul[^>]*>/gi, "\n");
+  text = text.replace(/<\/?ol[^>]*>/gi, "\n");
+  
+  // Convert bold/italic
+  text = text.replace(/<strong[^>]*>(.*?)<\/strong>/gi, "**$1**");
+  text = text.replace(/<b[^>]*>(.*?)<\/b>/gi, "**$1**");
+  text = text.replace(/<em[^>]*>(.*?)<\/em>/gi, "*$1*");
+  text = text.replace(/<i[^>]*>(.*?)<\/i>/gi, "*$1*");
+  
+  // Remove remaining HTML tags
+  text = text.replace(/<[^>]+>/g, "");
+  
+  // Clean up whitespace
+  text = text.replace(/\n{3,}/g, "\n\n");
+  
+  return text.trim();
 }
 
 // Document styling constants
@@ -304,7 +351,7 @@ function parseMarkdownStructure(markdown: string): ParsedSection[] {
 }
 
 // Build Word table from structured data
-function buildTable(tableData: { title: string; columns: string[]; rows: string[][] }): (Paragraph | Table)[] {
+function buildTable(tableData: { title: string; columns?: string[]; rows?: string[][] }): (Paragraph | Table)[] {
   const elements: (Paragraph | Table)[] = [];
 
   // Table title
@@ -467,28 +514,42 @@ function buildDataGaps(dataGaps: AssembledReport["data_gaps"]): Paragraph[] {
   if (!dataGaps || dataGaps.length === 0) return [];
 
   return dataGaps.map(
-    (gap) =>
-      new Paragraph({
-        children: [
-          new TextRun({
-            text: gap.gap,
-            bold: true,
-            size: STYLES.fontSize.body,
-          }),
-          new TextRun({
-            text: ` — ${gap.why_missing}`,
-            size: STYLES.fontSize.body,
-          }),
-          new TextRun({
-            text: ` (Needed: ${gap.needed_source})`,
-            italics: true,
-            size: STYLES.fontSize.body,
-            color: "666666",
-          }),
-        ],
+    (gap) => {
+      // Handle both string and object formats
+      const gapText = typeof gap === 'string' ? gap : gap.gap;
+      const whyMissing = typeof gap === 'string' ? '' : gap.why_missing;
+      const neededSource = typeof gap === 'string' ? '' : gap.needed_source;
+      
+      const children = [
+        new TextRun({
+          text: gapText,
+          bold: true,
+          size: STYLES.fontSize.body,
+        }),
+      ];
+      
+      if (whyMissing) {
+        children.push(new TextRun({
+          text: ` — ${whyMissing}`,
+          size: STYLES.fontSize.body,
+        }));
+      }
+      
+      if (neededSource) {
+        children.push(new TextRun({
+          text: ` (Needed: ${neededSource})`,
+          italics: true,
+          size: STYLES.fontSize.body,
+          color: "666666",
+        }));
+      }
+      
+      return new Paragraph({
+        children,
         bullet: { level: 0 },
         spacing: { after: 80 },
-      })
+      });
+    }
   );
 }
 
@@ -505,8 +566,8 @@ function buildDocument(
   assembledReport: AssembledReport,
   metadata: { grantName: string; reportTitle: string; generatedDate: string; version: number }
 ): Document {
-  const sections = parseMarkdownStructure(assembledReport.report_markdown);
-  const tables = assembledReport.tables || [];
+  const sections = parseMarkdownStructure(assembledReport.report_markdown || "");
+  const tables = (assembledReport.tables || []).filter(t => t.columns && t.rows);
   const dataGaps = assembledReport.data_gaps || [];
   const sources = assembledReport.all_sources || [];
 
