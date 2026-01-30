@@ -10,6 +10,7 @@ import {
   Home,
   Bot,
   FileType,
+  Activity,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -51,6 +52,7 @@ const reportItems = [
 ];
 
 const systemItems = [
+  { title: "System Health", url: "/admin/system-health", icon: Activity },
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
 ];
 
