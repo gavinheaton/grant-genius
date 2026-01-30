@@ -1,226 +1,128 @@
 
 
-# Fix: Auth Loading State Stuck on Homepage (v2)
+# Simplify Report Output: Replace PDF/DOCX with HTML
 
 ## Problem Analysis
-The previous fix wasn't sufficient. The "Sign In" button on the homepage still shows a spinning loader. The `/auth` page works because it uses its own local state (`isCheckingSession`) that's resolved by a simple `getSession()` call - not the `useAuth` hook.
 
-## Root Cause (Deeper Analysis)
-The `useAuth` hook's `onAuthStateChange` callback is **async**, which creates subtle timing issues:
+The current PDF and DOCX generation system has multiple failure points:
 
-```typescript
-supabase.auth.onAuthStateChange(async (event, session) => {
-  // This is an async function, but Supabase doesn't await it!
-  if (session?.user) {
-    await updateAuthState(session.user.id, session.user.email);
-  } else {
-    await updateAuthState(null, undefined); // Database query for roles happens here
-  }
-});
+1. **Nested JSON Problem**: The AI outputs `report_markdown` as a JSON string containing another JSON object, requiring fragile parsing
+2. **Multiple Extraction Layers**: Both client-side (PDF) and server-side (DOCX) have separate extraction logic that can fail independently
+3. **Complex Dependencies**: PDF uses html2canvas + jsPDF (client-side), DOCX uses a Deno edge function with docx library
+
+### Current Data Flow (Problematic)
+```text
+AI Step 14 Output
+       |
+       v
+content_json.assembledReport.report_markdown = '{"report_markdown": "# Heading...", "section_metadata": {...}}'
+       |
+       +---> extractNestedReportMarkdown() [client-side for PDF]
+       |         |
+       |         v
+       |    Parse nested JSON -> Plain markdown -> HTML -> html2canvas -> jsPDF
+       |
+       +---> extractAssembledReport() [edge function for DOCX]
+                 |
+                 v
+            Parse nested JSON -> Plain markdown -> docx library -> DOCX blob
 ```
 
-When there's **no session**, `updateAuthState(null, undefined)` is called which should immediately set `isLoading: false`. However, the async nature of the callback combined with potential race conditions between `onAuthStateChange` and `getSession()` can cause the state update to be lost or delayed indefinitely.
+## Proposed Solution
 
-## Solution
-Simplify the auth state resolution logic to ensure loading state is **always** resolved:
+Switch to a simpler HTML-first approach:
 
-1. **Make the initial check synchronous-first**: Check for session state synchronously where possible
-2. **Ensure a single source of truth**: Use `getSession()` as the primary resolver, with `onAuthStateChange` only for subsequent changes
-3. **Add safety timeout**: Ensure loading never hangs indefinitely
+1. **Store HTML directly** in the report instead of markdown
+2. **Render HTML in-app** using sanitized dangerouslySetInnerHTML
+3. **Print to PDF** using browser's native print-to-PDF or a simple HTML-to-PDF approach
+4. **Optionally keep DOCX** but simplify by converting from HTML
 
-## Implementation
-
-### File: `src/hooks/useAuth.ts`
-
-```typescript
-import { useState, useEffect, useRef } from "react";
-import { supabase } from "@/integrations/supabase/client";
-import type { Database } from "@/integrations/supabase/types";
-
-type AppRole = Database["public"]["Enums"]["app_role"];
-
-interface User {
-  id: string;
-  email: string | undefined;
-}
-
-interface AuthState {
-  user: User | null;
-  isLoading: boolean;
-  isAuthenticated: boolean;
-  isAdmin: boolean;
-  isSuperAdmin: boolean;
-  role: AppRole | null;
-}
-
-export function useAuth() {
-  const [state, setState] = useState<AuthState>({
-    user: null,
-    isLoading: true,
-    isAuthenticated: false,
-    isAdmin: false,
-    isSuperAdmin: false,
-    role: null,
-  });
-  
-  // Track if initial load is complete to avoid duplicate updates
-  const initialLoadComplete = useRef(false);
-
-  useEffect(() => {
-    let mounted = true;
-
-    const fetchUserRole = async (userId: string): Promise<AppRole | null> => {
-      try {
-        const { data, error } = await supabase
-          .from("user_roles")
-          .select("role")
-          .eq("user_id", userId)
-          .maybeSingle();
-
-        if (error) {
-          console.error("Error fetching user role:", error);
-          return null;
-        }
-
-        return data?.role || null;
-      } catch (e) {
-        console.error("Error fetching user role:", e);
-        return null;
-      }
-    };
-
-    const updateAuthState = async (
-      userId: string | null, 
-      email: string | undefined,
-      skipIfComplete = false
-    ) => {
-      // Avoid duplicate updates on initial load
-      if (skipIfComplete && initialLoadComplete.current) return;
-      
-      if (!mounted) return;
-
-      if (!userId) {
-        setState({
-          user: null,
-          isLoading: false,
-          isAuthenticated: false,
-          isAdmin: false,
-          isSuperAdmin: false,
-          role: null,
-        });
-        return;
-      }
-
-      const role = await fetchUserRole(userId);
-      if (!mounted) return;
-      
-      const isAdmin = role === "admin" || role === "super_admin";
-      const isSuperAdmin = role === "super_admin";
-
-      setState({
-        user: { id: userId, email },
-        isLoading: false,
-        isAuthenticated: true,
-        isAdmin,
-        isSuperAdmin,
-        role,
-      });
-    };
-
-    // STEP 1: Set up auth state change listener for FUTURE changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        // Skip INITIAL_SESSION - we handle that with getSession() below
-        if (event === "INITIAL_SESSION") return;
-        
-        // For all other events (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.)
-        if (session?.user) {
-          updateAuthState(session.user.id, session.user.email);
-        } else {
-          updateAuthState(null, undefined);
-        }
-      }
-    );
-
-    // STEP 2: Check initial session state (this is the primary resolver)
-    const initializeAuth = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (session?.user) {
-          await updateAuthState(session.user.id, session.user.email);
-        } else {
-          // No session - immediately set loading to false
-          if (mounted) {
-            setState({
-              user: null,
-              isLoading: false,
-              isAuthenticated: false,
-              isAdmin: false,
-              isSuperAdmin: false,
-              role: null,
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Error initializing auth:", error);
-        // On error, still set loading to false
-        if (mounted) {
-          setState({
-            user: null,
-            isLoading: false,
-            isAuthenticated: false,
-            isAdmin: false,
-            isSuperAdmin: false,
-            role: null,
-          });
-        }
-      } finally {
-        initialLoadComplete.current = true;
-      }
-    };
-
-    initializeAuth();
-
-    // STEP 3: Safety timeout - ensure loading never hangs
-    const safetyTimeout = setTimeout(() => {
-      if (mounted && state.isLoading) {
-        console.warn("Auth loading timed out - forcing resolution");
-        setState(prev => ({ ...prev, isLoading: false }));
-      }
-    }, 5000);
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-      clearTimeout(safetyTimeout);
-    };
-  }, []);
-
-  return state;
-}
+### Simplified Data Flow
+```text
+AI Step 14 Output
+       |
+       v
+content_json.assembledReport.report_html = '<h1>Heading</h1><p>Content...</p>'
+       |
+       +---> View in-app: dangerouslySetInnerHTML with DOMPurify
+       |
+       +---> PDF: window.print() or html2pdf library
+       |
+       +---> DOCX (optional): html-to-docx conversion
 ```
 
-## Key Changes
+## Implementation Steps
 
-| Change | Reason |
-|--------|--------|
-| Skip `INITIAL_SESSION` in listener | Avoid race condition with `getSession()` |
-| Use `getSession()` as primary resolver | More reliable for initial state |
-| Add try/catch around `getSession()` | Ensure loading resolves even on errors |
-| Add 5-second safety timeout | Prevent infinite loading in edge cases |
-| Add `initialLoadComplete` ref | Prevent duplicate updates |
+### Phase 1: Update Report Generation (AI Prompt Changes)
+- Modify Step 12/14 prompts to output clean HTML instead of markdown
+- Structure: `report_html` field with semantic HTML (h1, h2, p, ul, li, table)
+- Include inline styles for portability
 
-## Why This Will Work
-1. The `/auth` page works because it uses `getSession()` directly without the async listener complexity
-2. This fix mirrors that approach - using `getSession()` as the single source of truth for initial state
-3. The `onAuthStateChange` listener is only used for subsequent auth changes (login, logout, token refresh)
-4. The safety timeout ensures the UI is never stuck indefinitely
+### Phase 2: Simplify Viewer Components
+- Update `ReportViewer.tsx` to render HTML directly
+- Update `PdfReportRenderer.tsx` to use the HTML as-is
+- Remove `extractNestedReportMarkdown` complexity
 
-## Technical Summary
-| Aspect | Details |
-|--------|---------|
-| Files modified | `src/hooks/useAuth.ts` |
-| Risk level | Low - more defensive approach |
-| Testing | Load homepage → Sign In button should appear within 1 second |
+### Phase 3: Simplify Export
+- **PDF**: Use CSS print styles + `window.print()` or html2pdf.js
+- **DOCX**: Either remove (users print to PDF then convert) or use simplified html-docx-js
+
+### Phase 4: Clean Up
+- Remove fragile JSON extraction utilities
+- Simplify edge functions
+- Update tests
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `supabase/functions/generate-report/index.ts` | Update Step 12-14 prompts to output HTML |
+| `src/components/workspace/ReportViewer.tsx` | Render HTML directly |
+| `src/components/workspace/PdfReportRenderer.tsx` | Use HTML content directly |
+| `src/lib/generatePdfClient.ts` | Simplify to use HTML content |
+| `src/lib/markdownUtils.ts` | Can be removed or greatly simplified |
+| `supabase/functions/generate-docx/index.ts` | Convert from HTML or deprecate |
+
+## Alternative: Quick Fix (If Full Rewrite is Too Large)
+
+Instead of switching to HTML, we could:
+1. Fix the Step 14 prompt to output **plain markdown** (not nested JSON)
+2. Simplify extraction to expect consistent format
+3. Keep existing PDF/DOCX logic
+
+This is faster but doesn't address the fundamental fragility.
+
+## Recommendation
+
+**Go with the HTML approach** because:
+- Browser-native PDF printing is more reliable than html2canvas
+- HTML is more portable than markdown
+- Removes multiple layers of format conversion
+- Easier to style and brand
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| AI outputs malformed HTML | Use DOMPurify for sanitization |
+| Styling inconsistency | Use inline CSS + CSS reset |
+| DOCX users lose functionality | Provide PDF as primary, DOCX as "copy to Word" option |
+| Migration of existing reports | Keep backward compatibility for legacy markdown format |
+
+## Technical Notes
+
+### Recommended Libraries
+- **DOMPurify**: Sanitize HTML before rendering
+- **html2pdf.js**: Clean HTML-to-PDF conversion (alternative to current approach)
+- **print-js**: For print-to-PDF functionality
+
+### CSS Print Styles
+```css
+@media print {
+  .no-print { display: none; }
+  body { font-size: 12pt; }
+  h1 { page-break-after: avoid; }
+  table { page-break-inside: avoid; }
+}
+```
 
