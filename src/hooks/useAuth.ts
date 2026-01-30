@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { Database } from "@/integrations/supabase/types";
 
@@ -27,27 +27,105 @@ export function useAuth() {
     isSuperAdmin: false,
     role: null,
   });
+  
+  // Track if initial load is complete to avoid duplicate updates
+  const initialLoadComplete = useRef(false);
 
   useEffect(() => {
     let mounted = true;
 
     const fetchUserRole = async (userId: string): Promise<AppRole | null> => {
-      const { data, error } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", userId)
-        .maybeSingle();
+      try {
+        const { data, error } = await supabase
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", userId)
+          .maybeSingle();
 
-      if (error) {
-        console.error("Error fetching user role:", error);
+        if (error) {
+          console.error("Error fetching user role:", error);
+          return null;
+        }
+
+        return data?.role || null;
+      } catch (e) {
+        console.error("Error fetching user role:", e);
         return null;
       }
-
-      return data?.role || null;
     };
 
-    const updateAuthState = async (userId: string | null, email: string | undefined) => {
+    const updateAuthState = async (
+      userId: string | null, 
+      email: string | undefined
+    ) => {
+      if (!mounted) return;
+
       if (!userId) {
+        setState({
+          user: null,
+          isLoading: false,
+          isAuthenticated: false,
+          isAdmin: false,
+          isSuperAdmin: false,
+          role: null,
+        });
+        return;
+      }
+
+      const role = await fetchUserRole(userId);
+      if (!mounted) return;
+      
+      const isAdmin = role === "admin" || role === "super_admin";
+      const isSuperAdmin = role === "super_admin";
+
+      setState({
+        user: { id: userId, email },
+        isLoading: false,
+        isAuthenticated: true,
+        isAdmin,
+        isSuperAdmin,
+        role,
+      });
+    };
+
+    // STEP 1: Set up auth state change listener for FUTURE changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        // Skip INITIAL_SESSION - we handle that with getSession() below
+        if (event === "INITIAL_SESSION") return;
+        
+        // For all other events (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.)
+        if (session?.user) {
+          updateAuthState(session.user.id, session.user.email);
+        } else {
+          updateAuthState(null, undefined);
+        }
+      }
+    );
+
+    // STEP 2: Check initial session state (this is the primary resolver)
+    const initializeAuth = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session?.user) {
+          await updateAuthState(session.user.id, session.user.email);
+        } else {
+          // No session - immediately set loading to false
+          if (mounted) {
+            setState({
+              user: null,
+              isLoading: false,
+              isAuthenticated: false,
+              isAdmin: false,
+              isSuperAdmin: false,
+              role: null,
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Error initializing auth:", error);
+        // On error, still set loading to false
         if (mounted) {
           setState({
             user: null,
@@ -58,54 +136,30 @@ export function useAuth() {
             role: null,
           });
         }
-        return;
+      } finally {
+        initialLoadComplete.current = true;
       }
+    };
 
-      const role = await fetchUserRole(userId);
-      const isAdmin = role === "admin" || role === "super_admin";
-      const isSuperAdmin = role === "super_admin";
+    initializeAuth();
 
+    // STEP 3: Safety timeout - ensure loading never hangs
+    const safetyTimeout = setTimeout(() => {
       if (mounted) {
-        setState({
-          user: { id: userId, email },
-          isLoading: false,
-          isAuthenticated: true,
-          isAdmin,
-          isSuperAdmin,
-          role,
+        setState(prev => {
+          if (prev.isLoading) {
+            console.warn("Auth loading timed out - forcing resolution");
+            return { ...prev, isLoading: false };
+          }
+          return prev;
         });
       }
-    };
-
-    // Set up auth state change listener FIRST
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (session?.user) {
-          await updateAuthState(session.user.id, session.user.email);
-        } else {
-          // No session - clear auth state (handles INITIAL_SESSION, SIGNED_OUT, etc.)
-          await updateAuthState(null, undefined);
-        }
-      }
-    );
-
-    // Then check for existing session
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        await updateAuthState(session.user.id, session.user.email);
-      } else {
-        if (mounted) {
-          setState(prev => ({ ...prev, isLoading: false }));
-        }
-      }
-    };
-
-    checkSession();
+    }, 5000);
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
+      clearTimeout(safetyTimeout);
     };
   }, []);
 
