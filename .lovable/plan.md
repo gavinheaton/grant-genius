@@ -1,141 +1,220 @@
 
 
-# Update Report Generation to Use enqueue-report
+# Dynamic Report Progress with Realtime Updates
 
 ## Overview
-Modify the report generation flow to use the new `enqueue-report` Edge Function, which triggers an external worker for processing. The UI will show distinct states: "Starting..." during initial setup, then "Processing" while polling real-time progress from the 15-step pipeline.
+Update the report progress tracking to be fully dynamic based on database values instead of hardcoded constants, and implement Supabase Realtime subscriptions for instant progress updates.
 
 ## Current State
-- `useReportGeneration` hook calls `generate-report` edge function
-- `generate-report` creates the run record, consumes credit, and processes locally
-- UI polls `report_runs` table for progress updates
+- Progress uses hardcoded `RESEARCH_STEPS` array (15 items) in GenerationProgress.tsx
+- `totalSteps` is passed from `report_runs.total_steps` but step names are hardcoded
+- Polling every 3 seconds in `useReportGeneration` hook to check progress
+- No Realtime subscriptions currently in use
 
 ## New Architecture
 
 ```text
-+-------------------+     +-------------------+     +------------------+
-|  User clicks      | --> | generate-report   | --> | enqueue-report   |
-|  "Generate Report"|     | (creates run,     |     | (triggers        |
-|                   |     |  consumes credit) |     |  external worker)|
-+-------------------+     +-------------------+     +------------------+
-                                                           |
-                                                           v
-                          +-------------------+     +------------------+
-                          |  UI polls         | <-- | External Worker  |
-                          |  report_run_steps |     | (updates steps)  |
-                          +-------------------+     +------------------+
++------------------+     +-------------------+     +------------------+
+| ApplicationWork  | --> | useReportGeneration| --> | GenerationProgress|
+|     space.tsx    |     | (manages state)    |     | (displays UI)    |
++------------------+     +-------------------+     +------------------+
+                                  |
+                                  v
+                    +---------------------------+
+                    | Supabase Realtime Channel |
+                    | (report_run_steps table)  |
+                    +---------------------------+
+                                  |
+                    +-------------+-------------+
+                    |                           |
+              INSERT event               UPDATE event
+              (new step starts)        (step completes)
+                    |                           |
+                    v                           v
+              +------------------------------------------+
+              | Update local state with step_name,      |
+              | status, and recalculate progress %      |
+              +------------------------------------------+
 ```
 
 ## Implementation Plan
 
-### Phase 1: Backend - Update generate-report to call enqueue-report
-**File:** `supabase/functions/generate-report/index.ts`
+### Phase 1: Database Migration - Enable Realtime
+**File:** New migration file
 
-1. After creating the report run record and consuming the credit, call `enqueue-report` instead of processing locally
-2. Return immediately with the `report_run_id` and status "enqueued"
-3. Remove the async `processStep0Only` call - the external worker handles all processing
+Enable Realtime for the `report_run_steps` table:
+```sql
+ALTER PUBLICATION supabase_realtime ADD TABLE public.report_run_steps;
+```
 
-Key changes:
-- Replace `processStep0Only(...)` call with fetch to `enqueue-report`
-- Return `{ success: true, reportRunId, status: "enqueued" }` on success
-- Handle errors from `enqueue-report` gracefully
-
-### Phase 2: Frontend - Update useReportGeneration Hook
+### Phase 2: Update useReportGeneration Hook
 **File:** `src/hooks/useReportGeneration.ts`
 
-1. Add new state: `isStarting` to show "Starting..." during initial API call
-2. Update `startGeneration()` to:
-   - Set `isStarting = true` immediately
-   - Call `generate-report` (which now enqueues instead of processing)
-   - On success, set `isStarting = false` and `isGenerating = true`
-   - Begin polling for progress
-3. Add polling for `report_run_steps` table to get detailed step-by-step progress
+1. Add new state for tracking step-level progress:
+   ```typescript
+   interface ReportRunStep {
+     step_number: number;
+     step_name: string;
+     status: "pending" | "running" | "completed" | "failed";
+     started_at: string | null;
+     completed_at: string | null;
+   }
+   
+   const [steps, setSteps] = useState<ReportRunStep[]>([]);
+   ```
 
-New state flow:
-```text
-Idle --> Starting --> Processing --> Completed
-          |               |
-          +----> Failed <-+
-```
+2. Fetch initial steps when active run is detected:
+   ```typescript
+   const fetchSteps = useCallback(async () => {
+     if (!activeRun?.id) return;
+     
+     const { data } = await supabase
+       .from("report_run_steps")
+       .select("step_number, step_name, status, started_at, completed_at")
+       .eq("report_run_id", activeRun.id)
+       .order("step_number", { ascending: true });
+     
+     setSteps(data || []);
+   }, [activeRun?.id]);
+   ```
 
-### Phase 3: Frontend - Update GenerationProgress Component
+3. Subscribe to Realtime changes when generating:
+   ```typescript
+   useEffect(() => {
+     if (!isGenerating || !activeRun?.id) return;
+     
+     const channel = supabase
+       .channel(`report-steps-${activeRun.id}`)
+       .on(
+         'postgres_changes',
+         {
+           event: '*',
+           schema: 'public',
+           table: 'report_run_steps',
+           filter: `report_run_id=eq.${activeRun.id}`,
+         },
+         (payload) => {
+           if (payload.eventType === 'INSERT') {
+             setSteps(prev => [...prev, payload.new as ReportRunStep]);
+           } else if (payload.eventType === 'UPDATE') {
+             setSteps(prev => prev.map(s => 
+               s.step_number === payload.new.step_number 
+                 ? payload.new as ReportRunStep 
+                 : s
+             ));
+           }
+         }
+       )
+       .subscribe();
+     
+     return () => {
+       supabase.removeChannel(channel);
+     };
+   }, [isGenerating, activeRun?.id]);
+   ```
+
+4. Calculate completed steps count:
+   ```typescript
+   const completedSteps = steps.filter(s => s.status === 'completed').length;
+   ```
+
+5. Return `steps` and `completedSteps` from the hook
+
+### Phase 3: Update GenerationProgress Component
 **File:** `src/components/workspace/GenerationProgress.tsx`
 
-1. Accept new `isStarting` prop to show "Starting..." state
-2. Show spinner with "Starting generation..." text during enqueue phase
-3. Once processing begins, show the 15-step progress as before
-4. Add step-level detail polling from `report_run_steps`
+1. Remove hardcoded `RESEARCH_STEPS` array
 
-### Phase 4: Frontend - Update ApplicationWorkspace
+2. Accept new props:
+   ```typescript
+   interface GenerationProgressProps {
+     currentStep: number;
+     totalSteps: number;
+     completedSteps: number;  // NEW
+     steps: ReportRunStep[];  // NEW
+     status: ...
+   }
+   ```
+
+3. Update progress calculation:
+   ```typescript
+   // OLD: const progressPercent = ((currentStep + 1) / totalSteps) * 100;
+   // NEW: 
+   const progressPercent = totalSteps > 0 
+     ? (completedSteps / totalSteps) * 100 
+     : 0;
+   ```
+
+4. Get current step name from steps array:
+   ```typescript
+   const currentStepData = steps.find(s => s.step_number === currentStep);
+   const currentStepName = currentStepData?.step_name || "Initializing...";
+   ```
+
+5. Create a helper to format step names nicely:
+   ```typescript
+   function formatStepName(name: string): string {
+     return name
+       .split('_')
+       .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+       .join(' ');
+   }
+   ```
+
+### Phase 4: Update ApplicationWorkspace
 **File:** `src/pages/ApplicationWorkspace.tsx`
 
-1. Pass `isStarting` state from hook to `GenerationProgress`
-2. Update button to show "Starting..." when in starting state
+1. Destructure new values from hook:
+   ```typescript
+   const { 
+     ...existing,
+     steps,
+     completedSteps,
+   } = useReportGeneration(id, { onNoCredits: handleNoCredits });
+   ```
 
-## Technical Details
-
-### New State in useReportGeneration
-```typescript
-const [isStarting, setIsStarting] = useState(false);
-
-const startGeneration = async () => {
-  setIsStarting(true);
-  try {
-    const { data, error } = await supabase.functions.invoke("generate-report", {
-      body: { applicationId },
-    });
-    if (error || data?.error) throw error || new Error(data.error);
-    
-    // Success - switch to processing state
-    setIsStarting(false);
-    setIsGenerating(true);
-    toast({ title: "Report generation started" });
-    checkActiveRun();
-  } catch (error) {
-    setIsStarting(false);
-    // Handle error...
-  }
-};
-```
-
-### Backend enqueue-report Call
-```typescript
-// In generate-report, after creating the run:
-const enqueueResponse = await fetch(
-  `${Deno.env.get("SUPABASE_URL")}/functions/v1/enqueue-report`,
-  {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-    },
-    body: JSON.stringify({ report_run_id: reportRun.id }),
-  }
-);
-```
-
-### Step Progress Polling
-```typescript
-// Poll report_run_steps for detailed progress
-const { data: steps } = await supabase
-  .from("report_run_steps")
-  .select("step_number, step_name, status, started_at, completed_at")
-  .eq("report_run_id", activeRun.id)
-  .order("step_number", { ascending: true });
-```
+2. Pass new props to GenerationProgress:
+   ```typescript
+   <GenerationProgress
+     currentStep={activeRun.current_step}
+     totalSteps={activeRun.total_steps}
+     completedSteps={completedSteps}
+     steps={steps}
+     status={activeRun.status}
+     ...
+   />
+   ```
 
 ## Files to Modify
 | File | Changes |
 |------|---------|
-| `supabase/functions/generate-report/index.ts` | Call `enqueue-report` instead of local processing |
-| `src/hooks/useReportGeneration.ts` | Add `isStarting` state, update flow |
-| `src/components/workspace/GenerationProgress.tsx` | Add "Starting..." UI state |
-| `src/pages/ApplicationWorkspace.tsx` | Pass `isStarting` to progress component |
+| New migration | Enable Realtime for `report_run_steps` |
+| `src/hooks/useReportGeneration.ts` | Add steps state, Realtime subscription, completedSteps calculation |
+| `src/components/workspace/GenerationProgress.tsx` | Remove hardcoded steps, use dynamic data, update progress calculation |
+| `src/pages/ApplicationWorkspace.tsx` | Pass new props to GenerationProgress |
+
+## Technical Details
+
+### Step Status Flow
+Each step in `report_run_steps` follows this lifecycle:
+1. **INSERT** with `status: 'pending'` - Step created at run initialization
+2. **UPDATE** to `status: 'running'` - Worker picks up step
+3. **UPDATE** to `status: 'completed'` - Step finished successfully
+   - Or `status: 'failed'` if error occurs
+
+### Realtime Filter
+Using `filter: report_run_id=eq.${activeRun.id}` ensures we only receive events for the current run, not all runs in the system.
+
+### Cleanup
+The Realtime channel is cleaned up via the effect's return function when:
+- Generation completes
+- User navigates away
+- Active run changes
 
 ## Acceptance Criteria
-- Clicking "Generate Report" shows "Starting..." spinner
-- Once enqueued successfully, UI transitions to "Processing" state
-- Progress bar updates as each of the 15 steps completes
-- Error handling works for both enqueue failures and processing failures
-- Existing retry/cancel functionality continues to work
+- Progress bar updates in real-time as steps complete (no 3-second polling delay)
+- Step names come from database, not hardcoded array
+- Total steps value from `report_runs.total_steps` is used
+- Progress percentage = (completed_steps / total_steps) * 100
+- Realtime subscription is properly cleaned up on unmount
 
