@@ -1,113 +1,158 @@
 
-# Add Diagnostic Logging to worker-proxy
 
-## Overview
-Add detailed logging to the `worker-proxy` edge function to capture exactly what the external Replit worker is sending when it calls `update_step` and `save_report`. This will help diagnose whether the worker is sending empty content or if something is being lost in transit.
+# Send Model to Cloud Run Worker with Replit-Compatible Mapping
+
+## Problem
+The Replit worker receives `model_override` values from our database, but:
+1. Some steps have `model_override = null` (no model specified)
+2. The models stored in our DB (`google/gemini-3-flash-preview`, etc.) are Lovable AI model identifiers that Replit doesn't recognize
+3. Replit only supports: `gemini-2.0-flash`, `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-1.0-pro`
+
+## Solution
+Modify `worker-proxy` to:
+1. Use the `model_override` value from the database (admin-configured in the UI)
+2. Apply a fallback for steps with no override (using the existing UI default logic)
+3. **Map Lovable AI model names to Replit-compatible equivalents**
+
+## Model Mapping Strategy
+
+| Lovable AI Model | Maps To (Replit) | Rationale |
+|------------------|------------------|-----------|
+| `google/gemini-3-pro-preview` | `gemini-1.5-pro` | Best quality → Pro |
+| `google/gemini-2.5-pro` | `gemini-1.5-pro` | Pro → Pro |
+| `google/gemini-3-flash-preview` | `gemini-2.0-flash` | Smart flash → Latest flash |
+| `google/gemini-2.5-flash` | `gemini-2.0-flash` | Balanced → Latest flash |
+| `google/gemini-2.5-flash-lite` | `gemini-1.5-flash` | Fast/cheap → Older flash |
+| (unknown/null) | `gemini-2.0-flash` | Default fallback |
 
 ## Changes to Make
 
 ### File: `supabase/functions/worker-proxy/index.ts`
 
-#### 1. Add logging to `handleUpdateStep` (lines 257-290)
-Log incoming step updates to see if the worker is sending empty outputs:
+#### 1. Add Model Mapping Function (near top of file, after line ~35)
 
 ```typescript
-async function handleUpdateStep(supabase: any, params: Record<string, unknown>) {
-  const { report_run_id, step_number, status, outputs_json, citations_json, error_message, started_at, completed_at } = params;
-
-  // DIAGNOSTIC LOGGING
-  const outputsPreview = outputs_json 
-    ? JSON.stringify(outputs_json).substring(0, 500) 
-    : "undefined";
-  console.log(`[DIAG] update_step: run=${report_run_id}, step=${step_number}, status=${status}`);
-  console.log(`[DIAG] update_step outputs preview: ${outputsPreview}`);
-  if (outputs_json && typeof outputs_json === "object") {
-    const keys = Object.keys(outputs_json as object);
-    console.log(`[DIAG] update_step outputs keys: ${keys.join(", ")}`);
+// Map Lovable AI models to Replit-compatible Gemini models
+function mapToReplitModel(lovableModel: string | null | undefined): string {
+  if (!lovableModel) {
+    return "gemini-2.0-flash"; // Default
   }
-  // END DIAGNOSTIC LOGGING
+  
+  // Direct mapping from Lovable AI identifiers to Replit-supported models
+  const mapping: Record<string, string> = {
+    // Pro tier → gemini-1.5-pro
+    "google/gemini-3-pro-preview": "gemini-1.5-pro",
+    "google/gemini-2.5-pro": "gemini-1.5-pro",
+    // Flash tier → gemini-2.0-flash (latest)
+    "google/gemini-3-flash-preview": "gemini-2.0-flash",
+    "google/gemini-2.5-flash": "gemini-2.0-flash",
+    // Lite/fast tier → gemini-1.5-flash (cheaper/faster)
+    "google/gemini-2.5-flash-lite": "gemini-1.5-flash",
+  };
+  
+  return mapping[lovableModel] || "gemini-2.0-flash";
+}
 
-  // ... rest of existing validation and update logic
+// Get default Lovable model based on step number (from UI logic)
+function getDefaultModelForStep(stepNumber: number): string {
+  if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
+  if (stepNumber <= 7) return "google/gemini-3-flash-preview";
+  if (stepNumber === 11) return "google/gemini-3-pro-preview";
+  return "google/gemini-2.5-flash-lite";
 }
 ```
 
-#### 2. Add logging to `handleSaveReport` (lines 325-412)
-Log the final report content to see what structure is being saved:
+#### 2. Modify `handleGetRunContext()` (around line 236-254)
+
+Before returning the response, add a `model` field to each step:
 
 ```typescript
-async function handleSaveReport(supabase: any, params: Record<string, unknown>) {
-  const { report_run_id, content_json, citations_json } = params;
+// Compute effective model for each step (mapped to Replit-compatible names)
+const stepsWithModel = bundle.steps?.map((step: any) => {
+  const effectiveModel = step.model_override || getDefaultModelForStep(step.step_number);
+  return {
+    ...step,
+    model: mapToReplitModel(effectiveModel), // Replit-compatible model name
+  };
+}) || [];
 
-  // DIAGNOSTIC LOGGING
-  console.log(`[DIAG] save_report called for run: ${report_run_id}`);
-  
-  if (content_json && typeof content_json === "object") {
-    const keys = Object.keys(content_json as object);
-    console.log(`[DIAG] save_report content_json keys: ${keys.join(", ")}`);
-    
-    // Check for assembledReport structure
-    const contentObj = content_json as Record<string, unknown>;
-    if (contentObj.assembledReport) {
-      const assembled = contentObj.assembledReport as Record<string, unknown>;
-      const assembledKeys = Object.keys(assembled);
-      console.log(`[DIAG] save_report assembledReport keys: ${assembledKeys.join(", ")}`);
-      
-      if (assembled.report_html) {
-        const htmlLength = String(assembled.report_html).length;
-        console.log(`[DIAG] save_report report_html length: ${htmlLength} chars`);
-      } else {
-        console.log(`[DIAG] save_report WARNING: No report_html in assembledReport!`);
-      }
-    } else {
-      console.log(`[DIAG] save_report WARNING: No assembledReport in content_json!`);
-    }
-    
-    // Check for sections array
-    if (contentObj.sections && Array.isArray(contentObj.sections)) {
-      const nonEmptySections = (contentObj.sections as Array<{content?: string}>)
-        .filter(s => s.content && s.content.length > 0);
-      console.log(`[DIAG] save_report sections: ${contentObj.sections.length} total, ${nonEmptySections.length} with content`);
-    }
-  }
-  
-  const contentPreview = content_json 
-    ? JSON.stringify(content_json).substring(0, 1000) 
-    : "undefined";
-  console.log(`[DIAG] save_report content preview: ${contentPreview}`);
-  // END DIAGNOSTIC LOGGING
+return jsonResponse({
+  run: { ... },
+  prompt_bundle: {
+    id: bundle.id,
+    system_prompt: bundle.system_prompt,
+    steps: stepsWithModel,  // Now includes `model` field
+  },
+  grant_context: grantContext,
+  existing_steps: steps || [],
+});
+```
 
-  // ... rest of existing logic
+#### 3. Modify `handleGetPromptBundle()` (around line 537-542)
+
+Apply the same transformation:
+
+```typescript
+// Compute effective model for each step (mapped to Replit-compatible names)
+const stepsWithModel = bundle.steps?.map((step: any) => {
+  const effectiveModel = step.model_override || getDefaultModelForStep(step.step_number);
+  return {
+    ...step,
+    model: mapToReplitModel(effectiveModel),
+  };
+}) || [];
+
+return jsonResponse({
+  id: bundle.id,
+  name: bundle.name,
+  system_prompt: bundle.system_prompt,
+  steps: stepsWithModel,
+});
+```
+
+## What the Worker Will Receive
+
+### Before
+```json
+{
+  "step_number": 3,
+  "step_name": "market_segments",
+  "model_override": null,  // Worker doesn't know what to use
+  ...
 }
 ```
 
-## What This Will Reveal
+### After
+```json
+{
+  "step_number": 3,
+  "step_name": "market_segments",
+  "model_override": null,
+  "model": "gemini-1.5-flash",  // Clear Replit-compatible model
+  ...
+}
+```
 
-After deploying this update, check the **worker-proxy** edge function logs when a report is generated. The logs will show:
+## Flow Summary
 
-| Log Pattern | What It Means |
-|-------------|---------------|
-| `outputs preview: {"content": ""}` | Worker is sending empty content (problem in Replit worker) |
-| `outputs preview: {"content": "# Market Analysis..."}` | Worker sending real content (problem is elsewhere) |
-| `WARNING: No assembledReport` | Final report structure is wrong |
-| `report_html length: 0 chars` | HTML is empty but structure exists |
-| `sections: 15 total, 0 with content` | All sections are empty |
+```text
+Admin sets model in UI (e.g., "Gemini 3 Flash Preview")
+        ↓
+Stored in DB as "google/gemini-3-flash-preview"
+        ↓
+worker-proxy reads model_override from DB
+        ↓
+If null → Apply getDefaultModelForStep() fallback
+        ↓
+Map to Replit model via mapToReplitModel()
+        ↓
+Send "gemini-2.0-flash" to Replit worker
+```
 
-## How to Use the Logs
+## Benefits
 
-1. **Generate a new report** after this change is deployed
-2. **Check edge function logs** for `worker-proxy` in the backend dashboard
-3. **Look for `[DIAG]` prefixed messages** to see exactly what the worker sent
+1. **No hardcoding** - Uses the admin-configured `model_override` from the database
+2. **Respects UI defaults** - Steps without override get the same default as shown in the UI
+3. **Replit compatibility** - All models are translated to names Replit understands
+4. **Centralized mapping** - Easy to update the mapping table if Replit adds new models
 
-## Expected Outcome
-
-This will definitively answer whether:
-- **The Replit worker is sending empty data** (fix needed in Replit)
-- **Data is being lost in transit** (network/serialization issue)
-- **Data is correct but not saved properly** (database issue)
-
-## Technical Notes
-
-- All logging uses `console.log` which appears in edge function logs
-- Preview strings are truncated to avoid log overflow
-- The `[DIAG]` prefix makes it easy to filter/search logs
-- No functional changes to the existing logic - purely additive logging
