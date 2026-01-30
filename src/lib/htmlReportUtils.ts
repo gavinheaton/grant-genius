@@ -52,39 +52,52 @@ interface SectionEntry {
 function extractHtmlFromSectionContent(content: string): string | null {
   if (!content || typeof content !== "string") return null;
   
-  const trimmed = content.trim();
+  let trimmed = content.trim();
   
   // Case 1: Already HTML (starts with < tag)
   if (trimmed.startsWith("<")) {
     return trimmed;
   }
   
-  // Case 2: JSON-wrapped content
-  if (trimmed.startsWith("{") || trimmed.startsWith("```json")) {
+  // Case 2: Code-fenced content - strip fences regardless of completeness
+  // Handle ```json or ```json\n at the start
+  if (trimmed.startsWith("```")) {
+    // Remove opening fence (```json or ```)
+    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
+    // Remove closing fence if present
+    trimmed = trimmed.replace(/\n?```\s*$/, "");
+    trimmed = trimmed.trim();
+  }
+  
+  // Case 3: Try to parse as JSON (with or without fences)
+  if (trimmed.startsWith("{")) {
     try {
-      let jsonStr = trimmed;
-      // Remove code fences if present
-      const fenceMatch = trimmed.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
-      if (fenceMatch) {
-        jsonStr = fenceMatch[1];
-      }
-      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      
       if (parsed.report_html && typeof parsed.report_html === "string") {
         return parsed.report_html;
       }
       if (parsed.html && typeof parsed.html === "string") {
         return parsed.html;
       }
-      // Handle report_markdown - convert to HTML
       if (parsed.report_markdown && typeof parsed.report_markdown === "string") {
         return convertMarkdownToHtml(parsed.report_markdown);
       }
     } catch {
-      // Not valid JSON, treat as markdown
+      // JSON parse failed - try to extract markdown field with regex
+      const markdownMatch = trimmed.match(/"report_markdown"\s*:\s*"([\s\S]*?)(?:"\s*[,}]|$)/);
+      if (markdownMatch?.[1]) {
+        // Unescape JSON string escapes
+        const markdown = markdownMatch[1]
+          .replace(/\\n/g, "\n")
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, "\\");
+        return convertMarkdownToHtml(markdown);
+      }
     }
   }
   
-  // Case 3: Markdown content - convert it
+  // Case 4: Plain markdown content - convert it
   return convertMarkdownToHtml(trimmed);
 }
 
