@@ -1,70 +1,136 @@
 
+# Proxy Edge Function for External Worker
 
-# Fix Cloud Run Worker Connection Debugging
+## Overview
 
-## Problem Identified
-The `enqueue-report` edge function is calling the Cloud Run worker at `${CLOUD_RUN_URL}/enqueue-run`, but the worker is returning an **HTML error page** instead of JSON. When the edge function tries to parse this with `response.json()`, it throws a syntax error.
+Since the Replit worker cannot directly access the `SUPABASE_SERVICE_ROLE_KEY` (it's only injected into Lovable Cloud Edge Functions), we'll create a **proxy edge function** that handles all database operations on behalf of the external worker.
 
-The HTML response (`<!DOCTYPE...`) typically indicates:
-- **404 Not Found** - The endpoint `/enqueue-run` doesn't exist on the worker
-- **502 Bad Gateway** - The worker service is down or unreachable
-- **Authentication redirect** - Some services redirect to login pages
+The worker will call this proxy function instead of directly accessing the database, and the proxy will authenticate the worker using the shared `WORKER_SECRET`.
 
-## Solution: Improve Error Handling
+---
 
-Update the `enqueue-report` edge function to:
-1. Log the full URL being called (helps verify the secret value)
-2. Read response as text first, then attempt JSON parsing
-3. On failure, log and return the raw response for debugging
+## Architecture
 
-## Implementation
-
-### File: `supabase/functions/enqueue-report/index.ts`
-
-```typescript
-// After the fetch call (line 41-48), replace lines 50-56 with:
-
-const responseText = await response.text();
-console.log(`Worker response status: ${response.status}`);
-console.log(`Worker URL called: ${workerUrl}/enqueue-run`);
-
-// Try to parse as JSON, fall back to raw text on failure
-let result;
-try {
-  result = JSON.parse(responseText);
-} catch {
-  console.error(`Worker returned non-JSON response: ${responseText.substring(0, 500)}`);
-  return new Response(
-    JSON.stringify({ 
-      error: "Worker returned invalid response",
-      status: response.status,
-      preview: responseText.substring(0, 200),
-    }),
-    { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
-}
-
-console.log(`Worker result:`, result);
-
-return new Response(JSON.stringify(result), {
-  status: response.status,
-  headers: { ...corsHeaders, "Content-Type": "application/json" },
-});
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          LOVABLE CLOUD                                  │
+│  ┌──────────────────┐     ┌──────────────────┐     ┌────────────────┐   │
+│  │  enqueue-report  │────▶│  Replit Worker   │────▶│  worker-proxy  │   │
+│  │  (dispatcher)    │     │  (external)      │     │  (new function)│   │
+│  └──────────────────┘     └──────────────────┘     └────────┬───────┘   │
+│                                                             │           │
+│                                                             ▼           │
+│                                                    ┌────────────────┐   │
+│                                                    │   Supabase DB  │   │
+│                                                    │   (via Service │   │
+│                                                    │    Role Key)   │   │
+│                                                    └────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## What This Reveals
+---
 
-After deploying, when you retest:
-- The logs will show the exact URL being called
-- If the worker returns HTML, you'll see the first 200 characters in the response
-- This will clarify whether it's a 404, 502, or auth issue
+## Proxy Function Endpoints
 
-## Next Steps After Fix
+The `worker-proxy` edge function will support multiple operations via an `action` field:
 
-1. **Deploy the updated edge function** 
-2. **Retest** - the response will now include diagnostic info
-3. **Check the Replit worker** to ensure:
-   - It's running and publicly accessible
-   - The `/enqueue-run` POST endpoint is implemented
-   - The `CLOUD_RUN_URL` secret matches the Replit deployment URL
+| Action | Purpose | Parameters |
+|--------|---------|------------|
+| `get_run_context` | Fetch all data needed to process a report run | `report_run_id` |
+| `update_step` | Update step status and outputs | `report_run_id`, `step_number`, `status`, `outputs_json`, `error_message` |
+| `update_run` | Update overall run status | `report_run_id`, `status`, `current_step`, `checkpoint_data_json`, `checkpoint_citations_json` |
+| `save_report` | Create final report record | `report_run_id`, `content_json`, `citations_json` |
+| `refund_credit` | Refund credit on failure | `report_run_id` |
+| `get_prompt_bundle` | Fetch active prompt bundle and steps | (none) |
 
+---
+
+## Security
+
+1. **Worker Authentication**: The proxy verifies the `Authorization: Bearer <WORKER_SECRET>` header matches the stored secret
+2. **No User Auth**: This proxy bypasses user auth since it's an internal service-to-service call
+3. **Action Validation**: Only whitelisted actions are allowed
+4. **ID Validation**: All UUIDs are validated before database operations
+
+---
+
+## Technical Details
+
+### New File: `supabase/functions/worker-proxy/index.ts`
+
+The function will:
+
+1. Validate the `WORKER_SECRET` in the Authorization header
+2. Parse the `action` and parameters from the request body
+3. Use `SUPABASE_SERVICE_ROLE_KEY` to perform privileged database operations
+4. Return the results to the worker
+
+### Data Returned by `get_run_context`
+
+```json
+{
+  "run": {
+    "id": "...",
+    "status": "running",
+    "current_step": 5,
+    "checkpoint_data_json": {...},
+    "checkpoint_citations_json": [...],
+    "application": {
+      "inputs_json": {...},
+      "grant_version_id": "..."
+    }
+  },
+  "prompt_bundle": {
+    "system_prompt": "...",
+    "steps": [...]
+  },
+  "grant_context": {
+    "name": "...",
+    "guidelines_excerpt": "...",
+    "rubric": "..."
+  }
+}
+```
+
+---
+
+## Configuration Changes
+
+### `supabase/config.toml`
+
+Add the new function with JWT verification disabled (uses WORKER_SECRET instead):
+
+```toml
+[functions.worker-proxy]
+verify_jwt = false
+```
+
+---
+
+## Replit Worker Updates
+
+After this proxy is deployed, the Replit worker should be updated to:
+
+1. Remove direct Supabase client usage
+2. Call the proxy function for all database operations:
+   - `POST https://sdrawnxfhiyyiiswqvni.supabase.co/functions/v1/worker-proxy`
+   - Header: `Authorization: Bearer <WORKER_SECRET>`
+   - Body: `{ "action": "get_run_context", "report_run_id": "..." }`
+
+---
+
+## Files to Create/Modify
+
+| File | Change |
+|------|--------|
+| `supabase/functions/worker-proxy/index.ts` | **Create** - New proxy edge function |
+| `supabase/config.toml` | **Modify** - Add `[functions.worker-proxy]` config |
+
+---
+
+## Benefits
+
+1. **Secure**: Service role key never leaves Lovable Cloud
+2. **Centralized**: All database logic stays in edge functions
+3. **Debuggable**: Logs appear in Lovable Cloud function logs
+4. **Maintainable**: Worker only needs HTTP client, no Supabase SDK
