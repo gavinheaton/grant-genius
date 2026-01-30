@@ -674,6 +674,8 @@ export type Database = {
           bundle_id: string
           created_at: string
           id: string
+          is_heavy: boolean | null
+          max_expected_seconds: number | null
           model_override: string | null
           prompt_template: string
           step_description: string
@@ -686,6 +688,8 @@ export type Database = {
           bundle_id: string
           created_at?: string
           id?: string
+          is_heavy?: boolean | null
+          max_expected_seconds?: number | null
           model_override?: string | null
           prompt_template: string
           step_description: string
@@ -698,6 +702,8 @@ export type Database = {
           bundle_id?: string
           created_at?: string
           id?: string
+          is_heavy?: boolean | null
+          max_expected_seconds?: number | null
           model_override?: string | null
           prompt_template?: string
           step_description?: string

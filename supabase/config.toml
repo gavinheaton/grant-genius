@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.cleanup-stalled-runs]
 verify_jwt = false
+
+[functions.enqueue-cloud-run]
+verify_jwt = false

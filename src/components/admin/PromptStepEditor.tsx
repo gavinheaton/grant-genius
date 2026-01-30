@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
-import { Save } from "lucide-react";
+import { Save, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -30,7 +32,13 @@ interface PromptStepEditorProps {
   canEdit: boolean;
   onSave: (
     stepId: string,
-    data: { prompt_template?: string; model_override?: string | null; timeout_seconds?: number | null }
+    data: { 
+      prompt_template?: string; 
+      model_override?: string | null; 
+      timeout_seconds?: number | null;
+      is_heavy?: boolean;
+      max_expected_seconds?: number | null;
+    }
   ) => Promise<void>;
 }
 
@@ -45,6 +53,10 @@ export function PromptStepEditor({
   const [timeoutSeconds, setTimeoutSeconds] = useState<string>(
     step.timeout_seconds ? String(step.timeout_seconds) : "default"
   );
+  const [isHeavy, setIsHeavy] = useState(step.is_heavy ?? false);
+  const [maxExpectedSeconds, setMaxExpectedSeconds] = useState<string>(
+    step.max_expected_seconds ? String(step.max_expected_seconds) : ""
+  );
   const [hasChanges, setHasChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -52,6 +64,8 @@ export function PromptStepEditor({
     setPromptTemplate(step.prompt_template);
     setModelOverride(step.model_override || "");
     setTimeoutSeconds(step.timeout_seconds ? String(step.timeout_seconds) : "default");
+    setIsHeavy(step.is_heavy ?? false);
+    setMaxExpectedSeconds(step.max_expected_seconds ? String(step.max_expected_seconds) : "");
     setHasChanges(false);
   }, [step]);
 
@@ -62,6 +76,8 @@ export function PromptStepEditor({
         prompt_template: promptTemplate,
         model_override: modelOverride || null,
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
+        is_heavy: isHeavy,
+        max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
       });
       setHasChanges(false);
     } finally {
@@ -150,6 +166,50 @@ export function PromptStepEditor({
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      {/* Heavy Step Toggle */}
+      <div className="flex items-center justify-between rounded-lg border p-4">
+        <div className="space-y-0.5">
+          <Label htmlFor={`heavy-${step.id}`} className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+            Heavy Step
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Mark this step as too heavy for Edge execution (typically &gt;45s)
+          </p>
+        </div>
+        <Switch
+          id={`heavy-${step.id}`}
+          checked={isHeavy}
+          onCheckedChange={(checked) => {
+            setIsHeavy(checked);
+            setHasChanges(true);
+          }}
+          disabled={!canEdit}
+        />
+      </div>
+
+      {/* Max Expected Seconds */}
+      <div className="space-y-2">
+        <Label htmlFor={`max-seconds-${step.id}`}>Max Expected Seconds (optional)</Label>
+        <Input
+          id={`max-seconds-${step.id}`}
+          type="number"
+          min="1"
+          max="300"
+          value={maxExpectedSeconds}
+          onChange={(e) => {
+            setMaxExpectedSeconds(e.target.value);
+            setHasChanges(true);
+          }}
+          disabled={!canEdit}
+          placeholder="e.g., 45"
+          className="w-32"
+        />
+        <p className="text-xs text-muted-foreground">
+          Expected runtime for monitoring and alerts. Leave empty if unknown.
+        </p>
       </div>
 
       <div className="space-y-2">

@@ -20,10 +20,11 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle, FileText } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2 } from "lucide-react";
 import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
+import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -43,10 +44,13 @@ export default function GrantEdit() {
   const [guidelinesRawText, setGuidelinesRawText] = useState<string | null>(null);
   const [aiAnalysisStatus, setAiAnalysisStatus] = useState("pending");
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
+  const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge">("cloud_run");
+  const [edgeAllowed, setEdgeAllowed] = useState(false);
 
   const { data: grant, isLoading } = useQuery({
     queryKey: ["admin-grant", id],
     queryFn: async () => {
+      // Use raw query since TypeScript types may not have the new columns yet
       const { data, error } = await supabase
         .from("grants")
         .select(`
@@ -63,7 +67,9 @@ export default function GrantEdit() {
             guidelines_source_path,
             guidelines_raw_text,
             ai_analysis_status,
-            ai_suggestions_json
+            ai_suggestions_json,
+            execution_engine_default,
+            edge_allowed
           )
         `)
         .eq("id", id)
@@ -71,20 +77,23 @@ export default function GrantEdit() {
 
       if (error) throw error;
       
+      // Cast to any to handle new columns not yet in TypeScript types
+      const grantData = data as any;
+      
       // Initialize form state
-      setName(data.name);
-      setDescription(data.description || "");
-      setIsActive(data.is_active);
+      setName(grantData.name);
+      setDescription(grantData.description || "");
+      setIsActive(grantData.is_active);
 
       // Select latest version by default
-      if (data.grant_versions?.length > 0) {
-        const sorted = [...data.grant_versions].sort(
-          (a, b) => b.version_number - a.version_number
+      if (grantData.grant_versions?.length > 0) {
+        const sorted = [...grantData.grant_versions].sort(
+          (a: any, b: any) => b.version_number - a.version_number
         );
         selectVersion(sorted[0]);
       }
 
-      return data;
+      return grantData;
     },
   });
 
@@ -97,6 +106,8 @@ export default function GrantEdit() {
     setGuidelinesRawText(version.guidelines_raw_text || null);
     setAiAnalysisStatus(version.ai_analysis_status || "pending");
     setAiSuggestions(version.ai_suggestions_json || null);
+    setExecutionEngineDefault(version.execution_engine_default || "cloud_run");
+    setEdgeAllowed(version.edge_allowed || false);
   };
 
   const updateGrantMutation = useMutation({
@@ -265,6 +276,12 @@ export default function GrantEdit() {
           </TabsTrigger>
           <TabsTrigger value="inputs">Required Inputs</TabsTrigger>
           <TabsTrigger value="rubric">Rubric</TabsTrigger>
+          {isSuperAdmin && (
+            <TabsTrigger value="advanced">
+              <Settings2 className="h-4 w-4 mr-1" />
+              Advanced
+            </TabsTrigger>
+          )}
         </TabsList>
 
         <TabsContent value="details" className="mt-6">
@@ -518,6 +535,70 @@ export default function GrantEdit() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Advanced Tab - Super Admin Only */}
+        {isSuperAdmin && (
+          <TabsContent value="advanced" className="mt-6">
+            <div className="space-y-6">
+              <EngineSettingsCard
+                executionEngineDefault={executionEngineDefault}
+                edgeAllowed={edgeAllowed}
+                onEngineChange={async (engine) => {
+                  if (!selectedVersionId) return;
+                  setExecutionEngineDefault(engine);
+                  // Use type assertion for new columns not yet in TypeScript types
+                  await supabase
+                    .from("grant_versions")
+                    .update({ execution_engine_default: engine } as any)
+                    .eq("id", selectedVersionId);
+                  toast({ title: "Execution engine updated" });
+                  queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+                }}
+                onEdgeAllowedChange={async (allowed) => {
+                  if (!selectedVersionId) return;
+                  setEdgeAllowed(allowed);
+                  // If disabling edge, reset engine to cloud_run
+                  const updates: any = { edge_allowed: allowed };
+                  if (!allowed && executionEngineDefault === "edge") {
+                    updates.execution_engine_default = "cloud_run";
+                    setExecutionEngineDefault("cloud_run");
+                  }
+                  await supabase
+                    .from("grant_versions")
+                    .update(updates)
+                    .eq("id", selectedVersionId);
+                  toast({ title: allowed ? "Edge execution enabled" : "Edge execution disabled" });
+                  queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+                }}
+                isSuperAdmin={isSuperAdmin}
+                disabled={!selectedVersionId}
+              />
+
+              {selectedVersion && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Version Info</CardTitle>
+                    <CardDescription>
+                      Current execution settings for v{selectedVersion.version_number}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <p className="text-muted-foreground">Default Engine</p>
+                        <p className="font-medium capitalize">{executionEngineDefault.replace("_", " ")}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Edge Allowed</p>
+                        <p className="font-medium">{edgeAllowed ? "Yes (Debug)" : "No"}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );

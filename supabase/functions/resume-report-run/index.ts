@@ -1463,6 +1463,18 @@ async function updateStep(
   
   if (status === "running") {
     updates.started_at = new Date().toISOString();
+    updates.last_attempt_at = new Date().toISOString();
+    updates.worker = `edge-${Deno.env.get("DENO_DEPLOYMENT_ID") || "local"}`;
+    
+    // Increment attempt_count - first get current value
+    const { data: currentStep } = await supabase
+      .from("report_run_steps")
+      .select("attempt_count")
+      .eq("report_run_id", reportRunId)
+      .eq("step_number", stepNumber)
+      .maybeSingle();
+    
+    updates.attempt_count = (currentStep?.attempt_count || 0) + 1;
   } else if (status === "completed" || status === "failed") {
     updates.completed_at = new Date().toISOString();
   }

@@ -21,6 +21,8 @@ export interface PromptBundleStep {
   prompt_template: string;
   model_override: string | null;
   timeout_seconds: number | null;
+  is_heavy: boolean;
+  max_expected_seconds: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -61,7 +63,7 @@ export function usePromptBundle(id: string | undefined) {
 
       const { data: steps, error: stepsError } = await supabase
         .from("prompt_bundle_steps")
-        .select("*")
+        .select("*, is_heavy, max_expected_seconds")
         .eq("bundle_id", id)
         .order("step_number", { ascending: true });
 
