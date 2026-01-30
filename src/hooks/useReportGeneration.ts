@@ -227,7 +227,31 @@ export function useReportGeneration(
     };
   }, [isGenerating, activeRun?.id, fetchReports, toast]);
 
-  // Start report generation
+  // Check if generate-report function is deployed (preflight check)
+  const checkFunctionDeployment = useCallback(async (): Promise<{ deployed: boolean; error?: string }> => {
+    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "";
+    const url = `${supabaseUrl}/functions/v1/generate-report`;
+    
+    try {
+      const response = await fetch(url, {
+        method: "OPTIONS",
+        headers: { "Content-Type": "application/json" },
+      });
+      
+      // 200, 204, 401, 405 all indicate the function exists
+      if (response.status === 404) {
+        console.error("Preflight check: generate-report returns 404 - function not deployed");
+        return { deployed: false, error: "Backend function not deployed (404)" };
+      }
+      
+      return { deployed: true };
+    } catch (error) {
+      console.error("Preflight check failed:", error);
+      return { deployed: false, error: error instanceof Error ? error.message : "Network error" };
+    }
+  }, []);
+
+  // Start report generation with preflight check and detailed error handling
   const startGeneration = useCallback(async () => {
     if (!applicationId) return;
 
@@ -235,11 +259,29 @@ export function useReportGeneration(
     setSteps([]); // Clear previous steps
 
     try {
+      // Preflight check: is the function deployed?
+      const { deployed, error: deployError } = await checkFunctionDeployment();
+      if (!deployed) {
+        throw new Error(deployError || "Backend function unavailable");
+      }
+
       const { data, error } = await supabase.functions.invoke("generate-report", {
         body: { applicationId },
       });
 
       if (error) {
+        // Extract more details from FunctionsHttpError
+        const httpError = error as { status?: number; message?: string; context?: { body?: string } };
+        const status = httpError.status;
+        const body = httpError.context?.body;
+        
+        console.error("generate-report invocation failed:", {
+          status,
+          message: error.message,
+          body,
+          backendUrl: import.meta.env.VITE_SUPABASE_URL,
+        });
+        
         throw error;
       }
 
@@ -265,8 +307,14 @@ export function useReportGeneration(
       
       const errorMessage = error instanceof Error ? error.message : "Failed to start report generation";
       
-      // Check for rate limit or service errors
-      if (errorMessage.includes("429") || errorMessage.includes("rate limit")) {
+      // Check for specific error types
+      if (errorMessage.includes("404") || errorMessage.includes("not deployed")) {
+        toast({
+          title: "Backend unavailable",
+          description: "The report generation service is not available. Please try again in a few minutes or contact support.",
+          variant: "destructive",
+        });
+      } else if (errorMessage.includes("429") || errorMessage.includes("rate limit")) {
         toast({
           title: "High demand",
           description: "The AI service is busy. Please wait a minute and try again.",
@@ -291,7 +339,7 @@ export function useReportGeneration(
         });
       }
     }
-  }, [applicationId, toast, checkActiveRun, options]);
+  }, [applicationId, toast, checkActiveRun, options, checkFunctionDeployment]);
 
   // Auto-resume from checkpoint when detected
   const resumeFromCheckpoint = useCallback(async (runId: string) => {
