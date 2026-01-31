@@ -202,6 +202,7 @@ export function useReportGeneration(
             current_step: updated.current_step,
             total_steps: updated.total_steps,
             completed_at: updated.completed_at,
+            email_on_complete: updated.email_on_complete,
           } : null);
 
           // Detect completion
