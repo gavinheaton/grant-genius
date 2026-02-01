@@ -60,6 +60,30 @@ export function PromptStepEditor({
   const [hasChanges, setHasChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Validation helpers
+  const SUSPICIOUS_PATTERNS = [
+    /prompt:\s*empty/i,
+    /model:\s*none/i,
+    /step_name:\s*\w+\s*\nmodel:/i,
+    /expects:\s*JSON\s*object/i,
+  ];
+
+  const validatePrompt = (prompt: string): { valid: boolean; warning: string | null } => {
+    if (prompt.length < 50) {
+      return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
+    }
+    
+    for (const pattern of SUSPICIOUS_PATTERNS) {
+      if (pattern.test(prompt)) {
+        return { valid: false, warning: "Prompt contains suspicious schema-like content instead of instructions" };
+      }
+    }
+    
+    return { valid: true, warning: null };
+  };
+
+  const promptValidation = validatePrompt(promptTemplate);
+
   useEffect(() => {
     setPromptTemplate(step.prompt_template);
     setModelOverride(step.model_override || "");
@@ -230,9 +254,21 @@ export function PromptStepEditor({
         </p>
       </div>
 
+      {/* Validation warning */}
+      {!promptValidation.valid && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span>{promptValidation.warning}</span>
+        </div>
+      )}
+
       {canEdit && hasChanges && (
         <div className="flex justify-end">
-          <Button onClick={handleSave} disabled={isSaving} size="sm">
+          <Button 
+            onClick={handleSave} 
+            disabled={isSaving || !promptValidation.valid} 
+            size="sm"
+          >
             <Save className="h-4 w-4 mr-2" />
             {isSaving ? "Saving..." : "Save Step"}
           </Button>
