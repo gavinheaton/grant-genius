@@ -1,134 +1,140 @@
 
-
-# Plan: Incorporate HTML Assembly Steps into Pipeline Builder
+# Plan: Show Pipeline Name and Add Pipeline Selector Dropdown
 
 ## Problem Summary
 
-The `process-grant-guidelines` edge function generates grant-specific research pipelines dynamically via AI, but:
+Currently in the Grant Edit page (Pipeline tab), admins can see:
+- Pipeline status badge (draft/published/none)
+- A button to view/edit the linked pipeline
 
-1. The AI only generates research steps ending with `report_assembly` and `finalize_citations`
-2. No HTML assembly steps (assemble_sections, build_tables_sources, finalize_report) are included
-3. This causes reports to output raw JSON with code fences instead of clean `report_html`
+But they CANNOT:
+- See the **name** of the attached pipeline
+- Select a **different pipeline** from a dropdown
+- Easily switch to a new version of a pipeline
 
-## Solution
+## Solution Overview
 
-Modify the pipeline builder to automatically append 3 standardized HTML assembly steps AFTER the AI-generated research steps. These steps will be hardcoded (not AI-generated) to ensure consistency.
+Enhance the Pipeline tab in `GrantEdit.tsx` to:
+1. Display the attached pipeline's name prominently
+2. Add a dropdown selector listing all available prompt bundles
+3. Allow admins to change which pipeline is attached to the grant version
 
 ## Technical Changes
 
-### File: `supabase/functions/process-grant-guidelines/index.ts`
+### File: `src/pages/admin/GrantEdit.tsx`
 
-**Change 1: Define the standardized HTML assembly steps (add after line 411)**
+**Change 1: Import usePromptBundles hook**
 
-Add a constant array containing the 3 assembly step definitions with their full prompt templates:
-
-```text
-const HTML_ASSEMBLY_STEPS = [
-  {
-    step_name: "assemble_sections_html",
-    step_description: "Generate report sections as clean HTML narrative from evidence gathering steps",
-    model_tier: "balanced",
-    prompt_template: `STEP {{stepNumber}} — Assemble Sections as HTML...` // Full prompt
-  },
-  {
-    step_name: "build_tables_sources_html", 
-    step_description: "Build HTML tables and deduplicated source list",
-    model_tier: "balanced",
-    prompt_template: `STEP {{stepNumber}} — Build Tables + Sources (HTML)...` // Full prompt
-  },
-  {
-    step_name: "finalize_report_html",
-    step_description: "Merge sections, tables, and sources into final report_html",
-    model_tier: "lite",
-    prompt_template: `STEP {{stepNumber}} — Finalize Report (HTML)...` // Full prompt
-  }
-];
-```
-
-**Change 2: Modify step insertion logic (around line 435)**
-
-After the AI generates research steps, append the HTML assembly steps with proper step numbering:
+Add import to fetch all available bundles:
 
 ```typescript
-// Get the highest step number from AI-generated steps
-const maxAIStep = Math.max(...pipelineData.steps.map((s: any) => s.step_number));
-
-// Prepare AI-generated research steps
-const researchSteps = pipelineData.steps.map((step: any) => ({
-  bundle_id: bundle.id,
-  step_number: step.step_number,
-  step_name: step.step_name,
-  step_description: step.step_description,
-  prompt_template: step.prompt_template,
-  model_override: tierToModel[step.model_tier] || null,
-  is_heavy: step.model_tier === "pro",
-}));
-
-// Append standardized HTML assembly steps
-const assemblySteps = HTML_ASSEMBLY_STEPS.map((step, idx) => ({
-  bundle_id: bundle.id,
-  step_number: maxAIStep + 1 + idx,
-  step_name: step.step_name,
-  step_description: step.step_description,
-  prompt_template: step.prompt_template.replace('{{stepNumber}}', String(maxAIStep + 1 + idx)),
-  model_override: tierToModel[step.model_tier] || null,
-  is_heavy: false,
-}));
-
-// Insert all steps (research + assembly)
-const stepsToInsert = [...researchSteps, ...assemblySteps];
+import { usePromptBundles } from "@/hooks/usePromptBundles";
 ```
 
-**Change 3: Update the AI prompt to exclude assembly steps (around line 293)**
+**Change 2: Fetch prompt bundles in component**
 
-Modify the pipeline generation prompt to clarify that the AI should NOT generate HTML assembly steps:
+Near the top of the component, add:
+
+```typescript
+const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
+```
+
+**Change 3: Add mutation to update pipeline attachment**
+
+Create a mutation to update the `prompt_bundle_id` on the grant version:
+
+```typescript
+const updatePipelineMutation = useMutation({
+  mutationFn: async (bundleId: string | null) => {
+    if (!selectedVersionId) return;
+    const { error } = await supabase
+      .from("grant_versions")
+      .update({ 
+        prompt_bundle_id: bundleId,
+        pipeline_generation_status: bundleId ? "draft" : "none"
+      })
+      .eq("id", selectedVersionId);
+    if (error) throw error;
+  },
+  onSuccess: () => {
+    toast({ title: "Pipeline updated" });
+    queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+  },
+  onError: () => {
+    toast({ title: "Error updating pipeline", variant: "destructive" });
+  },
+});
+```
+
+**Change 4: Enhance Pipeline tab UI**
+
+Update the Pipeline tab content (lines 582-657) to include:
+
+1. **Header section** showing the attached pipeline name:
+   - Query the bundle name from `allPromptBundles` using `promptBundleId`
+   - Display prominently: "Attached Pipeline: [Bundle Name]"
+
+2. **Pipeline selector dropdown**:
+   - Select component listing all available bundles
+   - Options: "None" + all bundles from `allPromptBundles`
+   - Show bundle name and whether it's the global active bundle
+   - On change, call `updatePipelineMutation`
+
+3. **Info text** explaining:
+   - If no pipeline is selected, the global default will be used
+   - If a pipeline is selected but in draft, it needs to be published
+
+## UI Design
 
 ```text
-REQUIRED PIPELINE STRUCTURE:
-- Step 0: build_source_pack (ALWAYS first)
-- Steps 1-N: Research steps mapped to rubric sections
-- Final 2 research steps: report_assembly + finalize_citations
-
-DO NOT include HTML assembly or formatting steps - these will be added automatically.
+┌─────────────────────────────────────────────────────────────┐
+│  Research Pipeline                                    v2    │
+│  Custom research pipeline generated from grant guidelines  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Attached Pipeline                                          │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │ AEA_Ignite_2026_Evidence_Gathering_Pipeline    ▼    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌─ Pipeline Status ─────────────────────────────────────┐ │
+│  │                                                        │ │
+│  │  Status: [draft]                                       │ │
+│  │                                                        │ │
+│  │  [View & Edit Pipeline]     [Publish Pipeline]         │ │
+│  │                                                        │ │
+│  └────────────────────────────────────────────────────────┘ │
+│                                                             │
+│  ⚠️ This pipeline is in draft status. Researchers will     │
+│     use the global default pipeline until published.        │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Prompt Templates for Assembly Steps
+## Dropdown Options Structure
 
-The prompts will be derived from the production-tested AEA Ignite steps 11-13, with dynamic `{{stepN}}` references adjusted based on the actual step count:
+The dropdown will show:
 
-| Step | Model | Key Features |
-|------|-------|--------------|
-| assemble_sections_html | balanced | Dynamic `{{step0}}` through `{{stepN}}` references, HTML section headings, table anchor tokens |
-| build_tables_sources_html | balanced | Compiles tables from market sizing, competitors, partners; deduplicates sources |
-| finalize_report_html | lite | Merges narrative with tables, outputs final `report_html` field |
+| Option | Display |
+|--------|---------|
+| None | "No pipeline (use global default)" |
+| Bundle 1 | "AEA_Ignite_2026_Evidence_Gathering_Pipeline" |
+| Bundle 2 | "Grant_Genius_15_Step_Pipeline (Global Default)" |
+| Bundle 3 | "Custom_Bundle_v2" |
 
-## Step Number Mapping
+The global active bundle will be marked with a "(Global Default)" suffix.
 
-For a pipeline with 11 AI-generated steps (0-10):
+## Technical Notes
 
-| Step | Name |
-|------|------|
-| 0 | build_source_pack |
-| 1-8 | Research steps |
-| 9 | report_assembly |
-| 10 | finalize_citations |
-| 11 | assemble_sections_html (auto-added) |
-| 12 | build_tables_sources_html (auto-added) |
-| 13 | finalize_report_html (auto-added) |
-
-## Dynamic Step References
-
-The assembly prompts need to dynamically reference all prior steps. The implementation will:
-
-1. Count the AI-generated steps (e.g., 11 steps = steps 0-10)
-2. Generate `{{step0}}` through `{{step10}}` placeholders in the assemble_sections_html prompt
-3. Ensure the prompts adapt to any research step count (8-20 steps)
+1. **RLS Permissions**: The `grant_versions` table allows admins to update records
+2. **Pipeline Status Reset**: When changing pipelines, reset status to "draft" so it requires re-publishing
+3. **Step Count Display**: Optionally show the step count for each bundle in the dropdown
 
 ## Validation
 
 After implementation:
-1. Upload guidelines for a new grant
-2. Verify the auto-generated pipeline includes 3 additional HTML assembly steps
-3. Verify step numbering is continuous (no gaps)
-4. Run a test report and confirm it produces clean `report_html` output
-
+1. Navigate to a grant's Pipeline tab
+2. Verify the attached pipeline name is displayed
+3. Open the dropdown and see all available bundles
+4. Select a different bundle and verify it's saved
+5. Confirm the pipeline status updates accordingly
