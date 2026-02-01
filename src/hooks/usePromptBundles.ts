@@ -274,3 +274,101 @@ export function useDeletePromptBundle() {
     },
   });
 }
+
+export function useCreatePromptStep() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: {
+      bundleId: string;
+      step_number: number;
+      step_name: string;
+      step_description: string;
+      prompt_template: string;
+    }) => {
+      const { error } = await supabase
+        .from("prompt_bundle_steps")
+        .insert({
+          bundle_id: data.bundleId,
+          step_number: data.step_number,
+          step_name: data.step_name,
+          step_description: data.step_description,
+          prompt_template: data.prompt_template,
+        });
+      if (error) throw error;
+      return data.bundleId;
+    },
+    onSuccess: (bundleId) => {
+      queryClient.invalidateQueries({ queryKey: ["prompt-bundle", bundleId] });
+      toast({ title: "Step created successfully" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to create step",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+export function useDeletePromptStep() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ stepId, bundleId }: { stepId: string; bundleId: string }) => {
+      const { error } = await supabase
+        .from("prompt_bundle_steps")
+        .delete()
+        .eq("id", stepId);
+      if (error) throw error;
+      return bundleId;
+    },
+    onSuccess: (bundleId) => {
+      queryClient.invalidateQueries({ queryKey: ["prompt-bundle", bundleId] });
+      toast({ title: "Step deleted successfully" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to delete step",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
+export function useReorderPromptSteps() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ bundleId, steps }: { 
+      bundleId: string; 
+      steps: { id: string; step_number: number }[] 
+    }) => {
+      // Batch update all step numbers
+      for (const step of steps) {
+        const { error } = await supabase
+          .from("prompt_bundle_steps")
+          .update({ step_number: step.step_number })
+          .eq("id", step.id);
+        if (error) throw error;
+      }
+      return bundleId;
+    },
+    onSuccess: (bundleId) => {
+      queryClient.invalidateQueries({ queryKey: ["prompt-bundle", bundleId] });
+      toast({ title: "Steps reordered successfully" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to reorder steps",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
