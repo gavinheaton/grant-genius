@@ -18,6 +18,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ExternalLink } from "lucide-react";
@@ -25,6 +32,7 @@ import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
+import { usePromptBundles } from "@/hooks/usePromptBundles";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -49,6 +57,31 @@ export default function GrantEdit() {
   const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge">("cloud_run");
   const [edgeAllowed, setEdgeAllowed] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+
+  // Fetch all prompt bundles for the pipeline selector
+  const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
+
+  // Mutation to update which pipeline is attached to the grant version
+  const updatePipelineMutation = useMutation({
+    mutationFn: async (bundleId: string | null) => {
+      if (!selectedVersionId) return;
+      const { error } = await supabase
+        .from("grant_versions")
+        .update({ 
+          prompt_bundle_id: bundleId,
+          pipeline_generation_status: bundleId ? "draft" : "none"
+        })
+        .eq("id", selectedVersionId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast({ title: "Pipeline updated" });
+      queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+    },
+    onError: () => {
+      toast({ title: "Error updating pipeline", variant: "destructive" });
+    },
+  });
 
   const { data: grant, isLoading } = useQuery({
     queryKey: ["admin-grant", id],
@@ -592,20 +625,46 @@ export default function GrantEdit() {
                 )}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {!promptBundleId ? (
-                <div className="text-center py-8">
-                  <Workflow className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground mb-2">
-                    No pipeline generated yet
+            <CardContent className="space-y-6">
+              {/* Pipeline Selector */}
+              <div className="space-y-2">
+                <Label htmlFor="pipeline-select">Attached Pipeline</Label>
+                <Select
+                  value={promptBundleId || "none"}
+                  onValueChange={(value) => {
+                    const newBundleId = value === "none" ? null : value;
+                    setPromptBundleId(newBundleId);
+                    updatePipelineMutation.mutate(newBundleId);
+                  }}
+                  disabled={updatePipelineMutation.isPending || bundlesLoading}
+                >
+                  <SelectTrigger id="pipeline-select" className="w-full max-w-md">
+                    <SelectValue placeholder="Select a pipeline..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">
+                      No pipeline (use global default)
+                    </SelectItem>
+                    {allPromptBundles?.map((bundle) => (
+                      <SelectItem key={bundle.id} value={bundle.id}>
+                        {bundle.name}
+                        {bundle.is_active && " (Global Default)"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {updatePipelineMutation.isPending && (
+                  <p className="text-sm text-muted-foreground flex items-center gap-2">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Updating pipeline...
                   </p>
-                  <p className="text-sm text-muted-foreground">
-                    Upload guidelines to automatically generate a research pipeline
-                  </p>
-                </div>
-              ) : (
+                )}
+              </div>
+
+              {/* Pipeline Status & Actions */}
+              {promptBundleId ? (
                 <>
-                  <div className="flex items-center justify-between p-4 rounded-lg border bg-card">
+                  <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
                     <div>
                       <p className="font-medium">Pipeline Status</p>
                       <Badge 
@@ -651,6 +710,16 @@ export default function GrantEdit() {
                     </p>
                   )}
                 </>
+              ) : (
+                <div className="text-center py-8 border rounded-lg bg-muted/20">
+                  <Workflow className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground mb-2">
+                    No pipeline attached
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Select a pipeline from the dropdown above, or upload guidelines to auto-generate one.
+                  </p>
+                </div>
               )}
             </CardContent>
           </Card>
