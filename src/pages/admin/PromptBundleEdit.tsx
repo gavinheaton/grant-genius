@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Save, Info } from "lucide-react";
+import { ArrowLeft, Save, Info, Plus, Trash2, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -26,9 +26,28 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { usePromptBundle, useUpdatePromptBundle, useUpdatePromptStep } from "@/hooks/usePromptBundles";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { 
+  usePromptBundle, 
+  useUpdatePromptBundle, 
+  useUpdatePromptStep,
+  useCreatePromptStep,
+  useDeletePromptStep,
+  useReorderPromptSteps,
+  PromptBundleStep,
+} from "@/hooks/usePromptBundles";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { PromptStepEditor } from "@/components/admin/PromptStepEditor";
+import { AddStepDialog } from "@/components/admin/AddStepDialog";
 
 const AVAILABLE_MODELS = [
   { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite (Fast)" },
@@ -108,11 +127,17 @@ export default function PromptBundleEdit() {
   const { data: bundle, isLoading } = usePromptBundle(id);
   const updateBundle = useUpdatePromptBundle();
   const updateStep = useUpdatePromptStep();
+  const createStep = useCreatePromptStep();
+  const deleteStep = useDeletePromptStep();
+  const reorderSteps = useReorderPromptSteps();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [hasChanges, setHasChanges] = useState(false);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [stepToDelete, setStepToDelete] = useState<PromptBundleStep | null>(null);
 
   useEffect(() => {
     if (bundle) {
@@ -143,6 +168,86 @@ export default function PromptBundleEdit() {
       bundleId: id,
       ...data,
     });
+  };
+
+  const handleAddStep = async (data: {
+    step_name: string;
+    step_description: string;
+    prompt_template: string;
+    insert_position: number;
+  }) => {
+    if (!id || !bundle) return;
+
+    const steps = bundle.steps;
+    const insertAt = data.insert_position;
+
+    // First, shift all steps at or after insert position up by 1
+    const stepsToShift = steps.filter(s => s.step_number >= insertAt);
+    if (stepsToShift.length > 0) {
+      await reorderSteps.mutateAsync({
+        bundleId: id,
+        steps: stepsToShift.map(s => ({ id: s.id, step_number: s.step_number + 1 })),
+      });
+    }
+
+    // Then create the new step
+    await createStep.mutateAsync({
+      bundleId: id,
+      step_number: insertAt,
+      step_name: data.step_name,
+      step_description: data.step_description,
+      prompt_template: data.prompt_template,
+    });
+
+    setAddDialogOpen(false);
+  };
+
+  const handleDeleteStep = async () => {
+    if (!id || !bundle || !stepToDelete) return;
+
+    const deletedNumber = stepToDelete.step_number;
+
+    // Delete the step
+    await deleteStep.mutateAsync({ stepId: stepToDelete.id, bundleId: id });
+
+    // Shift all steps after the deleted one down by 1
+    const stepsToShift = bundle.steps.filter(s => s.step_number > deletedNumber);
+    if (stepsToShift.length > 0) {
+      await reorderSteps.mutateAsync({
+        bundleId: id,
+        steps: stepsToShift.map(s => ({ id: s.id, step_number: s.step_number - 1 })),
+      });
+    }
+
+    setDeleteDialogOpen(false);
+    setStepToDelete(null);
+  };
+
+  const handleMoveStep = async (step: PromptBundleStep, direction: "up" | "down") => {
+    if (!id || !bundle) return;
+
+    const steps = [...bundle.steps].sort((a, b) => a.step_number - b.step_number);
+    const currentIndex = steps.findIndex(s => s.id === step.id);
+    const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+    if (targetIndex < 0 || targetIndex >= steps.length) return;
+
+    const currentStep = steps[currentIndex];
+    const targetStep = steps[targetIndex];
+
+    // Swap step numbers
+    await reorderSteps.mutateAsync({
+      bundleId: id,
+      steps: [
+        { id: currentStep.id, step_number: targetStep.step_number },
+        { id: targetStep.id, step_number: currentStep.step_number },
+      ],
+    });
+  };
+
+  const confirmDeleteStep = (step: PromptBundleStep) => {
+    setStepToDelete(step);
+    setDeleteDialogOpen(true);
   };
 
   if (isLoading) {
@@ -313,41 +418,141 @@ export default function PromptBundleEdit() {
       {/* Step Prompts */}
       <Card>
         <CardHeader>
-          <CardTitle>Step Prompts</CardTitle>
-          <CardDescription>
-            Configure the prompt for each of the 13 research steps.
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Step Prompts</CardTitle>
+              <CardDescription>
+                Configure the prompt for each research step.
+              </CardDescription>
+            </div>
+            {canEdit && (
+              <Button onClick={() => setAddDialogOpen(true)} size="sm">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Step
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
-          <Accordion type="single" collapsible className="w-full">
-            {bundle.steps.map((step) => (
-              <AccordionItem key={step.id} value={step.id}>
-                <AccordionTrigger className="hover:no-underline">
-                  <div className="flex items-center gap-3 text-left">
-                    <Badge variant="outline" className="font-mono">
-                      {step.step_number}
-                    </Badge>
-                    <div>
-                      <p className="font-medium">{step.step_description}</p>
-                      <p className="text-xs text-muted-foreground font-mono">
-                        {step.step_name}
-                      </p>
+          {bundle.steps.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              No steps in this pipeline. Click "Add Step" to create one.
+            </div>
+          ) : (
+            <Accordion type="single" collapsible className="w-full">
+              {[...bundle.steps]
+                .sort((a, b) => a.step_number - b.step_number)
+                .map((step, index, sortedSteps) => (
+                <AccordionItem key={step.id} value={step.id}>
+                  <div className="flex items-center gap-2">
+                    {canEdit && (
+                      <div className="flex flex-col gap-0.5">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMoveStep(step, "up");
+                          }}
+                          disabled={index === 0 || reorderSteps.isPending}
+                        >
+                          <ChevronUp className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleMoveStep(step, "down");
+                          }}
+                          disabled={index === sortedSteps.length - 1 || reorderSteps.isPending}
+                        >
+                          <ChevronDown className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                    <div className="flex-1">
+                      <AccordionTrigger className="hover:no-underline">
+                        <div className="flex items-center gap-3 text-left">
+                          <Badge variant="outline" className="font-mono">
+                            {step.step_number}
+                          </Badge>
+                          <div>
+                            <p className="font-medium">{step.step_description}</p>
+                            <p className="text-xs text-muted-foreground font-mono">
+                              {step.step_name}
+                            </p>
+                          </div>
+                        </div>
+                      </AccordionTrigger>
                     </div>
+                    {canEdit && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              confirmDeleteStep(step);
+                            }}
+                            disabled={deleteStep.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Delete step</TooltipContent>
+                      </Tooltip>
+                    )}
                   </div>
-                </AccordionTrigger>
-                <AccordionContent>
-                  <PromptStepEditor
-                    step={step}
-                    models={AVAILABLE_MODELS}
-                    canEdit={canEdit}
-                    onSave={handleStepUpdate}
-                  />
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
+                  <AccordionContent>
+                    <PromptStepEditor
+                      step={step}
+                      models={AVAILABLE_MODELS}
+                      canEdit={canEdit}
+                      onSave={handleStepUpdate}
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
+          )}
         </CardContent>
       </Card>
+
+      {/* Add Step Dialog */}
+      <AddStepDialog
+        open={addDialogOpen}
+        onOpenChange={setAddDialogOpen}
+        existingSteps={bundle.steps}
+        onAdd={handleAddStep}
+        isLoading={createStep.isPending || reorderSteps.isPending}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Step?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete step {stepToDelete?.step_number}: "{stepToDelete?.step_name}"?
+              This action cannot be undone. Subsequent steps will be renumbered automatically.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteStep}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
