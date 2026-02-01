@@ -1,188 +1,194 @@
 
 
-# Plan: Migrate Prompt Improvements to Correct AEA Ignite Steps
+# Plan: Fix Pipeline Selection to Use Grant-Specific Step Count
 
 ## Problem Summary
 
-Your prompt improvements were added to the wrong steps due to the 0-indexed numbering mismatch:
+When creating a new report run, the `generate-report` edge function:
 
-| Improvement | Currently In | Should Be In |
-|-------------|--------------|--------------|
-| Competitor URL validation rules | Step 2 (market_need_quantification) | Step 4 (competitor_and_alternative_benchmarking) |
-| SAM calculation with AU proxy | Step 7 (partner_stakeholder_mapping) | Step 3 (tam_sam_som_analysis) |
-| SOM Y3/Y5 growth calculations | Step 8 (technical_feasibility_benchmarking) | Step 3 (tam_sam_som_analysis) |
+1. **Hardcodes 15 steps** from `RESEARCH_STEPS` array (lines 13-29)
+2. **Creates step records** using this hardcoded array (lines 443-450)
+3. **Never queries** the grant-specific bundle to get the actual step count
 
----
+Meanwhile, the `worker-proxy` correctly selects the AEA Ignite bundle (11 steps), but the database already has 15 step records. This causes:
+- Progress tracking mismatch (shows 15 steps when only 11 exist in the pipeline)
+- Potential failures when the worker tries to execute steps 11-14 that don't exist in the bundle
+
+## Technical Root Cause
+
+```text
+generate-report/index.ts (lines 13-29):
+┌─────────────────────────────────────────────────┐
+│ const RESEARCH_STEPS = [                        │  ← HARDCODED 15 STEPS
+│   { name: "build_source_pack", ... },          │
+│   ...                                           │
+│   { name: "finalize_report", ... },            │
+│ ];                                              │
+└─────────────────────────────────────────────────┘
+              │
+              ▼
+generate-report/index.ts (line 424):
+┌─────────────────────────────────────────────────┐
+│ total_steps: RESEARCH_STEPS.length, // 15      │  ← ALWAYS 15
+└─────────────────────────────────────────────────┘
+```
+
+## Solution
+
+Modify `generate-report` to:
+
+1. Check if the application's grant version has a linked prompt bundle
+2. If yes, query the prompt bundle's step count and use those step names
+3. If no, fall back to the hardcoded `RESEARCH_STEPS` array
 
 ## Changes Required
 
-### Step 2: market_need_quantification - CLEAN UP
+### File: `supabase/functions/generate-report/index.ts`
 
-Remove the competitor URL rules that don't belong here.
+**Change 1: Expand the grant_version query (around line 323)**
 
-**Current prompt (with misplaced content):**
-```text
-Identify the primary problem this technology ({{researchSummary}}) solves...
+Add `prompt_bundle_id` and `pipeline_generation_status` to the select:
 
-URL REQUIREMENT (STRICT):     <-- REMOVE THIS SECTION
-- Every competitor MUST have...
-...
-FALLBACK SEARCH:
-- If a specific press release...
+```typescript
+grant_version:grant_versions!inner(
+  execution_engine_default,
+  edge_allowed,
+  prompt_bundle_id,
+  pipeline_generation_status
+)
 ```
 
-**Updated prompt (cleaned):**
-```text
-Identify the primary problem this technology ({{researchSummary}}) solves. Research and cite statistics regarding the scale of this problem in Australia and globally (e.g., cost of inefficiency, prevalence of a disease, or carbon emissions). Define the 'Market Need' supported by data points from 2022-2024.
+**Change 2: Add function to fetch grant-specific pipeline steps**
+
+After `fetchGrantContext` function, add a new function:
+
+```typescript
+async function fetchGrantPipelineSteps(
+  supabase: any, 
+  promptBundleId: string
+): Promise<Array<{step_number: number; step_name: string; step_description: string}> | null> {
+  try {
+    const { data: steps, error } = await supabase
+      .from("prompt_bundle_steps")
+      .select("step_number, step_name, step_description")
+      .eq("bundle_id", promptBundleId)
+      .order("step_number", { ascending: true });
+
+    if (error || !steps || steps.length === 0) {
+      console.log("No grant-specific pipeline steps found");
+      return null;
+    }
+
+    console.log(`Found ${steps.length} grant-specific pipeline steps`);
+    return steps;
+  } catch (e) {
+    console.error("Error fetching grant pipeline steps:", e);
+    return null;
+  }
+}
 ```
 
----
+**Change 3: Determine step source before creating report run (around line 415)**
 
-### Step 3: tam_sam_som_analysis - ADD SAM/SOM FIXES
+After determining execution engine, check for grant-specific pipeline:
 
-Add both the SAM proxy calculation and SOM growth assumption rules.
+```typescript
+// Determine which pipeline steps to use
+let pipelineSteps: Array<{step_number: number; step_name: string; description?: string}>;
+let usingGrantPipeline = false;
 
-**Current prompt:**
-```text
-Calculate the TAM (Total Addressable Market), SAM (Serviceable Addressable Market), and SOM (Serviceable Obtainable Market) for the technology described in {{researchSummary}}. Use data from {{step0}} and external market databases. Focus on the Australian market growth projections (CAGR) and the global export potential. Provide citable revenue or volume figures.
+// Check if grant has a published custom pipeline
+if (
+  grantVersion?.prompt_bundle_id && 
+  grantVersion?.pipeline_generation_status === "published"
+) {
+  const grantSteps = await fetchGrantPipelineSteps(
+    supabaseAdmin, 
+    grantVersion.prompt_bundle_id
+  );
+  
+  if (grantSteps && grantSteps.length > 0) {
+    pipelineSteps = grantSteps.map(s => ({
+      step_number: s.step_number,
+      step_name: s.step_name,
+      description: s.step_description || s.step_name,
+    }));
+    usingGrantPipeline = true;
+    console.log(`Using grant-specific pipeline with ${pipelineSteps.length} steps`);
+  } else {
+    // Fallback to default
+    pipelineSteps = RESEARCH_STEPS.map((s, i) => ({
+      step_number: i,
+      step_name: s.name,
+      description: s.description,
+    }));
+  }
+} else {
+  // Use default pipeline
+  pipelineSteps = RESEARCH_STEPS.map((s, i) => ({
+    step_number: i,
+    step_name: s.name,
+    description: s.description,
+  }));
+}
 ```
 
-**Updated prompt:**
-```text
-Calculate the TAM (Total Addressable Market), SAM (Serviceable Addressable Market), and SOM (Serviceable Obtainable Market) for the technology described in {{researchSummary}}. Use data from {{step0}} and external market databases. Focus on the Australian market growth projections (CAGR) and the global export potential. Provide citable revenue or volume figures.
+**Change 4: Update report run creation (line 417-430)**
 
-SAM CALCULATION RULE (MANDATORY):
-If TAM is numeric but no direct Australian serviceable pool is found, you MUST still produce a numeric SAM estimate:
+Use the dynamic step count:
 
-1. Australia represents approximately 1.5-2% of global healthcare markets (cite OECD or AIHW)
-2. Apply this as a conservative filter: SAM_low = TAM * 0.01, SAM_high = TAM * 0.02
-3. Mark confidence as "Low" and add validation_needed entry
-4. This is ALWAYS better than "Unknown" for grant assessors
-
-EXAMPLE:
-If global TAM = 111.98 billion USD:
-  - sam_low = 111980000000 * 0.01 = 1119800000 (approx $1.1B)
-  - sam_high = 111980000000 * 0.02 = 2239600000 (approx $2.2B)
-  - key_assumptions: "Australia ~1.5-2% of global healthcare market (OECD Health Statistics)"
-  - confidence: Low
-
-SOM CALCULATION RULE (MANDATORY):
-For each segment where SAM is numeric:
-
-Year 1 (Conservative Entry):
-  - som_y1_low = sam_low * 0.001 (0.1%)
-  - som_y1_high = sam_high * 0.005 (0.5%)
-
-Year 3 (Early Growth - MUST CALCULATE):
-  - som_y3_low = som_y1_low * 3 (conservative 3x growth)
-  - som_y3_high = som_y1_high * 5 (optimistic 5x growth)
-  - Add assumption: "Assumed 3-5x growth from Y1 based on typical biotech adoption curves"
-
-Year 5 (Established - MUST CALCULATE):
-  - som_y5_low = som_y1_low * 8 (conservative 8x from Y1)
-  - som_y5_high = som_y1_high * 15 (optimistic 15x from Y1)
-  - Add assumption: "Assumed 8-15x growth from Y1 based on successful biotech commercialisation precedents"
-
-DO NOT output "Unknown" for SAM or SOM if TAM is numeric. Conservative assumptions with Low confidence are always preferable to Unknown for grant assessors.
-
-"Unknown" is ONLY acceptable if TAM itself cannot be determined.
+```typescript
+const { data: reportRun, error: runError } = await supabaseAdmin
+  .from("report_runs")
+  .insert({
+    application_id: applicationId,
+    report_template_version_id: templateVersion.id,
+    status: "running",
+    current_step: 0,
+    total_steps: pipelineSteps.length,  // ← DYNAMIC: 11 for AEA, 15 for default
+    started_at: new Date().toISOString(),
+    execution_engine: executionEngine,
+    execution_engine_reason: usingGrantPipeline 
+      ? "grant_specific_pipeline" 
+      : executionEngineReason,
+  })
+  .select("id, execution_engine")
+  .single();
 ```
 
----
+**Change 5: Update step records creation (lines 443-450)**
 
-### Step 4: competitor_and_alternative_benchmarking - ADD URL FIXES
+Use the dynamic pipeline steps:
 
-Add the competitor URL validation rules.
+```typescript
+const stepRecords = pipelineSteps.map((step) => ({
+  report_run_id: reportRun.id,
+  step_number: step.step_number,
+  step_name: step.step_name,
+  status: "pending" as const,
+}));
 
-**Current prompt:**
-```text
-Identify the top 5 global and domestic competitors or alternative technologies. Compare their current capabilities, TRL levels (if public), and market share against the proposed project ({{researchSummary}}). Highlight the unique value proposition (UVP) of the project based on gaps in existing competitor or alternative solutions.
+await supabaseAdmin.from("report_run_steps").insert(stepRecords);
+
+console.log(`Created ${stepRecords.length} step records for run ${reportRun.id}`);
 ```
 
-**Updated prompt:**
-```text
-Identify the top 5 global and domestic competitors or alternative technologies. Compare their current capabilities, TRL levels (if public), and market share against the proposed project ({{researchSummary}}). Highlight the unique value proposition (UVP) of the project based on gaps in existing competitor or alternative solutions.
-
-URL REQUIREMENT (STRICT):
-- Every competitor MUST have a real, accessible URL (lab page, publication, press release, or news article).
-- If you cannot find a validated URL for a competitor, DO NOT include that competitor.
-- Never output "Unknown (no validated source found)" for URLs - instead exclude that entry.
-- For Australian institutions (CSIRO, WEHI, universities), their official websites always have lab pages - use those.
-
-FALLBACK SEARCH:
-- If a specific press release isn't found, use the institution's research page URL
-- Format: https://[institution].edu.au/research/[lab-or-group-name]
-```
-
----
-
-### Step 7: partner_stakeholder_mapping - CLEAN UP
-
-Remove the SAM calculation rules that don't belong here.
-
-**Current prompt (with misplaced content):**
-```text
-Identify 5-10 key industry bodies...
-
-MANDATORY CALCULATION RULE (NON-NEGOTIABLE):     <-- REMOVE THIS SECTION
-If TAM is numeric but no direct Australian...
-```
-
-**Updated prompt (cleaned):**
-```text
-Identify 5-10 key industry bodies, potential commercial partners, or end-user groups in Australia that would be critical for the commercialisation of {{researchSummary}}. Provide evidence of their historical involvement in similar research translations or their expressed interest in this technology area.
-```
-
----
-
-### Step 8: technical_feasibility_benchmarking - CLEAN UP
-
-Remove the SOM calculation rules that don't belong here.
-
-**Current prompt (with misplaced content):**
-```text
-Summarize common technical milestones...
-
-CALCULATION RULE (REVISED):     <-- REMOVE THIS SECTION
-For each segment where SAM is numeric...
-```
-
-**Updated prompt (cleaned):**
-```text
-Summarize common technical milestones, typical costs, and timeframes for reaching TRL 5 from TRL 3 in the sector of {{researchSummary}}. Research known benchmarks for 'proof-of-concept' validation in this industry to support the feasibility of a 12-month timeline and $500k budget.
-```
-
----
-
-## Implementation Summary
-
-| Step | Action | Description |
-|------|--------|-------------|
-| 2 | Remove | Delete competitor URL rules (don't belong here) |
-| 3 | Add | Insert SAM proxy + SOM growth calculation rules |
-| 4 | Add | Insert competitor URL validation rules |
-| 7 | Remove | Delete SAM calculation rules (don't belong here) |
-| 8 | Remove | Delete SOM calculation rules (don't belong here) |
-
----
-
-## Technical Implementation
-
-Database updates to `prompt_bundle_steps` table for bundle `0393efea-a3c2-48f1-8087-278e7da3fbc4`:
-
-1. UPDATE step 2 - restore original prompt
-2. UPDATE step 3 - add combined SAM/SOM rules
-3. UPDATE step 4 - add competitor URL rules
-4. UPDATE step 7 - restore original prompt
-5. UPDATE step 8 - restore original prompt
-
----
-
-## Testing
+## Validation
 
 After implementation:
-1. Run a new report for AEA Ignite 2026
-2. Verify Step 3 outputs numeric SAM/SOM values (not "Unknown")
-3. Verify Step 4 outputs competitors with real URLs (no "Unknown" entries)
-4. Verify Steps 7 and 8 focus on their intended purposes (partners and feasibility)
+
+1. Create a new report for AEA Ignite 2026
+2. Verify `total_steps = 11` in the `report_runs` table
+3. Verify 11 step records are created in `report_run_steps` (steps 0-10)
+4. Verify progress UI shows 11 total steps
+5. Verify the report completes successfully using the grant-specific prompts
+
+## Edge Cases Handled
+
+| Scenario | Behavior |
+|----------|----------|
+| Grant has `prompt_bundle_id` but status is `draft` | Falls back to default 15-step pipeline |
+| Grant has `prompt_bundle_id` but bundle has no steps | Falls back to default 15-step pipeline |
+| Grant has no linked bundle | Uses default 15-step pipeline |
+| Grant has published bundle with 11 steps | Creates 11 step records |
 
