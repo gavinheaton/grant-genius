@@ -97,14 +97,27 @@ serve(async (req) => {
       );
     }
 
-    // Update status to processing
-    await supabaseAdmin
+    // Atomic claim - only proceeds if status is 'pending' (idempotency check)
+    const { data: claimed, error: claimError } = await supabaseAdmin
       .from("grant_versions")
       .update({ 
         ai_analysis_status: "processing",
         pipeline_generation_status: "none"
       })
-      .eq("id", grant_version_id);
+      .eq("id", grant_version_id)
+      .eq("ai_analysis_status", "pending")  // Only if not already started
+      .select("id")
+      .single();
+
+    if (claimError || !claimed) {
+      console.log("Already processing or completed - skipping duplicate call");
+      return new Response(JSON.stringify({ 
+        message: "Already processing or completed",
+        skipped: true 
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     console.log("Step 1: Extracting rubric and inputs...");
 
