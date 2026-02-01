@@ -1,67 +1,65 @@
 
 
-# Plan: Fix Pipeline Generator to Use Approved Shortcodes
+# Fix: Deploy Missing `enqueue-report` Edge Function
 
 ## Problem Summary
 
-The `process-grant-guidelines` edge function instructs the AI to use **incorrect variable names** when generating pipeline prompts:
+Report generation fails before Step 0 with error:
+```
+enqueue-report failed: 404 - {"code":"NOT_FOUND","message":"Requested function was not found"}
+```
 
-| Current (Wrong) | Correct | Description |
-|-----------------|---------|-------------|
-| `{{researchUrl}}` | `{{publicArticleUrl}}` | URL of the research article |
-| `{{researchSummary}}` | `{{summary}}` | User's 100-word research summary |
+The `generate-report` function (line 540-550) calls `enqueue-report` to dispatch the report run to the Cloud Run worker, but `enqueue-report` is **not deployed** despite existing in the codebase.
 
-This causes report generation to fail because the worker doesn't substitute these non-existent variables.
+## Root Cause
+
+The `enqueue-report` edge function exists at `supabase/functions/enqueue-report/index.ts` and is configured in `supabase/config.toml`, but it was never deployed to the backend environment.
+
+## Flow Diagram
+
+```text
+User clicks "Generate Report"
+         │
+         ▼
+┌─────────────────────────┐
+│   generate-report       │  ✅ Works
+│   (creates run record)  │
+└───────────┬─────────────┘
+            │ calls
+            ▼
+┌─────────────────────────┐
+│   enqueue-report        │  ❌ 404 NOT FOUND
+│   (triggers worker)     │
+└─────────────────────────┘
+            │
+            ▼
+┌─────────────────────────┐
+│   Cloud Run Worker      │  Never reached
+│   (processes steps)     │
+└─────────────────────────┘
+```
 
 ## Solution
 
-Update line 302 in the pipeline generator to reference the **approved shortcode list** that matches what the worker actually substitutes.
+Deploy the `enqueue-report` edge function. The function code is already correct - it just needs to be deployed to the backend environment.
 
-## Approved Shortcodes Reference
+## Technical Details
 
-Based on `VARIABLE_CATEGORIES` in `PromptBundleEdit.tsx`:
+The `enqueue-report` function (already in codebase):
+1. Receives `report_run_id` from `generate-report`
+2. Fetches `CLOUD_RUN_URL` and `WORKER_SECRET` from environment
+3. Calls the external Cloud Run worker at `{CLOUD_RUN_URL}/enqueue-run`
+4. Worker processes pipeline steps and updates the database
 
-| Category | Variables |
-|----------|-----------|
-| **User Inputs** | `{{summary}}`, `{{publicArticleUrl}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}` |
-| **Grant Context** | `{{grantName}}`, `{{grantVersionLabel}}`, `{{grantGuidelines}}`, `{{grantRubric}}`, `{{grantSummary}}` |
-| **Source Pack** | `{{sources}}`, `{{unknowns}}` |
-| **Step Outputs** | `{{step0}}`, `{{step1}}`, `{{step2}}`, ... `{{stepN}}` |
+## Implementation
 
-## Technical Changes
-
-### File: `supabase/functions/process-grant-guidelines/index.ts`
-
-**Change 1: Update the variable documentation in the prompt (line 302)**
-
-Before:
-```
-- prompt_template: Full prompt with {{variable}} placeholders. Use {{researchUrl}}, {{researchSummary}}, {{trl}}, {{ipStatus}}, {{step0}}, {{step1}}, etc.
-```
-
-After:
-```
-- prompt_template: Full prompt with {{variable}} placeholders.
-  APPROVED VARIABLES (use ONLY these):
-  - User Inputs: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}
-  - Grant Context: {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}}
-  - Source Pack (from Step 0): {{sources}}, {{unknowns}}
-  - Step Outputs: {{step0}}, {{step1}}, {{step2}}, etc. for referencing prior step JSON
-```
-
-This explicit list ensures the AI only uses variables that the worker can substitute.
-
-## Files to Modify
-
-| File | Change |
-|------|--------|
-| `supabase/functions/process-grant-guidelines/index.ts` | Replace line 302 with explicit approved variable list |
+Deploy the existing `enqueue-report` function - no code changes needed.
 
 ## Validation
 
-After implementation:
-1. Upload guidelines for a new test grant
-2. Verify the auto-generated pipeline uses only approved variables
-3. Check that Step 0 uses `{{summary}}` and `{{publicArticleUrl}}` (not the old names)
-4. Run a test report to confirm no "unsubstituted variable" errors
+After deployment:
+1. Navigate to an application workspace
+2. Click "Generate Report"
+3. Verify the generation starts and Step 0 begins processing
+4. Check edge function logs confirm `enqueue-report` is being called successfully
 
