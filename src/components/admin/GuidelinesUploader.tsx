@@ -11,6 +11,7 @@ interface GuidelinesUploaderProps {
   versionNumber: number;
   currentPath?: string | null;
   onUploadComplete: (path: string, rawText: string) => void;
+  onProcessingStart?: () => void;
 }
 
 export function GuidelinesUploader({
@@ -19,6 +20,7 @@ export function GuidelinesUploader({
   versionNumber,
   currentPath,
   onUploadComplete,
+  onProcessingStart,
 }: GuidelinesUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -45,6 +47,48 @@ export function GuidelinesUploader({
       return `[PDF file: ${file.name}, size: ${file.size} bytes]`;
     }
     return text;
+  };
+
+  const triggerProcessing = async (rawText: string) => {
+    try {
+      onProcessingStart?.();
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not authenticated");
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-grant-guidelines`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            grant_version_id: versionId,
+            guidelines_text: rawText,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Processing failed");
+      }
+
+      toast({
+        title: "Processing complete",
+        description: `Generated ${data.step_count}-step research pipeline`,
+      });
+    } catch (error) {
+      console.error("Processing error:", error);
+      toast({
+        title: "Processing failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleFileUpload = async (file: File) => {
@@ -95,10 +139,10 @@ export function GuidelinesUploader({
       setUploadedFile(filePath);
       onUploadComplete(filePath, rawText);
       
-      toast({
-        title: "Guidelines uploaded",
-        description: "You can now analyze them with AI",
-      });
+      // Automatically trigger processing
+      setIsUploading(false);
+      await triggerProcessing(rawText);
+      
     } catch (error) {
       console.error("Upload error:", error);
       toast({
@@ -106,7 +150,6 @@ export function GuidelinesUploader({
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
-    } finally {
       setIsUploading(false);
     }
   };
@@ -137,7 +180,9 @@ export function GuidelinesUploader({
           guidelines_source_path: null,
           guidelines_raw_text: null,
           ai_analysis_status: "pending",
-          ai_suggestions_json: {}
+          ai_suggestions_json: {},
+          pipeline_generation_status: "none",
+          prompt_bundle_id: null
         })
         .eq("id", versionId);
 
