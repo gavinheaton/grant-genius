@@ -24,6 +24,7 @@ export function GuidelinesUploader({
 }: GuidelinesUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<string | null>(currentPath || null);
   const { toast } = useToast();
 
@@ -50,6 +51,9 @@ export function GuidelinesUploader({
   };
 
   const triggerProcessing = async (rawText: string) => {
+    if (isProcessing) return; // Guard against duplicate calls
+    setIsProcessing(true);
+    
     try {
       onProcessingStart?.();
       
@@ -77,10 +81,13 @@ export function GuidelinesUploader({
         throw new Error(data.error || "Processing failed");
       }
 
-      toast({
-        title: "Processing complete",
-        description: `Generated ${data.step_count}-step research pipeline`,
-      });
+      // Don't show toast if skipped due to duplicate
+      if (!data.skipped) {
+        toast({
+          title: "Processing complete",
+          description: `Generated ${data.step_count}-step research pipeline`,
+        });
+      }
     } catch (error) {
       console.error("Processing error:", error);
       toast({
@@ -88,6 +95,8 @@ export function GuidelinesUploader({
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       });
+    } finally {
+      setIsProcessing(false);
     }
   };
 
