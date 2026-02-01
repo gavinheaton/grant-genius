@@ -1,76 +1,109 @@
 
 
-# Fix: Corrupted Prompt in Active Bundle
+# Fix: Step Numbering Mismatch Between Worker and Database
 
 ## Problem Identified
 
-The **finalize_report** step (step 14) in the active bundle has a **corrupted prompt template**:
+The external Cloud Run worker uses **1-indexed step numbering** (steps 1-15) while the database and Edge Functions use **0-indexed step numbering** (steps 0-14). This causes the worker to look for data in the wrong step.
 
-| Bundle | Step 14 Prompt |
-|--------|---------------|
-| Active Bundle - 1 Feb | `step_name: finalize_report\nmodel: none\nprompt: empty string\nexpects: JSON object schema` |
-| Revised Bundle | `You are finalizing a grant report for Australian government assessors...` (correct) |
+### Evidence from Logs
 
-The AI received this malformed "schema definition" as its prompt and simply echoed it back wrapped in ` ```json `. The code fence stripping is working correctly - the actual **prompt content is wrong**.
+| Worker Log Display | Worker's Step # | Database Step # | Step Name |
+|-------------------|-----------------|-----------------|-----------|
+| "Step 13/15: assemble_sections" | 13 | 12 | assemble_sections |
+| "Step 14/15: build_tables_sources" | 14 | 13 | build_tables_sources |
+| Error: "step12.report_markdown missing" | Looking at 12 | Really step 11 | partner_businesses |
 
-## Root Cause
+### Root Cause
 
-The finalize_report prompt in the active bundle was overwritten with a schema stub instead of actual instructions. This likely happened during a UI edit or copy operation.
+When the worker executes step 14 (1-indexed) and requests `step12` data:
+- Worker thinks step 12 = `assemble_sections` (which has `report_markdown`)
+- But `existing_steps[12]` in the database = step 12 (0-indexed) = `assemble_sections`
+- The offset is correct **only if** the worker indexes by `step_number` field
 
-## Solution
+The actual issue: The worker is accessing `existing_steps` **by array index** instead of by `step_number` field, OR there's a field naming inconsistency.
 
-### Step 1: Restore the Correct Prompt (Database Fix)
+### Database Query Results
 
-Copy the correct finalize_report prompt from the "Revised Bundle" to the "Active Bundle - 1 Feb":
+The step outputs are stored correctly:
+
+| step_number | step_name | Has report_markdown? |
+|-------------|-----------|---------------------|
+| 11 | partner_businesses | NO |
+| 12 | assemble_sections | YES - has `report_markdown` |
+| 13 | build_tables_sources | NO (has `tablesSources`) |
+| 14 | finalize_report | Empty (failed) |
+
+## Solution Options
+
+Since the external Cloud Run worker is **outside this codebase**, we have two options:
+
+### Option A: Fix the External Worker (Recommended)
+
+Update the Cloud Run worker to:
+1. Access steps by `step_number` field, not array index
+2. Use the correct 0-indexed step numbers when accessing prior step data
+3. When processing step 14 (0-indexed), look for `existing_steps.find(s => s.step_number === 12)` to get `assemble_sections`
+
+### Option B: Normalize Step Data in worker-proxy
+
+Add a transformation layer in `worker-proxy/get_prompt_bundle` to provide step outputs in a format the worker expects:
+1. Create a `step_outputs` object keyed by step number
+2. Map each step's `outputs_json` to `step{N}` keys
+3. Flatten nested structures like `tablesSources` to top-level
+
+## Technical Details for Option B
+
+In `worker-proxy/index.ts`, modify the `handleGetRunContext` function to include a normalized `step_outputs` map:
 
 ```text
-UPDATE prompt_bundle_steps
-SET prompt_template = (
-  SELECT prompt_template 
-  FROM prompt_bundle_steps 
-  WHERE id = '35b91045-8774-4faf-afe8-dd02b0d59eea'
-)
-WHERE id = 'f595c2f5-218f-4962-a33b-eb8b0a1ec4a3';
+// After fetching existing_steps, create normalized output map
+const step_outputs: Record<string, unknown> = {};
+
+for (const step of steps || []) {
+  if (step.status === "completed" && step.outputs_json) {
+    // Flatten nested structures and make accessible by step number
+    step_outputs[`step${step.step_number}`] = step.outputs_json;
+  }
+}
+
+// Include in response
+return jsonResponse({
+  run: { ... },
+  prompt_bundle: { ... },
+  grant_context: grantContext,
+  existing_steps: steps || [],
+  step_outputs,  // Add this normalized map
+});
 ```
 
-### Step 2: Add Prompt Validation (Preventive)
+The worker can then access:
+- `step_outputs.step12.report_markdown` for assemble_sections output
+- `step_outputs.step13.tablesSources` for build_tables_sources output
 
-Add validation in the PromptStepEditor component to prevent saving invalid prompts:
-
-- Minimum length check (prompts should be at least 50 characters)
-- Check for suspicious patterns like "prompt: empty string"
-- Warning when prompt doesn't contain expected template variables
-
-## Technical Details
-
-### Current Corrupted Record
-
-| Field | Value |
-|-------|-------|
-| Step ID | `f595c2f5-218f-4962-a33b-eb8b0a1ec4a3` |
-| Bundle ID | `c520cdf2-1809-441c-8038-bf20daa437ea` |
-| Bundle Name | Active Bundle - 1 Feb |
-| Step Number | 14 |
-| Step Name | finalize_report |
-
-### Correct Source Record
-
-| Field | Value |
-|-------|-------|
-| Step ID | `35b91045-8774-4faf-afe8-dd02b0d59eea` |
-| Bundle ID | `90e0e5bd-f625-47c9-83a0-08821153c895` |
-| Bundle Name | Revised Bundle |
-
-### Files to Modify (for validation)
+## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `src/components/admin/PromptStepEditor.tsx` | Add minimum length validation and suspicious pattern detection |
+| `supabase/functions/worker-proxy/index.ts` | Add `step_outputs` normalization in `handleGetRunContext` |
+
+## Implementation Notes
+
+1. The existing `existing_steps` array remains unchanged for backward compatibility
+2. The new `step_outputs` provides consistent access by step number
+3. Step outputs are only included for completed steps
+4. This fix doesn't require changes to the external worker immediately
 
 ## Success Criteria
 
-1. Step 14 prompt in active bundle matches the Revised Bundle version
-2. New reports generate correct HTML output
-3. UI prevents saving prompts shorter than 50 characters
-4. UI warns on suspicious patterns like "prompt: empty" or "model: none"
+1. Worker can access step data using `step_outputs.step12.report_markdown`
+2. Step 14 (finalize_report) successfully merges sections with tables
+3. Reports complete without "step12.report_markdown is missing" error
+
+## Risk Mitigation
+
+This change is additive and backward-compatible:
+- Existing `existing_steps` array remains unchanged
+- New `step_outputs` is an additional convenience field
+- External worker can be updated incrementally to use the new format
 
