@@ -348,6 +348,14 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     console.error("Failed to fetch steps:", stepsError);
   }
 
+  // Create normalized step_outputs map keyed by step number for consistent access
+  const step_outputs: Record<string, unknown> = {};
+  for (const step of steps || []) {
+    if (step.status === "completed" && step.outputs_json) {
+      step_outputs[`step${step.step_number}`] = step.outputs_json;
+    }
+  }
+
   // Compute effective model for each step (mapped to Replit-compatible names)
   const stepsWithModel = bundle.steps?.map((step: any) => {
     const effectiveModel = step.model_override || getDefaultModelForStep(step.step_number);
@@ -376,6 +384,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     },
     grant_context: grantContext,
     existing_steps: steps || [],
+    step_outputs,  // Normalized map for consistent step access by number
   });
 }
 
