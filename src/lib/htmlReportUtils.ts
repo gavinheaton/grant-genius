@@ -60,11 +60,11 @@ function extractHtmlFromSectionContent(content: string): string | null {
   }
   
   // Case 2: Code-fenced content - strip fences regardless of completeness
-  // Handle ```json or ```json\n at the start
+  // Handle ```json, ```JSON, ```html, ``` etc. at the start
   if (trimmed.startsWith("```")) {
-    // Remove opening fence (```json or ```)
-    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
-    // Remove closing fence if present
+    // Remove opening fence with any language tag (case-insensitive)
+    trimmed = trimmed.replace(/^```[a-zA-Z]*\s*\n?/, "");
+    // Remove closing fence if present (may be truncated)
     trimmed = trimmed.replace(/\n?```\s*$/, "");
     trimmed = trimmed.trim();
   }
@@ -110,10 +110,11 @@ function extractSourcesFromSection(content: string | undefined): ExtractedHtmlRe
   try {
     let jsonStr = content.trim();
     
-    // Remove code fences if present
-    const fenceMatch = jsonStr.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
-    if (fenceMatch) {
-      jsonStr = fenceMatch[1];
+    // Remove code fences if present (any language tag)
+    if (jsonStr.startsWith("```")) {
+      jsonStr = jsonStr.replace(/^```[a-zA-Z]*\s*\n?/, "");
+      jsonStr = jsonStr.replace(/\n?```\s*$/, "");
+      jsonStr = jsonStr.trim();
     }
     
     const parsed = JSON.parse(jsonStr);
@@ -231,12 +232,17 @@ function extractMarkdownFromNested(markdownContent: unknown): string | null {
     }
   }
 
-  // Case 3: Code-fenced JSON (```json ... ```)
-  if (typeof markdownContent === "string") {
-    const match = markdownContent.match(/^```json?\s*\n([\s\S]*?)\n```\s*$/);
-    if (match) {
+  // Case 3: Code-fenced JSON (```json, ```JSON, ```html, etc.)
+  if (typeof markdownContent === "string" && markdownContent.trim().startsWith("```")) {
+    // Strip any language tag and closing fence
+    let stripped = markdownContent.trim();
+    stripped = stripped.replace(/^```[a-zA-Z]*\s*\n?/, "");
+    stripped = stripped.replace(/\n?```\s*$/, "");
+    stripped = stripped.trim();
+    
+    if (stripped.startsWith("{")) {
       try {
-        const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+        const parsed = JSON.parse(stripped) as Record<string, unknown>;
         if (parsed.report_markdown && typeof parsed.report_markdown === "string") {
           return parsed.report_markdown;
         }

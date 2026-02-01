@@ -71,9 +71,9 @@ function parseJsonFromSection(content: string): Record<string, unknown> | null {
   
   let trimmed = content.trim();
   
-  // Strip code fences if present
+  // Strip code fences if present (any language tag: json, JSON, html, etc.)
   if (trimmed.startsWith("```")) {
-    trimmed = trimmed.replace(/^```json?\s*\n?/, "");
+    trimmed = trimmed.replace(/^```[a-zA-Z]*\s*\n?/, "");
     trimmed = trimmed.replace(/\n?```\s*$/, "");
     trimmed = trimmed.trim();
   }
