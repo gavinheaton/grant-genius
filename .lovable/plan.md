@@ -1,117 +1,90 @@
 
 
-# Fix: Dynamic Step Execution in Resume-Report-Run
+# Fix: Handle 504 Proxy Timeout Errors Gracefully
 
 ## Problem Summary
 
-The `resume-report-run` Edge Function fails on grant-specific pipelines because it has a **hardcoded 15-step switch statement** (steps 0-14) while the AEA Ignite pipeline has **14 steps** (0-13). This causes:
-
-1. **Step 11 failure**: The edge function expects `finalize_citations` at step 10 and `partnerBusinesses` from the default pipeline, but AEA Ignite has different step names and content at those positions
-2. **"step12 output is missing"**: The edge function references `{{step12}}` expecting `assembledSections` from the 15-step default pipeline, but AEA Ignite's step 12 is `build_tables_sources_html` with different semantics
+The report generation fails with "Proxy error: 504" when the external Cloud Run worker (hosted on Replit) makes a request to `worker-proxy` that stays open for 160 seconds, exceeding Supabase's gateway timeout.
 
 ## Evidence From Logs
 
-```
-Step 11 failed: finalize_citations
-Step 14 FAILED: step12 output is missing
-```
+| Timestamp | Event | Duration |
+|-----------|-------|----------|
+| 23:48:29 | Worker starts Step 2 (nrf_alignment_mapping) | - |
+| 23:51:10 | 504 error returned | 160,026ms |
+
+**Normal calls to `worker-proxy` complete in 200-1600ms.** The 160-second timeout suggests a network/connection issue between Replit and Supabase, not slow Edge Function logic.
 
 ## Root Cause
 
-| Issue | Default Pipeline (15 steps) | AEA Ignite (14 steps) |
-|-------|---------------------------|----------------------|
-| Step 10 | `competitorTable` | `finalize_citations` |
-| Step 11 | `partnerBusinesses` | `assemble_sections_html` |
-| Step 12 | `assemble_sections_html` | `build_tables_sources_html` |
-| Step 13 | `build_tables_sources_html` | `finalize_report_html` |
-| Step 14 | `finalize_report_html` | N/A |
+The Replit worker sends an HTTP request to `worker-proxy`, but either:
+1. The connection hangs (TCP keepalive issue)
+2. Replit worker is slow to send the request body (cold start)
+3. Network path between Replit and Supabase has intermittent issues
 
-The variable mapping (lines 526-541) is hardcoded:
-```typescript
-step10: JSON.stringify(reportContent.competitorTable || {}),
-step11: JSON.stringify(reportContent.partnerBusinesses || {}),
-step12: JSON.stringify(reportContent.assembledSections || {}),
-```
-
-But AEA Ignite stores different content at those steps, causing `{{step12}}` in the prompts to resolve to empty/wrong data.
+Supabase's gateway terminates connections that exceed ~60 seconds with a 504, but the logged execution_time shows the request was held open for 160 seconds before the gateway killed it.
 
 ## Solution
 
-Replace the hardcoded 15-step `switch` statement with **dynamic execution** that:
+Two-pronged approach:
 
-1. Reads step prompts from `prompt_bundle_steps` for the active bundle
-2. Iterates dynamically based on actual step count
-3. Uses step outputs from database (`report_run_steps.outputs_json`) instead of semantic named variables
+**1. Frontend: Auto-retry on 504 errors (resilience)**
+- When the frontend detects a "stalled" run with a 504 error, offer automatic retry
+- Already partially implemented via the stale detection logic
+
+**2. Worker: Add request timeouts and retry logic (source fix)**
+- Configure HTTP client timeouts to 30 seconds (fail fast)
+- Implement exponential backoff retry for transient failures
+- This requires changes to the external Replit worker (outside Lovable)
 
 ## Technical Implementation
 
-### Changes to `supabase/functions/resume-report-run/index.ts`:
+### Changes to `src/hooks/useReportGeneration.ts`
 
-1. **Fetch the correct bundle** (grant-specific or global active)
-2. **Dynamic step mapping**: Replace hardcoded `step0`...`step14` variable building with database-driven approach that reads `report_run_steps.outputs_json` for completed steps
-3. **Replace switch statement** with dynamic execution that:
-   - Gets prompt from `prompt_bundle_steps` where `step_number = nextStep`
-   - Interpolates variables from prior step outputs
-   - Executes the AI call
-   - Saves output
+Improve the error handling to detect 504 errors and provide better UX:
 
-### Key Code Changes
+1. **Add 504 detection in step monitoring** - When a step fails with a 504-related error, offer immediate retry
+2. **Reduce stale threshold for active runs** - If a run was recently active (steps progressing), detect stalls faster
+3. **Auto-resume on transient failures** - If the last error was a 504 and we have a valid checkpoint, auto-trigger resume
 
-**Before (hardcoded):**
-```typescript
-// lines 526-541 - hardcoded semantic names
-step10: JSON.stringify(reportContent.competitorTable || {}),
-step11: JSON.stringify(reportContent.partnerBusinesses || {}),
-step12: JSON.stringify(reportContent.assembledSections || {}),
-```
+### Changes to Frontend Error Display
 
-**After (dynamic):**
-```typescript
-// Build step variables dynamically from completed steps
-const stepVariables: Record<string, string> = {};
-for (const step of existingSteps) {
-  if (step.status === 'completed' && step.outputs_json) {
-    stepVariables[`step${step.step_number}`] = JSON.stringify(step.outputs_json);
-  }
-}
-```
-
-**Before (switch statement):**
-```typescript
-switch (nextStep) {
-  case 1: // hardcoded logic
-  case 2: // hardcoded logic
-  ...
-  case 14: // hardcoded logic
-}
-```
-
-**After (dynamic execution):**
-```typescript
-const stepConfig = bundle.steps.find(s => s.step_number === nextStep);
-const interpolatedPrompt = interpolatePrompt(stepConfig.prompt_template, allVariables);
-const result = await callAIWithRetry(interpolatedPrompt, nextStep, systemPrompt, ...);
-// Save to report_run_steps
-```
+Update `GenerationProgress.tsx` to show specific messaging for 504 errors:
+- "Network hiccup detected. Retrying automatically..."
+- Auto-trigger resume for steps after the first checkpoint
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `supabase/functions/resume-report-run/index.ts` | Replace hardcoded switch with dynamic execution; fetch step outputs from DB |
+| `src/hooks/useReportGeneration.ts` | Add 504 detection and auto-retry logic |
+| `src/components/workspace/GenerationProgress.tsx` | Show 504-specific error message with auto-retry |
 
-## Migration Path
+## External Worker Recommendation
 
-1. Implement dynamic execution engine
-2. Keep semantic variable names (`{{summary}}`, `{{trl}}`) for user inputs
-3. Use numeric step references (`{{step0}}`, `{{step1}}`) for step outputs - populated from database
-4. Remove hardcoded step count assumptions (support any pipeline length)
+The Replit worker (`genius-worker-flow.replit.app`) should be updated to:
+
+```javascript
+// Add timeout to fetch calls
+const response = await fetch(workerProxyUrl, {
+  method: 'POST',
+  headers: { ... },
+  body: JSON.stringify(payload),
+  signal: AbortSignal.timeout(30000), // 30 second timeout
+});
+```
+
+This prevents the worker from holding connections open indefinitely.
 
 ## Validation
 
 After the fix:
-1. Create a new AEA Ignite application
-2. Run report generation
-3. Verify all 14 steps complete without errors
-4. Confirm Step 13 (`finalize_report_html`) produces valid HTML report
+1. Run a report and observe behavior during Step 2+
+2. If a 504 occurs, the frontend should detect it within 30 seconds and auto-resume
+3. The run should continue from the last checkpoint without user intervention
+
+## Impact
+
+- **Current behavior:** 504 → run fails → user must manually retry
+- **After fix:** 504 → auto-detected → auto-resume from checkpoint → run continues
 
