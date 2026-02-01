@@ -24,12 +24,15 @@ The Replit worker sends an HTTP request to `worker-proxy`, but either:
 
 Supabase's gateway terminates connections that exceed ~60 seconds with a 504, but the logged execution_time shows the request was held open for 160 seconds before the gateway killed it.
 
-## Solution
+## Solution ✅ IMPLEMENTED
 
 Two-pronged approach:
 
-**1. Frontend: Auto-retry on 504 errors (resilience)**
-- When the frontend detects a "stalled" run with a 504 error, offer automatic retry
+**1. Frontend: Auto-retry on 504 errors (resilience)** ✅
+- Added `isTransientError()` helper to detect 504/network errors
+- Exposed `is504Error` flag on `ReportRun` interface
+- Detects transient errors via Realtime step updates
+- Shows "Network hiccup detected" messaging with auto-retry countdown
 - Already partially implemented via the stale detection logic
 
 **2. Worker: Add request timeouts and retry logic (source fix)**
@@ -39,26 +42,25 @@ Two-pronged approach:
 
 ## Technical Implementation
 
-### Changes to `src/hooks/useReportGeneration.ts`
+### Changes to `src/hooks/useReportGeneration.ts` ✅
 
-Improve the error handling to detect 504 errors and provide better UX:
+1. **Added TRANSIENT_ERROR_PATTERNS** - Regex patterns for 504, proxy error, gateway timeout, network, etc.
+2. **Added isTransientError() helper** - Detects transient errors from step error messages
+3. **Extended ReportRun interface** - Added `is504Error?: boolean` flag
+4. **Updated checkActiveRun()** - Sets `is504Error` based on failed step error messages
+5. **Updated Realtime step listener** - Immediately flags 504 errors when detected
 
-1. **Add 504 detection in step monitoring** - When a step fails with a 504-related error, offer immediate retry
-2. **Reduce stale threshold for active runs** - If a run was recently active (steps progressing), detect stalls faster
-3. **Auto-resume on transient failures** - If the last error was a 504 and we have a valid checkpoint, auto-trigger resume
+### Changes to `src/components/workspace/GenerationProgress.tsx` ✅
 
-### Changes to Frontend Error Display
+1. **Added `is504Error` prop** - Passed from ApplicationWorkspace
+2. **Added `showNetworkErrorMessage` flag** - Shows special messaging for 504 errors
+3. **Network hiccup UI** - Yellow warning box with friendly message
+4. **Updated auto-retry messaging** - "Your progress is saved" for network errors
+5. **Updated button text** - "Retry Now" instead of "Resume Report" for 504 errors
 
-Update `GenerationProgress.tsx` to show specific messaging for 504 errors:
-- "Network hiccup detected. Retrying automatically..."
-- Auto-trigger resume for steps after the first checkpoint
+### Changes to `src/pages/ApplicationWorkspace.tsx` ✅
 
-## Files to Modify
-
-| File | Change |
-|------|--------|
-| `src/hooks/useReportGeneration.ts` | Add 504 detection and auto-retry logic |
-| `src/components/workspace/GenerationProgress.tsx` | Show 504-specific error message with auto-retry |
+1. **Passes `is504Error`** - Forwards the flag to GenerationProgress
 
 ## External Worker Recommendation
 
@@ -86,5 +88,4 @@ After the fix:
 ## Impact
 
 - **Current behavior:** 504 → run fails → user must manually retry
-- **After fix:** 504 → auto-detected → auto-resume from checkpoint → run continues
-
+- **After fix:** 504 → auto-detected → friendly message → auto-resume from checkpoint → run continues

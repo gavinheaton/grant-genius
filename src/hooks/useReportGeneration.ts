@@ -12,6 +12,7 @@ interface ReportRun {
   started_at: string | null;
   completed_at: string | null;
   email_on_complete: boolean;
+  is504Error?: boolean; // Flag for transient network errors
 }
 
 export interface Report {
@@ -34,6 +35,23 @@ export interface ReportRunStep {
 
 // 5 minutes stale threshold
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+
+// 504 timeout patterns for auto-retry detection
+const TRANSIENT_ERROR_PATTERNS = [
+  /504/i,
+  /proxy error/i,
+  /gateway timeout/i,
+  /network/i,
+  /timeout/i,
+  /ECONNRESET/i,
+  /ETIMEDOUT/i,
+];
+
+// Helper to detect transient/504 errors
+function isTransientError(errorMessage: string | null | undefined): boolean {
+  if (!errorMessage) return false;
+  return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorMessage));
+}
 
 interface UseReportGenerationOptions {
   onNoCredits?: () => void;
@@ -111,11 +129,16 @@ export function useReportGeneration(
       const now = new Date();
       const isStale = now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS;
 
+      // Check if any failed step has a 504/transient error
+      const failedSteps = steps.filter(s => s.status === 'failed');
+      const has504Error = failedSteps.some(s => isTransientError(s.error_message));
+
       const runData: ReportRun = {
         ...data,
         status: isStale ? "stalled" : data.status,
         completed_at: data.completed_at ?? null,
         email_on_complete: data.email_on_complete ?? false,
+        is504Error: has504Error,
       } as ReportRun;
 
       setActiveRun(runData);
@@ -128,7 +151,7 @@ export function useReportGeneration(
       setIsGenerating(false);
       setSteps([]);
     }
-  }, [applicationId, fetchSteps]);
+  }, [applicationId, fetchSteps, steps]);
 
   // Subscribe to Realtime changes for steps
   useEffect(() => {
@@ -159,6 +182,12 @@ export function useReportGeneration(
             setSteps(prev => prev.map(s => 
               s.step_number === updatedStep.step_number ? updatedStep : s
             ));
+            
+            // Detect 504/transient error immediately when step fails
+            if (updatedStep.status === 'failed' && isTransientError(updatedStep.error_message)) {
+              console.log('504/transient error detected, flagging for auto-retry');
+              setActiveRun(prev => prev ? { ...prev, is504Error: true } : null);
+            }
           }
         }
       )
