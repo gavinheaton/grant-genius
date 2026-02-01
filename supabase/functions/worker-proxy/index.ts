@@ -171,38 +171,12 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     return errorResponse("Report run not found", 404);
   }
 
-  // Fetch the active prompt bundle with steps
-  const { data: bundle, error: bundleError } = await supabase
-    .from("prompt_bundles")
-    .select(`
-      id,
-      system_prompt,
-      steps:prompt_bundle_steps (
-        step_number,
-        step_name,
-        step_description,
-        prompt_template,
-        model_override,
-        timeout_seconds,
-        is_heavy,
-        max_expected_seconds
-      )
-    `)
-    .eq("is_active", true)
-    .single();
-
-  if (bundleError || !bundle) {
-    console.error("Failed to fetch prompt bundle:", bundleError);
-    return errorResponse("No active prompt bundle found", 404);
-  }
-
-  // Sort steps by step_number
-  bundle.steps?.sort((a: any, b: any) => a.step_number - b.step_number);
-
-  // Fetch grant context
   const application = run.application;
+  let bundle = null;
   let grantContext = null;
+  let usingGrantBundle = false;
 
+  // First, try to get grant-specific bundle if available
   if (application?.grant_version_id) {
     const { data: grantVersion, error: grantError } = await supabase
       .from("grant_versions")
@@ -212,6 +186,8 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
         guidelines_raw_text,
         rubric_json,
         ai_suggestions_json,
+        prompt_bundle_id,
+        pipeline_generation_status,
         grant:grants (
           id,
           name,
@@ -222,22 +198,62 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
       .single();
 
     if (!grantError && grantVersion) {
-      // Truncate guidelines to 10,000 chars
+      // Check if grant has a published pipeline
+      if (grantVersion.prompt_bundle_id && grantVersion.pipeline_generation_status === "published") {
+        const { data: grantBundle, error: bundleError } = await supabase
+          .from("prompt_bundles")
+          .select(`
+            id,
+            system_prompt,
+            steps:prompt_bundle_steps (
+              step_number,
+              step_name,
+              step_description,
+              prompt_template,
+              model_override,
+              timeout_seconds,
+              is_heavy,
+              max_expected_seconds
+            )
+          `)
+          .eq("id", grantVersion.prompt_bundle_id)
+          .single();
+
+        if (!bundleError && grantBundle) {
+          bundle = grantBundle;
+          usingGrantBundle = true;
+          console.log(`Using grant-specific bundle: ${grantBundle.id} for grant version ${grantVersion.id}`);
+        }
+      }
+
+      // Build grant context
       const guidelinesExcerpt = grantVersion.guidelines_raw_text
         ? grantVersion.guidelines_raw_text.substring(0, 10000)
         : "";
 
-      // Format rubric
       const rubricJson = grantVersion.rubric_json;
       let formattedRubric = "";
       if (rubricJson && typeof rubricJson === "object") {
-        const sections = Object.entries(rubricJson);
-        formattedRubric = sections.map(([key, value]: [string, any]) => {
-          if (typeof value === "object" && value !== null) {
-            return `## ${value.title || key}\nWeight: ${value.weight || "N/A"}\n${value.criteria || ""}`;
-          }
-          return `## ${key}\n${String(value)}`;
-        }).join("\n\n");
+        // Handle both formats: { sections: [...] } and direct object
+        const sections = rubricJson.sections || Object.entries(rubricJson);
+        if (Array.isArray(sections)) {
+          formattedRubric = sections.map((section: any) => {
+            if (typeof section === "object" && section !== null) {
+              const criteria = Array.isArray(section.criteria) 
+                ? section.criteria.join("; ") 
+                : (section.criteria || "");
+              return `## ${section.title || section.key}\nWeight: ${section.weight || "N/A"}%\n${section.description || ""}\nCriteria: ${criteria}`;
+            }
+            return "";
+          }).filter(Boolean).join("\n\n");
+        } else {
+          formattedRubric = Object.entries(rubricJson).map(([key, value]: [string, any]) => {
+            if (typeof value === "object" && value !== null) {
+              return `## ${value.title || key}\nWeight: ${value.weight || "N/A"}\n${value.criteria || ""}`;
+            }
+            return `## ${key}\n${String(value)}`;
+          }).join("\n\n");
+        }
       }
 
       const grant = grantVersion.grant;
@@ -249,10 +265,43 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
         version_number: grantVersion.version_number,
         guidelines_excerpt: guidelinesExcerpt,
         rubric: formattedRubric,
-        summary: aiSuggestions?.summary || "",
+        summary: aiSuggestions?.grant_summary || aiSuggestions?.summary || "",
       };
     }
   }
+
+  // Fallback to global active bundle if no grant-specific bundle
+  if (!bundle) {
+    const { data: activeBundle, error: bundleError } = await supabase
+      .from("prompt_bundles")
+      .select(`
+        id,
+        system_prompt,
+        steps:prompt_bundle_steps (
+          step_number,
+          step_name,
+          step_description,
+          prompt_template,
+          model_override,
+          timeout_seconds,
+          is_heavy,
+          max_expected_seconds
+        )
+      `)
+      .eq("is_active", true)
+      .single();
+
+    if (bundleError || !activeBundle) {
+      console.error("Failed to fetch prompt bundle:", bundleError);
+      return errorResponse("No active prompt bundle found", 404);
+    }
+
+    bundle = activeBundle;
+    console.log(`Using global active bundle: ${activeBundle.id}`);
+  }
+
+  // Sort steps by step_number
+  bundle.steps?.sort((a: any, b: any) => a.step_number - b.step_number);
 
   // Fetch existing step statuses
   const { data: steps, error: stepsError } = await supabase
@@ -288,7 +337,8 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     prompt_bundle: {
       id: bundle.id,
       system_prompt: bundle.system_prompt,
-      steps: stepsWithModel,  // Now includes `model` field
+      steps: stepsWithModel,
+      is_grant_specific: usingGrantBundle,
     },
     grant_context: grantContext,
     existing_steps: steps || [],

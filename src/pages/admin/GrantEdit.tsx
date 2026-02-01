@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2 } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
@@ -43,14 +43,16 @@ export default function GrantEdit() {
   const [guidelinesPath, setGuidelinesPath] = useState<string | null>(null);
   const [guidelinesRawText, setGuidelinesRawText] = useState<string | null>(null);
   const [aiAnalysisStatus, setAiAnalysisStatus] = useState("pending");
+  const [pipelineStatus, setPipelineStatus] = useState("none");
+  const [promptBundleId, setPromptBundleId] = useState<string | null>(null);
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
   const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge">("cloud_run");
   const [edgeAllowed, setEdgeAllowed] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const { data: grant, isLoading } = useQuery({
     queryKey: ["admin-grant", id],
     queryFn: async () => {
-      // Use raw query since TypeScript types may not have the new columns yet
       const { data, error } = await supabase
         .from("grants")
         .select(`
@@ -69,7 +71,9 @@ export default function GrantEdit() {
             ai_analysis_status,
             ai_suggestions_json,
             execution_engine_default,
-            edge_allowed
+            edge_allowed,
+            pipeline_generation_status,
+            prompt_bundle_id
           )
         `)
         .eq("id", id)
@@ -77,15 +81,12 @@ export default function GrantEdit() {
 
       if (error) throw error;
       
-      // Cast to any to handle new columns not yet in TypeScript types
       const grantData = data as any;
       
-      // Initialize form state
       setName(grantData.name);
       setDescription(grantData.description || "");
       setIsActive(grantData.is_active);
 
-      // Select latest version by default
       if (grantData.grant_versions?.length > 0) {
         const sorted = [...grantData.grant_versions].sort(
           (a: any, b: any) => b.version_number - a.version_number
@@ -95,7 +96,34 @@ export default function GrantEdit() {
 
       return grantData;
     },
+    refetchInterval: (query) => {
+      // Poll every 3 seconds if processing
+      const data = query.state.data as any;
+      const selectedVer = data?.grant_versions?.find((v: any) => v.id === selectedVersionId);
+      if (selectedVer) {
+        const isProcessing = 
+          selectedVer.ai_analysis_status === "processing" || 
+          selectedVer.pipeline_generation_status === "generating";
+        return isProcessing ? 3000 : false;
+      }
+      return false;
+    },
   });
+
+  // Update local state when grant data changes (for polling updates)
+  useEffect(() => {
+    if (grant && selectedVersionId) {
+      const version = grant.grant_versions?.find((v: any) => v.id === selectedVersionId);
+      if (version) {
+        setAiAnalysisStatus(version.ai_analysis_status || "pending");
+        setPipelineStatus(version.pipeline_generation_status || "none");
+        setPromptBundleId(version.prompt_bundle_id || null);
+        setAiSuggestions(version.ai_suggestions_json || null);
+        setVersionInputs(JSON.stringify(version.required_inputs_json || [], null, 2));
+        setVersionRubric(JSON.stringify(version.rubric_json || {}, null, 2));
+      }
+    }
+  }, [grant, selectedVersionId]);
 
   const selectVersion = (version: any) => {
     setSelectedVersionId(version.id);
@@ -105,9 +133,57 @@ export default function GrantEdit() {
     setGuidelinesPath(version.guidelines_source_path || null);
     setGuidelinesRawText(version.guidelines_raw_text || null);
     setAiAnalysisStatus(version.ai_analysis_status || "pending");
+    setPipelineStatus(version.pipeline_generation_status || "none");
+    setPromptBundleId(version.prompt_bundle_id || null);
     setAiSuggestions(version.ai_suggestions_json || null);
     setExecutionEngineDefault(version.execution_engine_default || "cloud_run");
     setEdgeAllowed(version.edge_allowed || false);
+  };
+
+  const handleRetryProcessing = async () => {
+    if (!guidelinesRawText || !selectedVersionId) return;
+    
+    setIsRetrying(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not authenticated");
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-grant-guidelines`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            grant_version_id: selectedVersionId,
+            guidelines_text: guidelinesRawText,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Processing failed");
+      }
+
+      toast({
+        title: "Processing complete",
+        description: `Generated ${data.step_count}-step research pipeline`,
+      });
+      
+      queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+    } catch (error) {
+      toast({
+        title: "Processing failed",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsRetrying(false);
+    }
   };
 
   const updateGrantMutation = useMutation({
@@ -225,6 +301,28 @@ export default function GrantEdit() {
     },
   });
 
+  const publishPipelineMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedVersionId) return;
+
+      const { error } = await supabase
+        .from("grant_versions")
+        .update({
+          pipeline_generation_status: "published",
+        })
+        .eq("id", selectedVersionId);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      toast({ title: "Pipeline published successfully" });
+      queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+    },
+    onError: () => {
+      toast({ title: "Error publishing pipeline", variant: "destructive" });
+    },
+  });
+
   const selectedVersion = grant?.grant_versions?.find(
     (v: any) => v.id === selectedVersionId
   );
@@ -273,6 +371,10 @@ export default function GrantEdit() {
           <TabsTrigger value="guidelines">
             <FileText className="h-4 w-4 mr-1" />
             Guidelines
+          </TabsTrigger>
+          <TabsTrigger value="pipeline">
+            <Workflow className="h-4 w-4 mr-1" />
+            Pipeline
           </TabsTrigger>
           <TabsTrigger value="inputs">Required Inputs</TabsTrigger>
           <TabsTrigger value="rubric">Rubric</TabsTrigger>
@@ -347,6 +449,7 @@ export default function GrantEdit() {
                   <TableRow>
                     <TableHead>Version</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Pipeline</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead>Published</TableHead>
                     <TableHead>Actions</TableHead>
@@ -364,6 +467,17 @@ export default function GrantEdit() {
                       <TableCell>
                         <Badge variant={version.is_published ? "default" : "outline"}>
                           {version.is_published ? "Published" : "Draft"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge 
+                          variant={
+                            version.pipeline_generation_status === "published" ? "default" :
+                            version.pipeline_generation_status === "draft" ? "secondary" :
+                            "outline"
+                          }
+                        >
+                          {version.pipeline_generation_status || "none"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -413,7 +527,7 @@ export default function GrantEdit() {
                 <CardHeader>
                   <CardTitle>Upload Guidelines</CardTitle>
                   <CardDescription>
-                    Upload the grant guidelines PDF to extract required inputs and rubric
+                    Upload the grant guidelines PDF to automatically extract inputs, rubric, and generate pipeline
                     {selectedVersion && (
                       <Badge className="ml-2" variant="outline">
                         v{selectedVersion.version_number}
@@ -432,6 +546,10 @@ export default function GrantEdit() {
                         setGuidelinesPath(path);
                         setGuidelinesRawText(rawText);
                         setAiAnalysisStatus("pending");
+                        setPipelineStatus("none");
+                      }}
+                      onProcessingStart={() => {
+                        setAiAnalysisStatus("processing");
                         queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
                       }}
                     />
@@ -450,22 +568,92 @@ export default function GrantEdit() {
                   versionId={selectedVersionId}
                   guidelinesText={guidelinesRawText}
                   analysisStatus={aiAnalysisStatus}
+                  pipelineStatus={pipelineStatus}
+                  promptBundleId={promptBundleId}
                   suggestions={aiSuggestions}
-                  onAnalysisComplete={() => {
-                    queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
-                  }}
-                  onApplySuggestions={(inputs, rubric) => {
-                    setVersionInputs(JSON.stringify(inputs, null, 2));
-                    setVersionRubric(JSON.stringify(rubric, null, 2));
-                    toast({
-                      title: "Suggestions applied",
-                      description: "Switch to Required Inputs and Rubric tabs to review and save",
-                    });
-                  }}
+                  onRetry={handleRetryProcessing}
+                  isRetrying={isRetrying}
                 />
               )}
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="pipeline" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Research Pipeline</CardTitle>
+              <CardDescription>
+                Custom research pipeline generated from grant guidelines
+                {selectedVersion && (
+                  <Badge className="ml-2" variant="outline">
+                    v{selectedVersion.version_number}
+                  </Badge>
+                )}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!promptBundleId ? (
+                <div className="text-center py-8">
+                  <Workflow className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground mb-2">
+                    No pipeline generated yet
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Upload guidelines to automatically generate a research pipeline
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between p-4 rounded-lg border bg-card">
+                    <div>
+                      <p className="font-medium">Pipeline Status</p>
+                      <Badge 
+                        variant={pipelineStatus === "published" ? "default" : "secondary"}
+                        className="mt-1"
+                      >
+                        {pipelineStatus}
+                      </Badge>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" asChild>
+                        <Link to={`/admin/prompt-bundles/${promptBundleId}`}>
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          View & Edit Pipeline
+                        </Link>
+                      </Button>
+                      {isSuperAdmin && pipelineStatus === "draft" && (
+                        <Button 
+                          onClick={() => publishPipelineMutation.mutate()}
+                          disabled={publishPipelineMutation.isPending}
+                        >
+                          {publishPipelineMutation.isPending && (
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          )}
+                          <CheckCircle className="h-4 w-4 mr-2" />
+                          Publish Pipeline
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {pipelineStatus === "draft" && (
+                    <p className="text-sm text-amber-600">
+                      ⚠️ This pipeline is in draft status. Researchers will use the global default pipeline 
+                      until a Super Admin publishes this grant-specific pipeline.
+                    </p>
+                  )}
+
+                  {pipelineStatus === "published" && (
+                    <p className="text-sm text-green-600">
+                      ✓ This pipeline is active. Researchers applying for this grant will use this 
+                      custom research pipeline.
+                    </p>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="inputs" className="mt-6">
@@ -546,7 +734,6 @@ export default function GrantEdit() {
                 onEngineChange={async (engine) => {
                   if (!selectedVersionId) return;
                   setExecutionEngineDefault(engine);
-                  // Use type assertion for new columns not yet in TypeScript types
                   await supabase
                     .from("grant_versions")
                     .update({ execution_engine_default: engine } as any)
@@ -557,7 +744,6 @@ export default function GrantEdit() {
                 onEdgeAllowedChange={async (allowed) => {
                   if (!selectedVersionId) return;
                   setEdgeAllowed(allowed);
-                  // If disabling edge, reset engine to cloud_run
                   const updates: any = { edge_allowed: allowed };
                   if (!allowed && executionEngineDefault === "edge") {
                     updates.execution_engine_default = "cloud_run";
