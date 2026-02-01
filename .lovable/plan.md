@@ -1,301 +1,238 @@
 
-
-# Grant-Specific Research Pipelines with Dynamic Step Generation
+# Automated Pipeline Generation: Option A Implementation
 
 ## Overview
 
-This plan enables each grant to have its own tailored research pipeline where the AI analyzes grant guidelines and determines the optimal number of research steps needed to support that specific grant application.
+This plan implements a single orchestrating edge function (`process-grant-guidelines`) that automatically handles the entire pipeline setup when an admin uploads grant guidelines. The admin only needs to upload a PDF, and the system handles extraction, application, and pipeline generation in one seamless process.
 
-**Key Principles:**
-- **Research-focused**: The pipeline produces research evidence (market sizing, competitor analysis, partner mapping) that researchers use to write their grant applications
-- **Dynamic step count**: Not fixed at 15 steps. The AI determines what research areas are needed based on the grant's assessment criteria
-- **Human-in-the-loop**: AI proposes a draft pipeline, admin reviews and edits, Super Admin publishes
+## What Changes
 
-## Current State vs Target State
+### Current Flow (Manual - 4 Steps)
+1. Upload PDF
+2. Click "Analyze with AI"
+3. Select and click "Apply Suggestions"
+4. (Pipeline generation not yet implemented)
 
-| Aspect | Current | Target |
-|--------|---------|--------|
-| Step count | Fixed 15 steps for all grants | Variable (e.g., 8-20) based on grant requirements |
-| Pipeline source | Single "active" bundle globally | Each grant version links to its own bundle |
-| Step design | Hardcoded research areas | AI-determined based on grant rubric |
-| Pipeline creation | Manual bundle creation | AI proposes from guidelines, admin refines |
+### New Automated Flow (1 Action)
+1. Upload PDF - everything else happens automatically
+   - Extracts rubric and required inputs
+   - Auto-applies to grant version
+   - Generates custom research pipeline
+   - Creates and links prompt bundle
+   - Sets status to "draft" for Super Admin review
 
-## How It Works
+## Files to Create
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│                    GRANT PIPELINE GENERATION FLOW                   │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  1. Admin uploads grant guidelines PDF                              │
-│                      ↓                                              │
-│  2. AI extracts rubric + required inputs (existing)                 │
-│                      ↓                                              │
-│  3. Admin clicks "Generate Research Pipeline"                       │
-│                      ↓                                              │
-│  4. AI analyzes rubric to determine:                                │
-│     • What research areas are needed                                │
-│     • How many steps required                                       │
-│     • What evidence supports each criterion                         │
-│                      ↓                                              │
-│  5. AI creates draft prompt bundle:                                 │
-│     • Step 0: Build Source Pack (always)                            │
-│     • Steps 1-N: Research steps (variable)                          │
-│     • Step N+1: Assemble Report (always)                            │
-│     • Step N+2: Build Tables/Sources                                │
-│     • Step N+3: Finalize Report                                     │
-│                      ↓                                              │
-│  6. Admin reviews + edits prompts in bundle editor                  │
-│                      ↓                                              │
-│  7. Super Admin publishes → Ready for researchers                   │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+### 1. `supabase/functions/process-grant-guidelines/index.ts`
+A new orchestrating edge function that combines all processing into one call:
+
+**Processing Steps:**
+1. Update grant version status to "processing"
+2. **AI Call #1**: Extract rubric + required inputs (existing logic from analyze-grant-guidelines)
+3. Auto-apply extracted data to `grant_versions.required_inputs_json` and `rubric_json`
+4. **AI Call #2**: Generate research pipeline based on rubric
+   - Analyzes rubric sections to determine research steps needed
+   - Generates between 8-20 steps typically (dynamic based on complexity)
+   - Creates prompts tailored to grant criteria
+5. Create new `prompt_bundle` with generated steps
+6. Link bundle to grant version (`prompt_bundle_id`)
+7. Set `pipeline_generation_status = "draft"`
+8. Update status to "completed"
+
+**AI Pipeline Generation Prompt** will instruct the model to:
+- Focus on RESEARCH that supports applications (not application writing)
+- Determine optimal step count based on rubric complexity
+- Skip criteria requiring applicant-provided info (team bios, track record)
+- Include mandatory steps: Step 0 (Source Pack), Final 3 steps (Assembly)
+- Generate prompts with {{variable}} placeholders
+
+### 2. `src/components/admin/ProcessingProgress.tsx`
+A new component showing unified processing progress:
+
+```
+[████████████░░░░░░░░░░░░] 45%
+
+ PDF uploaded
+ Extracting rubric and inputs...
+○ Generating research pipeline...
+○ Creating prompt bundle...
 ```
 
-## AI Pipeline Generation Logic
+Displays real-time status based on `ai_analysis_status` and `pipeline_generation_status` fields.
 
-The AI will analyze the grant's rubric sections and map them to research steps:
+## Files to Modify
 
-**Example: Commercialization Grant**
-```text
-Rubric Section               →  Research Step(s)
-───────────────────────────────────────────────────
-Market opportunity (30%)     →  market_segments, calculate_tam, 
-                                calculate_sam, calculate_som
-Competitive landscape (20%)  →  competitor_research, competitor_table
-Commercial viability (25%)   →  economic_impact, partner_businesses
-Innovation & IP (15%)        →  technology_context, ip_landscape
-Team capability (10%)        →  (not research - applicant provides)
+### 3. `src/components/admin/GuidelinesUploader.tsx`
+**Changes:**
+- After successful PDF upload, automatically call `process-grant-guidelines` edge function
+- Remove the "You can now analyze them with AI" toast message
+- Add new prop `onProcessingStart` to signal parent component
+
+**New behavior:**
+1. Upload PDF to storage
+2. Immediately trigger `process-grant-guidelines`
+3. Parent component shows processing progress
+
+### 4. `src/components/admin/AIAnalysisPanel.tsx`
+**Changes:**
+- Transform from manual trigger to status display
+- Remove "Analyze with AI" button (now automatic)
+- Remove "Apply Selected Suggestions" button (now automatic)
+- Show read-only preview of extracted rubric and inputs
+- Add link to generated pipeline when complete
+
+**New sections:**
+- Processing status with progress indicator
+- Read-only summary of extracted data
+- Pipeline preview (step count, step names)
+- "View Full Pipeline" link to bundle editor
+- "Regenerate" button for manual override
+
+### 5. `src/pages/admin/GrantEdit.tsx`
+**Changes:**
+- Add `pipeline_generation_status` and `prompt_bundle_id` to the query
+- Add state variables for new fields
+- Pass processing status to child components
+- Add Pipeline tab with link to bundle editor when pipeline exists
+- Add polling for status updates during processing
+
+**New tab structure:**
+```
+Details | Versions | Guidelines | Pipeline | Required Inputs | Rubric | Advanced
 ```
 
-**Example: Research Impact Grant**
-```text
-Rubric Section               →  Research Step(s)
-───────────────────────────────────────────────────
-Research significance (40%)  →  extract_context, literature_review
-National benefit (30%)       →  economic_impact, policy_alignment
-Feasibility (20%)            →  methodology_analysis, resource_mapping
-Track record (10%)           →  (not research - applicant provides)
+### 6. `supabase/functions/worker-proxy/index.ts`
+**Changes:**
+Update `handleGetRunContext` to use grant-linked bundle:
+
+```
+Current: SELECT bundle WHERE is_active = true (global)
+
+New:
+1. Get application's grant_version_id
+2. Fetch grant_version.prompt_bundle_id
+3. If exists, use that bundle's steps
+4. Else fallback to global active bundle
 ```
 
-The AI will:
-1. Read each rubric section's criteria
-2. Determine what research evidence would address those criteria
-3. Generate appropriate steps with prompts that reference the specific criteria
-4. Skip sections that require applicant input (not research)
+This ensures reports use the grant-specific pipeline when available.
 
-## Database Changes
-
-### Add columns to grant_versions
-
-```sql
--- Link grant versions to their specific prompt bundle
-ALTER TABLE grant_versions 
-ADD COLUMN prompt_bundle_id UUID REFERENCES prompt_bundles(id);
-
--- Track pipeline generation status
-ALTER TABLE grant_versions
-ADD COLUMN pipeline_generation_status TEXT DEFAULT 'none'
-CHECK (pipeline_generation_status IN ('none', 'generating', 'draft', 'published'));
+### 7. `supabase/config.toml`
+Add configuration for new edge function:
+```toml
+[functions.process-grant-guidelines]
+verify_jwt = false
 ```
 
-### Remove step_number constraint from prompt_bundle_steps
+## Database Status Fields Used
 
-Currently the table has a constraint limiting step numbers. For dynamic step counts, this needs to be flexible:
+| Field | Values | Purpose |
+|-------|--------|---------|
+| `ai_analysis_status` | pending, processing, completed, failed | Tracks extraction phase |
+| `pipeline_generation_status` | none, generating, draft, published | Tracks pipeline creation |
 
-```sql
--- Remove existing constraint
-ALTER TABLE prompt_bundle_steps 
-DROP CONSTRAINT IF EXISTS prompt_bundle_steps_step_number_check;
+## Processing Timeline
 
--- Add a more flexible constraint (0-50 steps max)
-ALTER TABLE prompt_bundle_steps 
-ADD CONSTRAINT prompt_bundle_steps_step_number_check 
-CHECK (step_number >= 0 AND step_number <= 50);
+Estimated total time: **30-60 seconds**
+
+| Phase | Duration | Status Fields |
+|-------|----------|---------------|
+| PDF Upload | 2-5s | - |
+| Extraction (AI Call #1) | 10-20s | ai_analysis_status: processing |
+| Auto-apply | <1s | - |
+| Pipeline Generation (AI Call #2) | 15-30s | pipeline_generation_status: generating |
+| Bundle Creation | <1s | pipeline_generation_status: draft |
+
+## UI States
+
+### Guidelines Tab - Before Upload
+```
+┌────────────────────────────────────────────────────────┐
+│  [Drop Zone]                                            │
+│  Upload Grant Guidelines                                │
+│  Drag and drop a PDF, or click to browse               │
+└────────────────────────────────────────────────────────┘
 ```
 
-## Implementation Plan
-
-### Part 1: Database & Core Infrastructure
-
-**1.1 Database Migration**
-- Add `prompt_bundle_id` and `pipeline_generation_status` to `grant_versions`
-- Update step_number constraint to allow variable step counts
-
-**1.2 Update worker-proxy to use grant-linked bundle**
-
-Current flow:
-```text
-worker-proxy → fetch bundle where is_active = true (global)
+### Guidelines Tab - Processing
+```
+┌────────────────────────────────────────────────────────┐
+│  [Spinning] Processing Guidelines                       │
+│                                                         │
+│  [████████████░░░░░░░░░] 60%                           │
+│                                                         │
+│   Uploaded guidelines.pdf                              │
+│   Extracted rubric and required inputs                 │
+│  ○ Generating research pipeline...                     │
+│  ○ Creating prompt bundle...                           │
+│                                                         │
+│  This may take 30-60 seconds                           │
+└────────────────────────────────────────────────────────┘
 ```
 
-New flow:
-```text
-worker-proxy → get application's grant_version_id
-            → fetch grant_version.prompt_bundle_id
-            → if exists, use that bundle
-            → else fallback to global active bundle
+### Guidelines Tab - Complete
+```
+┌────────────────────────────────────────────────────────┐
+│  [CheckCircle] Processing Complete                      │
+│                                                         │
+│  Grant Summary:                                         │
+│  "The AEA Ignite grant supports commercialization..."  │
+│                                                         │
+│  Extracted:                                             │
+│  • 8 required inputs                                    │
+│  • 5 rubric sections                                    │
+│  • 12-step research pipeline                           │
+│                                                         │
+│  [View Pipeline] [View Rubric] [Regenerate]            │
+│                                                         │
+│  ⚠ Draft - Super Admin must publish before use         │
+└────────────────────────────────────────────────────────┘
 ```
 
-### Part 2: AI Pipeline Generation Edge Function
+## Error Handling
 
-**New function: `generate-grant-pipeline`**
+If either AI call fails:
+1. Set appropriate status to "failed"
+2. Preserve any partial results
+3. Show error message with "Retry" button
+4. Log to `audit_logs` for debugging
 
-This function:
-1. Takes the grant version's rubric and summary
-2. Calls Lovable AI to design a research pipeline
-3. Creates a new prompt_bundle with generated steps
-4. Links it to the grant_version
-5. Sets status to "draft"
+The admin can:
+- Click "Retry" to re-run the entire process
+- Manually create a pipeline via existing bundle editor
+- Link an existing bundle as fallback
 
-**AI Prompt Structure:**
-```text
-You are an expert at designing research pipelines for grant applications.
+## Manual Override Options (Preserved)
 
-Given this grant's assessment criteria:
-{rubric}
-
-Grant summary:
-{grant_summary}
-
-Design a research pipeline that will gather evidence to support 
-applications for this grant. The pipeline should:
-
-1. Focus on RESEARCH that supports the application, not writing the application
-2. Include only steps that gather objective, citable evidence
-3. Skip criteria that require applicant-provided information (team experience, etc.)
-4. Each step should produce structured, citable research
-
-Required structure:
-- Step 0: Build Source Pack (always first - curates sources)
-- Steps 1-N: Research steps (you determine how many based on rubric)
-- Final steps: Assembly (always last - combines research into report)
-
-For each research step, provide:
-- step_name: Short snake_case identifier
-- step_description: What research this step produces
-- prompt_template: The full prompt with {{variable}} placeholders
-- research_area: Which rubric section(s) this addresses
-
-Return JSON with:
-{
-  "total_steps": number,
-  "steps": [
-    {
-      "step_number": number,
-      "step_name": string,
-      "step_description": string,
-      "prompt_template": string,
-      "model_tier": "lite" | "balanced" | "pro"
-    }
-  ],
-  "rationale": string // Why this structure was chosen
-}
-```
-
-### Part 3: Admin UI Updates
-
-**New "Pipeline" tab in GrantEdit.tsx**
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│ Research Pipeline Configuration                        v3      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│ Status: ● None  ○ Generating...  ○ Draft  ○ Published          │
-│                                                                 │
-│ ┌─────────────────────────────────────────────────────────────┐ │
-│ │ This grant doesn't have a custom research pipeline yet.     │ │
-│ │ Reports will use the default pipeline.                      │ │
-│ │                                                              │ │
-│ │ [Generate Pipeline from Guidelines]                         │ │
-│ │                                                              │ │
-│ │ Or select an existing bundle:                                │ │
-│ │ [Select bundle ▼]  [Link Bundle]                            │ │
-│ └─────────────────────────────────────────────────────────────┘ │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-After pipeline is generated:
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│ Research Pipeline Configuration                        v3      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│ Status: ○ None  ○ Generating...  ● Draft  ○ Published          │
-│                                                                 │
-│ Linked Bundle: "AEA Ignite Research Pipeline"                  │
-│                                                                 │
-│ Generated Pipeline (12 steps):                                  │
-│ ┌───┬─────────────────────┬────────────────────────────────────┐│
-│ │ 0 │ build_source_pack   │ Curate Australia-first sources    ││
-│ │ 1 │ extract_context     │ Extract research domain context   ││
-│ │ 2 │ market_opportunity  │ Analyze market opportunity (30%)  ││
-│ │ 3 │ competitor_analysis │ Research competitive landscape... ││
-│ │ ...                                                          ││
-│ │11 │ finalize_report     │ Merge into final report JSON      ││
-│ └───┴─────────────────────┴────────────────────────────────────┘│
-│                                                                 │
-│ [View/Edit in Bundle Editor]                                    │
-│                                                                 │
-│ ⚠ Draft pipelines must be reviewed before publishing           │
-│                                                                 │
-│ [Publish Pipeline] (Super Admin only)                           │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Files to Create/Modify
-
-| File | Type | Description |
-|------|------|-------------|
-| Database migration | New | Add `prompt_bundle_id`, `pipeline_generation_status` to grant_versions; update step constraint |
-| `supabase/functions/generate-grant-pipeline/index.ts` | New | AI pipeline generation edge function |
-| `supabase/functions/worker-proxy/index.ts` | Modify | Use grant-linked bundle with fallback |
-| `src/pages/admin/GrantEdit.tsx` | Modify | Add Pipeline tab |
-| `src/components/admin/PipelineConfigPanel.tsx` | New | Pipeline configuration UI component |
-| `src/hooks/usePromptBundles.ts` | Modify | Add mutation for creating bundle from pipeline |
+For admins who want more control:
+- "Regenerate Pipeline" button to re-run pipeline generation only
+- "View Full Pipeline" link opens bundle editor for manual edits
+- "Link Existing Bundle" dropdown in Pipeline tab
+- Super Admin publish gate remains (draft cannot be used until published)
 
 ## Backward Compatibility
 
 - Grants without `prompt_bundle_id` continue using global active bundle
-- Existing bundles and steps are unaffected
-- No data migration required
-- Researchers see no change unless admin creates grant-specific pipeline
+- Existing `analyze-grant-guidelines` function remains (for potential direct API use)
+- Manual workflow still available via "Regenerate" or bundle editor
+- No changes to researcher experience
 
-## Step Types in Generated Pipelines
+## Technical Considerations
 
-The AI will recognize these research categories and generate appropriate steps:
+### Rate Limits
+Both AI calls use Gemini-3-Flash which has reasonable rate limits. If rate limited, show clear message with retry option.
 
-**Always Included:**
-- `build_source_pack` (Step 0) - Curate authoritative sources
-- Assembly steps (final 2-3 steps) - Combine research into report
+### Processing Timeout
+Edge function timeout is 120 seconds, which should be sufficient for both AI calls. If needed, we can implement checkpointing.
 
-**Research Steps (AI determines which are needed):**
-- Market sizing: TAM, SAM, SOM calculations
-- Competitor analysis: Identify and compare competitors
-- Partner mapping: Find potential commercialization partners
-- Economic impact: Australian economic benefit analysis
-- Technology context: Extract research domain and innovations
-- Literature review: Academic context and prior work
-- Policy alignment: Government priorities and programs
-- Industry analysis: Sector trends and opportunities
-
-Each generated step will:
-- Reference the specific grant criteria it addresses
-- Include appropriate variable placeholders
-- Specify recommended model tier (lite/balanced/pro)
-- Focus on producing citable, structured research output
+### Concurrency
+The function uses atomic status updates to prevent duplicate processing if admin accidentally triggers multiple uploads.
 
 ## Success Criteria
 
-1. Admin can generate a research pipeline from grant guidelines with one click
-2. Generated pipeline has appropriate number of steps for the grant's requirements
-3. Each step's prompts reference the grant's specific assessment criteria
-4. Admin can review, edit, and test the draft pipeline
-5. Super Admin can publish the pipeline
-6. Reports for that grant use the linked pipeline
-7. Fallback to global bundle works for grants without custom pipelines
-
+1. Admin uploads PDF and walks away
+2. System automatically processes guidelines and generates pipeline
+3. Admin returns to see draft pipeline ready for review
+4. Super Admin can publish with one click
+5. Researchers can run reports using the grant-specific pipeline
+6. Fallback to global bundle works for grants without custom pipelines
