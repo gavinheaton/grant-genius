@@ -385,6 +385,7 @@ export default function ApplicationWorkspace() {
               startedAt={activeRun.started_at}
               completedAt={activeRun.completed_at}
               activeRunId={activeRun.id}
+              is504Error={activeRun.is504Error}
             />
           )}
         </div>

@@ -28,6 +28,7 @@ interface GenerationProgressProps {
   completedAt?: string | null;
   isStarting?: boolean;
   activeRunId?: string | null;
+  is504Error?: boolean; // Flag for network/transient errors
 }
 
 // Format step name from snake_case to Title Case
@@ -70,12 +71,15 @@ export function GenerationProgress({
   completedAt,
   isStarting = false,
   activeRunId,
+  is504Error = false,
 }: GenerationProgressProps) {
   const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
   const [isPaused, setIsPaused] = useState(false);
   const [hasAutoRetried, setHasAutoRetried] = useState(false);
 
+  // Show auto-retry for 504/transient errors or other failures
   const shouldShowAutoRetry = (status === "failed" || status === "stalled") && onRestart && !hasAutoRetried;
+  const showNetworkErrorMessage = is504Error && (status === "failed" || status === "stalled");
 
   // Reset countdown when status changes to failed/stalled
   useEffect(() => {
@@ -189,25 +193,43 @@ export function GenerationProgress({
           
           return (
           <div className="space-y-3">
-            {/* Step-specific error message from database */}
-            {stepErrorMessage && (
+            {/* Network/504 error - special messaging */}
+            {showNetworkErrorMessage && (
+              <div className="text-sm text-warning bg-warning/10 p-3 rounded-lg border border-warning/20">
+                <strong>⚡ Network hiccup detected</strong>
+                <p className="mt-1 text-muted-foreground">
+                  A temporary connection issue occurred. Your progress is saved and the system will retry automatically.
+                </p>
+              </div>
+            )}
+            
+            {/* Step-specific error message from database (hide if 504 since we show the network message) */}
+            {stepErrorMessage && !showNetworkErrorMessage && (
               <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">
                 <strong>Step {failedStep.step_number} ({formatStepName(failedStep.step_name)}) failed:</strong>{" "}
                 {stepErrorMessage}
               </div>
             )}
             {/* Fallback to general error message */}
-            {!stepErrorMessage && errorMessage && <p className="text-sm text-destructive">{errorMessage}</p>}
+            {!stepErrorMessage && errorMessage && !showNetworkErrorMessage && (
+              <p className="text-sm text-destructive">{errorMessage}</p>
+            )}
             
             {/* Auto-retry countdown */}
             {onRestart && shouldShowAutoRetry && (
               <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border">
                 <div className="flex-1">
                   <p className="text-sm font-medium">
-                    {isPaused ? "Auto-retry paused" : `Retrying automatically in ${countdown}s...`}
+                    {isPaused 
+                      ? "Auto-retry paused" 
+                      : showNetworkErrorMessage 
+                        ? `Retrying automatically in ${countdown}s...` 
+                        : `Retrying automatically in ${countdown}s...`}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Your credit was refunded. The system will retry automatically.
+                    {showNetworkErrorMessage 
+                      ? "Your progress is saved. The system will continue from where it left off."
+                      : "Your credit was refunded. The system will retry automatically."}
                   </p>
                 </div>
                 <Button 
@@ -228,7 +250,7 @@ export function GenerationProgress({
               {onResume && (
                 <Button variant="default" size="sm" onClick={onResume} className="gap-2">
                   <RefreshCw className="h-4 w-4" />
-                  Resume Report
+                  {showNetworkErrorMessage ? "Retry Now" : "Resume Report"}
                 </Button>
               )}
               
