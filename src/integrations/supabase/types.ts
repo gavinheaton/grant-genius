@@ -427,6 +427,8 @@ export type Database = {
           guidelines_source_path: string | null
           id: string
           is_published: boolean
+          pipeline_generation_status: string | null
+          prompt_bundle_id: string | null
           published_at: string | null
           required_inputs_json: Json | null
           rubric_json: Json | null
@@ -444,6 +446,8 @@ export type Database = {
           guidelines_source_path?: string | null
           id?: string
           is_published?: boolean
+          pipeline_generation_status?: string | null
+          prompt_bundle_id?: string | null
           published_at?: string | null
           required_inputs_json?: Json | null
           rubric_json?: Json | null
@@ -461,6 +465,8 @@ export type Database = {
           guidelines_source_path?: string | null
           id?: string
           is_published?: boolean
+          pipeline_generation_status?: string | null
+          prompt_bundle_id?: string | null
           published_at?: string | null
           required_inputs_json?: Json | null
           rubric_json?: Json | null
@@ -472,6 +478,13 @@ export type Database = {
             columns: ["grant_id"]
             isOneToOne: false
             referencedRelation: "grants"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "grant_versions_prompt_bundle_id_fkey"
+            columns: ["prompt_bundle_id"]
+            isOneToOne: false
+            referencedRelation: "prompt_bundles"
             referencedColumns: ["id"]
           },
         ]
