@@ -223,6 +223,32 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
   }
 }
 
+// Fetch grant-specific pipeline steps from linked prompt bundle
+// deno-lint-ignore no-explicit-any
+async function fetchGrantPipelineSteps(
+  supabase: any,
+  promptBundleId: string
+): Promise<Array<{ step_number: number; step_name: string; step_description: string }> | null> {
+  try {
+    const { data: steps, error } = await supabase
+      .from("prompt_bundle_steps")
+      .select("step_number, step_name, step_description")
+      .eq("bundle_id", promptBundleId)
+      .order("step_number", { ascending: true });
+
+    if (error || !steps || steps.length === 0) {
+      console.log("No grant-specific pipeline steps found for bundle:", promptBundleId);
+      return null;
+    }
+
+    console.log(`Found ${steps.length} grant-specific pipeline steps`);
+    return steps;
+  } catch (e) {
+    console.error("Error fetching grant pipeline steps:", e);
+    return null;
+  }
+}
+
 // Interpolate variables in prompt template
 function interpolatePrompt(template: string, variables: Record<string, string>): string {
   let result = template;
@@ -312,7 +338,7 @@ serve(async (req) => {
       );
     }
 
-    // Fetch application and verify ownership, including grant version for execution engine
+    // Fetch application and verify ownership, including grant version for execution engine and pipeline
     const { data: application, error: appError } = await supabaseClient
       .from("applications")
       .select(`
@@ -322,7 +348,9 @@ serve(async (req) => {
         grant_version_id,
         grant_version:grant_versions!inner(
           execution_engine_default,
-          edge_allowed
+          edge_allowed,
+          prompt_bundle_id,
+          pipeline_generation_status
         )
       `)
       .eq("id", applicationId)
@@ -411,9 +439,51 @@ serve(async (req) => {
     const grantVersionData = (application as any).grant_version;
     const grantVersion = Array.isArray(grantVersionData) ? grantVersionData[0] : grantVersionData;
     const executionEngine = grantVersion?.execution_engine_default || "cloud_run";
-    const executionEngineReason = "grant_version_default";
+    let executionEngineReason = "grant_version_default";
 
-    // Create report run with 15 total steps (0-14) and execution engine
+    // Determine which pipeline steps to use (grant-specific or default)
+    let pipelineSteps: Array<{ step_number: number; step_name: string; description?: string }>;
+    let usingGrantPipeline = false;
+
+    // Check if grant has a published custom pipeline
+    if (
+      grantVersion?.prompt_bundle_id &&
+      grantVersion?.pipeline_generation_status === "published"
+    ) {
+      const grantSteps = await fetchGrantPipelineSteps(
+        supabaseAdmin,
+        grantVersion.prompt_bundle_id
+      );
+
+      if (grantSteps && grantSteps.length > 0) {
+        pipelineSteps = grantSteps.map((s) => ({
+          step_number: s.step_number,
+          step_name: s.step_name,
+          description: s.step_description || s.step_name,
+        }));
+        usingGrantPipeline = true;
+        executionEngineReason = "grant_specific_pipeline";
+        console.log(`Using grant-specific pipeline with ${pipelineSteps.length} steps`);
+      } else {
+        // Fallback to default
+        pipelineSteps = RESEARCH_STEPS.map((s, i) => ({
+          step_number: i,
+          step_name: s.name,
+          description: s.description,
+        }));
+        console.log("Grant has bundle but no steps found, using default 15-step pipeline");
+      }
+    } else {
+      // Use default pipeline
+      pipelineSteps = RESEARCH_STEPS.map((s, i) => ({
+        step_number: i,
+        step_name: s.name,
+        description: s.description,
+      }));
+      console.log(`Using default ${pipelineSteps.length}-step pipeline (no grant-specific bundle)`);
+    }
+
+    // Create report run with dynamic step count
     const { data: reportRun, error: runError } = await supabaseAdmin
       .from("report_runs")
       .insert({
@@ -421,7 +491,7 @@ serve(async (req) => {
         report_template_version_id: templateVersion.id,
         status: "running",
         current_step: 0,
-        total_steps: RESEARCH_STEPS.length, // 15 steps (0-14)
+        total_steps: pipelineSteps.length, // Dynamic: 11 for AEA, 15 for default
         started_at: new Date().toISOString(),
         execution_engine: executionEngine,
         execution_engine_reason: executionEngineReason,
@@ -437,17 +507,18 @@ serve(async (req) => {
       );
     }
 
-    console.log(`Report run ${reportRun.id} created with execution_engine: ${reportRun.execution_engine}`);
+    console.log(`Report run ${reportRun.id} created with ${pipelineSteps.length} steps, execution_engine: ${reportRun.execution_engine}, using_grant_pipeline: ${usingGrantPipeline}`);
 
-    // Create step records (0-14)
-    const stepRecords = RESEARCH_STEPS.map((step, index) => ({
+    // Create step records using dynamic pipeline
+    const stepRecords = pipelineSteps.map((step) => ({
       report_run_id: reportRun.id,
-      step_number: index, // 0-14
-      step_name: step.name,
+      step_number: step.step_number,
+      step_name: step.step_name,
       status: "pending" as const,
     }));
 
     await supabaseAdmin.from("report_run_steps").insert(stepRecords);
+    console.log(`Created ${stepRecords.length} step records for run ${reportRun.id}`);
 
     // Consume entitlement
     await supabaseAdmin
