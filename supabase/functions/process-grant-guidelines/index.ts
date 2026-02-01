@@ -299,7 +299,12 @@ For each step, provide:
 - step_number: Sequential integer starting at 0
 - step_name: snake_case identifier (e.g., "market_sizing", "competitor_analysis")
 - step_description: What research this step produces (1-2 sentences)
-- prompt_template: Full prompt with {{variable}} placeholders. Use {{researchUrl}}, {{researchSummary}}, {{trl}}, {{ipStatus}}, {{step0}}, {{step1}}, etc.
+- prompt_template: Full prompt with {{variable}} placeholders.
+  APPROVED VARIABLES (use ONLY these):
+  - User Inputs: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}
+  - Grant Context: {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}}
+  - Source Pack (from Step 0): {{sources}}, {{unknowns}}
+  - Step Outputs: {{step0}}, {{step1}}, {{step2}}, etc. for referencing prior step JSON outputs
 - model_tier: "lite" | "balanced" | "pro" based on complexity
 
 Example step types to consider:
