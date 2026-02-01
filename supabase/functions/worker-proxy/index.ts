@@ -28,6 +28,40 @@ function isValidUUID(str: string): boolean {
   return UUID_REGEX.test(str);
 }
 
+// Strip markdown code fences from AI output
+// Handles: ```json, ```JSON, ```html, ``` (no tag), truncated fences
+function stripCodeFences(content: unknown): unknown {
+  // Handle string content
+  if (typeof content === "string") {
+    let trimmed = content.trim();
+    
+    // Opening fence with any language tag (json, JSON, html, etc.)
+    if (trimmed.startsWith("```")) {
+      trimmed = trimmed.replace(/^```[a-zA-Z]*\s*\n?/, "");
+    }
+    
+    // Closing fence (may be truncated)
+    trimmed = trimmed.replace(/\n?```\s*$/, "");
+    
+    return trimmed.trim();
+  }
+  
+  // Handle object - recursively clean string values
+  if (typeof content === "object" && content !== null) {
+    if (Array.isArray(content)) {
+      return content.map(item => stripCodeFences(item));
+    }
+    
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(content)) {
+      cleaned[key] = stripCodeFences(value);
+    }
+    return cleaned;
+  }
+  
+  return content;
+}
+
 function jsonResponse(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -372,7 +406,8 @@ async function handleUpdateStep(supabase: any, params: Record<string, unknown>) 
 
   const updateData: Record<string, unknown> = { status };
   
-  if (outputs_json !== undefined) updateData.outputs_json = outputs_json;
+  // Apply code fence stripping to outputs before saving
+  if (outputs_json !== undefined) updateData.outputs_json = stripCodeFences(outputs_json);
   if (citations_json !== undefined) updateData.citations_json = citations_json;
   if (error_message !== undefined) updateData.error_message = error_message;
   if (started_at !== undefined) updateData.started_at = started_at;
@@ -516,6 +551,9 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     ? existingReports[0].version_number + 1 
     : 1;
 
+  // Apply code fence stripping to content before saving
+  const sanitizedContent = stripCodeFences(content_json);
+
   // Create the report
   const { data: report, error: insertError } = await supabase
     .from("reports")
@@ -525,7 +563,7 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
       user_id: application.user_id,
       grant_version_id: application.grant_version_id,
       report_template_version_id: run.report_template_version_id,
-      content_json: content_json,
+      content_json: sanitizedContent,
       citations_json: citations_json || [],
       inputs_snapshot_json: application.inputs_json || {},
       version_number: nextVersion,
