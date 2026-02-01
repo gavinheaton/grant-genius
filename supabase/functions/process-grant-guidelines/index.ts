@@ -291,7 +291,9 @@ KEY REQUIREMENTS:
 REQUIRED PIPELINE STRUCTURE:
 - Step 0: build_source_pack (ALWAYS first - curates authoritative sources for the research domain)
 - Steps 1-N: Research steps mapped to rubric sections (market sizing, competition, impact, etc.)
-- Final 2 steps: report_assembly (combine all research) and finalize_citations (compile references)
+- Final 2 research steps: report_assembly (combine all research) and finalize_citations (compile references)
+
+DO NOT include HTML assembly or formatting steps - these will be added automatically after your research steps.
 
 For each step, provide:
 - step_number: Sequential integer starting at 0
@@ -410,6 +412,130 @@ Return a JSON object with:
       pro: "google/gemini-3-pro-preview"
     };
 
+    // ========== HTML Assembly Steps (auto-appended to all pipelines) ==========
+    // These are hardcoded to ensure consistent report formatting across all grants
+    const createHtmlAssemblySteps = (maxAIStep: number) => {
+      // Generate dynamic step references for all prior steps
+      const stepRefs = Array.from({ length: maxAIStep + 1 }, (_, i) => `{{step${i}}}`).join(", ");
+      
+      return [
+        {
+          step_name: "assemble_sections_html",
+          step_description: "Generate report sections as clean HTML narrative from evidence gathering steps",
+          model_tier: "balanced",
+          prompt_template: `STEP ${maxAIStep + 1} — Assemble Sections as HTML
+
+You are a grant-commercialisation analyst writing for Australian government grant assessors.
+
+INPUTS (from previous steps):
+- All prior step outputs: ${stepRefs}
+- Grant: {{grantName}} ({{grantVersionLabel}})
+
+PURPOSE:
+Transform the research findings from steps 0-${maxAIStep} into a cohesive HTML narrative report.
+
+OUTPUT REQUIREMENTS (CRITICAL):
+1. Return ONLY valid JSON with a single top-level object
+2. Do NOT include code fences (no \`\`\` anywhere in your response)
+3. The first character of your response must be { and the last must be }
+4. Include a "sections_html" field containing semantic HTML
+
+REQUIRED SECTIONS:
+1. Executive Summary - Key findings and recommendations
+2. Research Context and Innovation - What the technology/research is
+3. Unmet Need and Australian Relevance - Problem being solved
+4. Commercialisation Pathways - Routes to market
+5. Competitive Landscape - Key competitors and differentiation
+6. Market Sizing (TAM/SAM/SOM) - Market opportunity with calculations
+7. IP and Regulatory Pathway - Protection and compliance considerations
+8. Economic Impact - Jobs, exports, GDP contribution estimates
+9. Stakeholders and Partners - Key ecosystem players
+10. Data Gaps and Validation Needs - What requires further investigation
+
+HTML FORMATTING RULES:
+- Use <h2> for main section headings
+- Use <h3> for subsections
+- Use <p> for paragraphs with proper spacing
+- Use <ul><li> for bullet lists
+- Use <strong> for emphasis
+- Include citation markers as superscript: <sup>[S0-1]</sup>, <sup>[S3-2]</sup> etc.
+- Insert table anchors: <!-- TABLE:competitors -->, <!-- TABLE:market_sizing -->, <!-- TABLE:partners -->
+- Do NOT use markdown syntax inside HTML
+
+OUTPUT JSON SCHEMA:
+{
+  "sections_html": "<h2>Executive Summary</h2><p>...</p><h2>Research Context</h2>...",
+  "data_gaps": ["gap1", "gap2", ...]
+}`
+        },
+        {
+          step_name: "build_tables_sources_html",
+          step_description: "Build HTML tables and deduplicated source list from research steps",
+          model_tier: "balanced",
+          prompt_template: `STEP ${maxAIStep + 2} — Build Tables and Sources (HTML)
+
+Using the research data from previous steps (${stepRefs}), compile:
+
+1. COMPARISON TABLES - Create HTML tables for:
+   - Competitor comparison (features, pricing, market position)
+   - TAM/SAM/SOM summary with calculations
+   - Partner capability matrix
+   - Any other tabular data from research
+
+2. SOURCE CONSOLIDATION - Compile ALL citations from all steps into a single deduplicated list
+
+OUTPUT REQUIREMENTS (CRITICAL):
+1. Return ONLY valid JSON - no code fences, no markdown
+2. First character must be {, last must be }
+3. Tables must be valid HTML <table> elements
+
+OUTPUT JSON SCHEMA:
+{
+  "tables": {
+    "competitors": "<table class=\\"data-table\\"><thead><tr><th>Company</th><th>Product</th><th>Differentiator</th></tr></thead><tbody>...</tbody></table>",
+    "market_sizing": "<table class=\\"data-table\\"><thead><tr><th>Segment</th><th>Value</th><th>Source</th></tr></thead><tbody>...</tbody></table>",
+    "partners": "<table class=\\"data-table\\"><thead><tr><th>Partner</th><th>Type</th><th>Capability</th></tr></thead><tbody>...</tbody></table>"
+  },
+  "all_sources": [
+    {"id": "S0-1", "mla_citation": "Author. Title. Publication, Date. URL.", "url": "https://..."},
+    {"id": "S1-1", "mla_citation": "...", "url": "..."}
+  ]
+}`
+        },
+        {
+          step_name: "finalize_report_html",
+          step_description: "Merge sections, tables, and sources into final report_html output",
+          model_tier: "lite",
+          prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
+
+Combine the narrative from {{step${maxAIStep + 1}}} with tables from {{step${maxAIStep + 2}}} into the final report.
+
+INSTRUCTIONS:
+1. Take the sections_html from step ${maxAIStep + 1}
+2. Replace table anchors with actual tables:
+   - <!-- TABLE:competitors --> → competitors table
+   - <!-- TABLE:market_sizing --> → market_sizing table
+   - <!-- TABLE:partners --> → partners table
+3. Add a References section at the end with all sources
+
+OUTPUT REQUIREMENTS (CRITICAL - READ CAREFULLY):
+1. Return ONLY valid JSON - absolutely NO code fences (\`\`\`json or \`\`\`)
+2. The very first character must be { and the very last must be }
+3. Do NOT wrap the output in any markdown formatting
+4. The report_html field contains the complete HTML document
+
+OUTPUT JSON SCHEMA:
+{
+  "title": "Grant Report: [Project Title from research]",
+  "report_html": "<h2>Executive Summary</h2><p>...</p>...<h2>References</h2><div class=\\"sources\\">...</div>",
+  "all_sources": [...],
+  "data_gaps": [...],
+  "tables": {...}
+}`
+        }
+      ];
+    };
+
     // Create the prompt bundle
     const { data: bundle, error: bundleError } = await supabaseAdmin
       .from("prompt_bundles")
@@ -431,8 +557,11 @@ Return a JSON object with:
       throw new Error("Failed to create prompt bundle");
     }
 
-    // Insert all steps
-    const stepsToInsert = pipelineData.steps.map((step: any) => ({
+    // Get the highest step number from AI-generated steps
+    const maxAIStep = Math.max(...pipelineData.steps.map((s: any) => s.step_number));
+    
+    // Prepare AI-generated research steps
+    const researchSteps = pipelineData.steps.map((step: any) => ({
       bundle_id: bundle.id,
       step_number: step.step_number,
       step_name: step.step_name,
@@ -441,6 +570,23 @@ Return a JSON object with:
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: step.model_tier === "pro",
     }));
+
+    // Generate and append standardized HTML assembly steps
+    const htmlAssemblySteps = createHtmlAssemblySteps(maxAIStep);
+    const assemblySteps = htmlAssemblySteps.map((step, idx) => ({
+      bundle_id: bundle.id,
+      step_number: maxAIStep + 1 + idx,
+      step_name: step.step_name,
+      step_description: step.step_description,
+      prompt_template: step.prompt_template,
+      model_override: tierToModel[step.model_tier] || null,
+      is_heavy: false,
+    }));
+
+    // Combine research steps + assembly steps
+    const stepsToInsert = [...researchSteps, ...assemblySteps];
+    
+    console.log(`Inserting ${researchSteps.length} research steps + ${assemblySteps.length} HTML assembly steps = ${stepsToInsert.length} total`);
 
     const { error: stepsError } = await supabaseAdmin
       .from("prompt_bundle_steps")
@@ -468,7 +614,8 @@ Return a JSON object with:
       })
       .eq("id", grant_version_id);
 
-    // Audit log
+    // Audit log - include total step count (research + assembly)
+    const totalStepCount = stepsToInsert.length;
     await supabaseAdmin.from("audit_logs").insert({
       entity_type: "grant_version",
       entity_id: grant_version_id,
@@ -476,7 +623,9 @@ Return a JSON object with:
       user_id: userId,
       new_value_json: { 
         bundle_id: bundle.id, 
-        step_count: pipelineData.steps.length,
+        research_steps: researchSteps.length,
+        assembly_steps: assemblySteps.length,
+        total_steps: totalStepCount,
         pipeline_name: pipelineData.pipeline_name
       }
     });
@@ -486,7 +635,9 @@ Return a JSON object with:
     return new Response(JSON.stringify({
       success: true,
       bundle_id: bundle.id,
-      step_count: pipelineData.steps.length,
+      step_count: totalStepCount,
+      research_steps: researchSteps.length,
+      assembly_steps: assemblySteps.length,
       suggestions: {
         grant_summary: suggestions.grant_summary,
         input_count: (suggestions.required_inputs || []).length,
