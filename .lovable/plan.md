@@ -1,91 +1,138 @@
 
 
-# Fix: Handle 504 Proxy Timeout Errors Gracefully
+# Coordination Marker for Report Assembly
 
-## Problem Summary
+## Your Idea
 
-The report generation fails with "Proxy error: 504" when the external Cloud Run worker (hosted on Replit) makes a request to `worker-proxy` that stays open for 160 seconds, exceeding Supabase's gateway timeout.
+Add a new status/phase marker that signals when research steps are complete and the worker should begin the HTML assembly phase. The Replit worker watches for this marker instead of using hardcoded step-number logic.
 
-## Evidence From Logs
+## Solution Design
 
-| Timestamp | Event | Duration |
-|-----------|-------|----------|
-| 23:48:29 | Worker starts Step 2 (nrf_alignment_mapping) | - |
-| 23:51:10 | 504 error returned | 160,026ms |
+### New Column: `phase` on `report_runs`
 
-**Normal calls to `worker-proxy` complete in 200-1600ms.** The 160-second timeout suggests a network/connection issue between Replit and Supabase, not slow Edge Function logic.
+Add a simple enum column to `report_runs` that tracks the current pipeline phase:
 
-## Root Cause
+| Phase | Meaning | Who Sets It |
+|-------|---------|-------------|
+| `research` | Research steps in progress (Steps 0 - N-3) | Initial/default |
+| `assembly` | Research complete, ready for HTML assembly | Edge/worker-proxy |
+| `complete` | Pipeline finished | Edge/worker-proxy |
 
-The Replit worker sends an HTTP request to `worker-proxy`, but either:
-1. The connection hangs (TCP keepalive issue)
-2. Replit worker is slow to send the request body (cold start)
-3. Network path between Replit and Supabase has intermittent issues
+### New Column: `is_assembly_step` on `prompt_bundle_steps`
 
-Supabase's gateway terminates connections that exceed ~60 seconds with a 504, but the logged execution_time shows the request was held open for 160 seconds before the gateway killed it.
+Mark which steps are assembly steps vs research steps:
 
-## Solution ✅ IMPLEMENTED
+| Step | is_assembly_step | Pipeline Phase |
+|------|------------------|----------------|
+| 0-10 | `false` | `research` |
+| 11 (assemble_sections_html) | `true` | `assembly` |
+| 12 (build_tables_sources_html) | `true` | `assembly` |
+| 13 (finalize_report_html) | `true` | `assembly` |
 
-Two-pronged approach:
+### Worker Coordination Flow
 
-**1. Frontend: Auto-retry on 504 errors (resilience)** ✅
-- Added `isTransientError()` helper to detect 504/network errors
-- Exposed `is504Error` flag on `ReportRun` interface
-- Detects transient errors via Realtime step updates
-- Shows "Network hiccup detected" messaging with auto-retry countdown
-- Already partially implemented via the stale detection logic
-
-**2. Worker: Add request timeouts and retry logic (source fix)**
-- Configure HTTP client timeouts to 30 seconds (fail fast)
-- Implement exponential backoff retry for transient failures
-- This requires changes to the external Replit worker (outside Lovable)
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                     REPLIT WORKER                           │
+├─────────────────────────────────────────────────────────────┤
+│  1. Fetch run context from worker-proxy                     │
+│     → Gets: phase, current_step, step metadata              │
+│                                                             │
+│  2. Check phase:                                            │
+│     IF phase = 'research' AND next_step.is_assembly_step:   │
+│        → Set phase = 'assembly' via worker-proxy            │
+│        → Continue with assembly step                        │
+│                                                             │
+│  3. Execute step normally using dynamic step data           │
+│     → No hardcoded step numbers                             │
+│     → Use step_outputs from worker-proxy response           │
+│                                                             │
+│  4. When last step completes:                               │
+│        → Set phase = 'complete'                             │
+│        → Call save_report                                   │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Technical Implementation
 
-### Changes to `src/hooks/useReportGeneration.ts` ✅
+### Database Migration
 
-1. **Added TRANSIENT_ERROR_PATTERNS** - Regex patterns for 504, proxy error, gateway timeout, network, etc.
-2. **Added isTransientError() helper** - Detects transient errors from step error messages
-3. **Extended ReportRun interface** - Added `is504Error?: boolean` flag
-4. **Updated checkActiveRun()** - Sets `is504Error` based on failed step error messages
-5. **Updated Realtime step listener** - Immediately flags 504 errors when detected
+```sql
+-- Add phase column to report_runs
+ALTER TABLE report_runs 
+ADD COLUMN phase TEXT DEFAULT 'research' 
+CHECK (phase IN ('research', 'assembly', 'complete'));
 
-### Changes to `src/components/workspace/GenerationProgress.tsx` ✅
+-- Add is_assembly_step to prompt_bundle_steps  
+ALTER TABLE prompt_bundle_steps 
+ADD COLUMN is_assembly_step BOOLEAN DEFAULT false;
 
-1. **Added `is504Error` prop** - Passed from ApplicationWorkspace
-2. **Added `showNetworkErrorMessage` flag** - Shows special messaging for 504 errors
-3. **Network hiccup UI** - Yellow warning box with friendly message
-4. **Updated auto-retry messaging** - "Your progress is saved" for network errors
-5. **Updated button text** - "Retry Now" instead of "Resume Report" for 504 errors
+-- Mark existing assembly steps
+UPDATE prompt_bundle_steps 
+SET is_assembly_step = true 
+WHERE step_name IN (
+  'assemble_sections_html', 
+  'build_tables_sources_html', 
+  'finalize_report_html'
+);
+```
 
-### Changes to `src/pages/ApplicationWorkspace.tsx` ✅
+### worker-proxy Updates
 
-1. **Passes `is504Error`** - Forwards the flag to GenerationProgress
+1. **Include phase and is_assembly_step in `get_run_context` response**:
+   - Add `phase` from `report_runs`
+   - Add `is_assembly_step` flag on each step in the bundle
 
-## External Worker Recommendation
+2. **New action `update_phase`** (or extend `update_run`):
+   - Worker can set `phase = 'assembly'` when transitioning
+   - Worker can set `phase = 'complete'` at the end
 
-The Replit worker (`genius-worker-flow.replit.app`) should be updated to:
+### Replit Worker Logic (Instructions for you)
+
+Replace hardcoded step checks with:
 
 ```javascript
-// Add timeout to fetch calls
-const response = await fetch(workerProxyUrl, {
-  method: 'POST',
-  headers: { ... },
-  body: JSON.stringify(payload),
-  signal: AbortSignal.timeout(30000), // 30 second timeout
+// Get context (already includes phase and is_assembly_step per step)
+const { run, prompt_bundle, step_outputs } = await getRunContext(runId);
+
+// Get the next step to execute
+const nextStep = prompt_bundle.steps.find(s => s.step_number === run.current_step + 1);
+
+// Phase transition detection (no hardcoded numbers!)
+if (run.phase === 'research' && nextStep.is_assembly_step) {
+  await updatePhase(runId, 'assembly');
+  console.log('🔄 Transitioning to assembly phase');
+}
+
+// Execute step using dynamic prompt + step_outputs
+const stepPrompt = interpolate(nextStep.prompt_template, {
+  ...userInputs,
+  ...step_outputs  // step0, step1, step2... from DB
 });
 ```
 
-This prevents the worker from holding connections open indefinitely.
+## Files to Modify
 
-## Validation
+| File | Change |
+|------|--------|
+| Database | Add `phase` column to `report_runs` |
+| Database | Add `is_assembly_step` column to `prompt_bundle_steps` |
+| `worker-proxy/index.ts` | Include `phase` and `is_assembly_step` in responses |
+| `generate-report/index.ts` | Set initial `phase = 'research'` on run creation |
 
-After the fix:
-1. Run a report and observe behavior during Step 2+
-2. If a 504 occurs, the frontend should detect it within 30 seconds and auto-resume
-3. The run should continue from the last checkpoint without user intervention
+## Benefits
 
-## Impact
+1. **No hardcoded step counts** - Works with any pipeline length
+2. **Clear coordination point** - Worker knows exactly when to switch to assembly
+3. **Observable** - You can query `SELECT * FROM report_runs WHERE phase = 'assembly'` to see runs in assembly
+4. **Future-proof** - Easy to add more phases if needed (e.g., `validation`)
 
-- **Current behavior:** 504 → run fails → user must manually retry
-- **After fix:** 504 → auto-detected → friendly message → auto-resume from checkpoint → run continues
+## Replit Worker Changes (Summary for you)
+
+Tell the Replit worker to:
+1. Read `phase` from the `get_run_context` response
+2. Read `is_assembly_step` flag on each step
+3. When `phase === 'research'` and `nextStep.is_assembly_step === true`, call `update_run` with `phase: 'assembly'`
+4. Remove all hardcoded step number logic (no more checking `step12` exists at step 10)
+5. Use `step_outputs` from the response directly (already keyed as `step0`, `step1`, etc.)
+
