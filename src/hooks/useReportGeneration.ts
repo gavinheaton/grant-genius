@@ -53,6 +53,17 @@ function isTransientError(errorMessage: string | null | undefined): boolean {
   return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorMessage));
 }
 
+// Detect finalize step failure that can be recovered deterministically
+function isRecoverableFinalizeError(step: ReportRunStep | undefined): boolean {
+  if (!step) return false;
+  return (
+    step.step_name === "finalize_report_html" &&
+    step.status === "failed" &&
+    (step.error_message?.includes("No step output found with 'report_html'") ||
+     step.error_message?.includes("Finalize FAILED"))
+  );
+}
+
 interface UseReportGenerationOptions {
   onNoCredits?: () => void;
 }
@@ -761,6 +772,51 @@ export function useReportGeneration(
     return true;
   }, [toast]);
 
+  // Recover from finalize step failure using deterministic assembly
+  const recoverFinalizeReport = useCallback(async (runId: string) => {
+    try {
+      setIsGenerating(true);
+      
+      const { data, error } = await supabase.functions.invoke("recover-finalize-report", {
+        body: { reportRunId: runId },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      if (data?.error) {
+        throw new Error(data.error);
+      }
+
+      setActiveRun(null);
+      setIsGenerating(false);
+      setSteps([]);
+      
+      await fetchReports();
+      
+      toast({
+        title: "Report recovered!",
+        description: "Your report has been successfully assembled using deterministic finalization.",
+      });
+
+      return true;
+    } catch (error) {
+      console.error("Error recovering report:", error);
+      setIsGenerating(false);
+      toast({
+        title: "Recovery failed",
+        description: error instanceof Error ? error.message : "Failed to recover report. Please contact support.",
+        variant: "destructive",
+      });
+      return false;
+    }
+  }, [toast, fetchReports]);
+
+  // Check if current failure is recoverable
+  const failedStep = steps.find(s => s.status === 'failed');
+  const canRecoverFinalize = isRecoverableFinalizeError(failedStep);
+
   return {
     isStarting,
     isGenerating,
@@ -777,6 +833,8 @@ export function useReportGeneration(
     resumeReport,
     clearAndRestart,
     deleteReport,
+    recoverFinalizeReport,
+    canRecoverFinalize,
     refetch: fetchReports,
   };
 }

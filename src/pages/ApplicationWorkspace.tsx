@@ -84,6 +84,8 @@ export default function ApplicationWorkspace() {
     resumeReport,
     clearAndRestart,
     deleteReport,
+    recoverFinalizeReport,
+    canRecoverFinalize,
   } = useReportGeneration(id, { onNoCredits: handleNoCredits });
 
   useEffect(() => {
@@ -378,6 +380,11 @@ export default function ApplicationWorkspace() {
               onClearAndRestart={
                 (activeRun.status === "failed" || activeRun.status === "stalled")
                   ? () => clearAndRestart(activeRun.id)
+                  : undefined
+              }
+              onRecoverFinalize={
+                canRecoverFinalize
+                  ? () => recoverFinalizeReport(activeRun.id)
                   : undefined
               }
               isSuperAdmin={isSuperAdmin}

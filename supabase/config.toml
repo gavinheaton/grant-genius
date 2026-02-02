@@ -53,3 +53,6 @@ verify_jwt = false
 
 [functions.regenerate-step-prompt]
 verify_jwt = false
+
+[functions.recover-finalize-report]
+verify_jwt = false
