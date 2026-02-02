@@ -48,6 +48,8 @@ import {
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { PromptStepEditor } from "@/components/admin/PromptStepEditor";
 import { AddStepDialog } from "@/components/admin/AddStepDialog";
+import { PromptQualityBadge } from "@/components/admin/PromptQualityBadge";
+import { calculateQualityScore } from "@/hooks/usePromptQuality";
 
 const AVAILABLE_MODELS = [
   { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite (Fast)" },
@@ -475,12 +477,15 @@ export default function PromptBundleEdit() {
                     )}
                     <div className="flex-1">
                       <AccordionTrigger className="hover:no-underline">
-                        <div className="flex items-center gap-3 text-left">
+                        <div className="flex items-center gap-3 text-left flex-1">
                           <Badge variant="outline" className="font-mono">
                             {step.step_number}
                           </Badge>
-                          <div>
-                            <p className="font-medium">{step.step_description}</p>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">{step.step_description}</p>
+                              <PromptQualityBadge prompt={step.prompt_template} />
+                            </div>
                             <p className="text-xs text-muted-foreground font-mono">
                               {step.step_name}
                             </p>

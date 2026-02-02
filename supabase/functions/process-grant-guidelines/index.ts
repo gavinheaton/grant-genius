@@ -271,6 +271,92 @@ Return ONLY valid JSON matching this exact structure:
       `## ${s.title} ${s.weight ? `(${s.weight}% weight)` : ''}\n${s.description || ''}\nCriteria: ${(s.criteria || []).join('; ')}`
     ).join('\n\n');
 
+    // ========== QUALITY TEMPLATE: Mandatory structure for all prompts ==========
+    const QUALITY_TEMPLATE = `
+MANDATORY PROMPT STRUCTURE (every research step MUST include ALL of these):
+
+1. CONTEXT HEADER - State the step purpose and inputs clearly
+   Example: "STEP N — [Purpose]. INPUTS: {{summary}}, {{step0}}"
+
+2. HARD RULES SECTION - Include 5+ explicit constraints like:
+   - "Do NOT invent facts or numbers"
+   - "Only include sources you can validate as real"
+   - "If specific data unavailable, use proxy calculations with shown methodology"
+   - "NEVER use placeholder tokens like [Company] or {value} - use actual values or 'Not disclosed'"
+   - "Prefer Australian authoritative sources (.gov.au, .edu.au)"
+
+3. OUTPUT SCHEMA - Define exact JSON structure with:
+   - Every field name with its type
+   - Constraints (required, max_length, etc.)
+   - Example values
+
+4. URL VALIDATION RULES (for steps requiring sources):
+   - "Every source MUST have a valid URL or explicit 'URL not available'"
+   - "Prefer government, academic, or industry body sources"
+   - "If URL cannot be verified, mark confidence as 'low'"
+
+5. UNKNOWN HANDLING PROTOCOL:
+   - "If data unavailable, provide conservative proxy estimate with calculation shown"
+   - "Include 'unknowns' array listing what couldn't be found"
+   - "Use descriptive text like 'Not publicly disclosed' instead of 'Unknown'"
+
+MINIMUM PROMPT LENGTH: Each research step prompt MUST be at least 1,500 characters.
+`;
+
+    // ========== REFERENCE EXAMPLE from production bundle ==========
+    const REFERENCE_EXAMPLE = `
+REFERENCE EXAMPLE (follow this exact structure for all research prompts):
+
+STEP 0 — Build Source Pack (Australia-first, domain-agnostic)
+
+You are a grant-commercialisation analyst. Your task is to curate a Source Pack of 12–25 high-quality sources relevant to the research domain described by the user.
+
+INPUTS:
+- {{summary}}: The user's 100-word research summary
+- {{grantGuidelines}}: Assessment criteria for this grant
+
+HARD RULES:
+- Do NOT invent facts or numbers.
+- Only include sources you can validate as real and relevant.
+- Prefer Australian authoritative sources first when applicable.
+- If you cannot find a source type, record it as an Unknown in the unknowns array.
+- NEVER use placeholder text like "[Source Title]" or "{URL}" - use actual content or 'Not available'.
+
+SOURCE PACK REQUIREMENTS:
+Return 12–25 sources total (max 25). Include, where relevant:
+A) Australia-first authoritative sources: ABS, data.gov.au, AIHW, Productivity Commission, NHMRC, CSIRO
+B) Sector/standards/peak bodies relevant to the research domain
+C) Academic publications, market reports, industry statistics
+D) Policy documents and regulatory guidance
+
+FOR EACH SOURCE, provide:
+- source_id: Sequential ID like "S0-1", "S0-2"
+- title: Actual title of the source (no placeholders)
+- publisher: Organization that published it
+- url: Valid URL or "URL not available"
+- date_accessed: Today's date or "Not accessible"
+- relevance: One sentence on why this source matters
+- confidence: "high" (verified URL), "medium" (known publisher), "low" (unverified)
+
+OUTPUT JSON SCHEMA:
+{
+  "sources": [
+    {
+      "source_id": "S0-1",
+      "title": "Cancer in Australia 2023 Report",
+      "publisher": "Australian Institute of Health and Welfare",
+      "url": "https://www.aihw.gov.au/reports/cancer/cancer-in-australia-2023",
+      "date_accessed": "2025-02-01",
+      "relevance": "Provides national cancer incidence and survival statistics",
+      "confidence": "high"
+    }
+  ],
+  "unknowns": [
+    "No accessible market sizing reports specific to this niche technology"
+  ]
+}
+`;
+
     const pipelinePrompt = `You are an expert at designing research pipelines for grant applications.
 
 Context:
@@ -280,6 +366,10 @@ Context:
 Rubric/Assessment Criteria:
 ${formattedRubric}
 
+${QUALITY_TEMPLATE}
+
+${REFERENCE_EXAMPLE}
+
 Design a research pipeline to gather evidence supporting applications for this grant. 
 
 KEY REQUIREMENTS:
@@ -287,6 +377,7 @@ KEY REQUIREMENTS:
 2. DYNAMIC STEPS: Determine the right number of steps (typically 8-20) based on rubric complexity
 3. SKIP NON-RESEARCH: Ignore criteria requiring applicant-provided info (team bios, track record, etc.)
 4. EVIDENCE-BASED: Each step should gather external data that can be cited
+5. PROMPT QUALITY: Every prompt must follow the MANDATORY PROMPT STRUCTURE above with 1,500+ characters
 
 REQUIRED PIPELINE STRUCTURE:
 - Step 0: build_source_pack (ALWAYS first - curates authoritative sources for the research domain)
@@ -299,22 +390,13 @@ For each step, provide:
 - step_number: Sequential integer starting at 0
 - step_name: snake_case identifier (e.g., "market_sizing", "competitor_analysis")
 - step_description: What research this step produces (1-2 sentences)
-- prompt_template: Full prompt with {{variable}} placeholders.
+- prompt_template: Full prompt following the MANDATORY PROMPT STRUCTURE above with {{variable}} placeholders.
   APPROVED VARIABLES (use ONLY these):
   - User Inputs: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}
   - Grant Context: {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}}
   - Source Pack (from Step 0): {{sources}}, {{unknowns}}
   - Step Outputs: {{step0}}, {{step1}}, {{step2}}, etc. for referencing prior step JSON outputs
 - model_tier: "lite" | "balanced" | "pro" based on complexity
-
-Example step types to consider:
-- Market sizing (TAM/SAM/SOM calculations with sources)
-- Competitor/alternative analysis
-- Partner/stakeholder mapping
-- Economic impact assessment
-- Technology landscape review
-- Policy/regulatory alignment
-- IP landscape analysis
 
 Return a JSON object with:
 {
@@ -408,7 +490,123 @@ Return a JSON object with:
       throw new Error("Failed to parse pipeline response");
     }
 
-    console.log("Step 4: Creating prompt bundle...");
+    // ========== QUALITY VALIDATION & AUTO-ENHANCEMENT ==========
+    console.log("Step 4: Validating prompt quality...");
+
+    // Quality scoring function (matching the frontend hook)
+    function calculateQualityScore(prompt: string): { total: number; level: 'good' | 'warning' | 'poor' } {
+      if (!prompt || typeof prompt !== 'string') {
+        return { total: 0, level: 'poor' };
+      }
+
+      const scores = {
+        contextHeader: /STEP\s*\d|INPUTS?:/i.test(prompt) ? 15 : 0,
+        hardRules: /HARD RULES|CRITICAL RULES|REQUIREMENTS|RULES:/i.test(prompt) ? 20 : 0,
+        outputSchema: /OUTPUT.*JSON|JSON.*SCHEMA|OUTPUT.*SCHEMA|Return.*JSON/is.test(prompt) ? 20 : 0,
+        urlValidation: /URL.*valid|valid.*URL|URL.*require|source.*URL/i.test(prompt) ? 15 : 0,
+        unknownHandling: /unknown.*handling|if.*not.*found|unknowns.*array|Not disclosed|proxy.*estimate/i.test(prompt) ? 15 : 0,
+        placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden/i.test(prompt) ? 10 : 0,
+        adequateLength: prompt.length >= 1000 ? 5 : Math.round((prompt.length / 1000) * 5 * 10) / 10,
+      };
+
+      const total = Object.values(scores).reduce((a, b) => a + b, 0);
+      const level = total >= 70 ? 'good' : total >= 40 ? 'warning' : 'poor';
+      return { total: Math.round(total), level };
+    }
+
+    // Check which steps need enhancement (score < 40)
+    const stepsNeedingEnhancement: number[] = [];
+    for (const step of pipelineData.steps) {
+      const score = calculateQualityScore(step.prompt_template);
+      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}`);
+      if (score.level === 'poor') {
+        stepsNeedingEnhancement.push(step.step_number);
+      }
+    }
+
+    // Auto-enhance prompts that scored below 40
+    if (stepsNeedingEnhancement.length > 0) {
+      console.log(`Auto-enhancing ${stepsNeedingEnhancement.length} low-quality prompts...`);
+
+      const enhancementPrompt = `You are an expert at improving research prompts for grant applications.
+
+The following prompts need quality improvement. For each prompt, enhance it to include:
+1. A clear STEP header with purpose and INPUTS section
+2. A HARD RULES section with 5+ explicit constraints (no inventing data, prefer AU sources, etc.)
+3. An OUTPUT JSON SCHEMA with exact field definitions and example values
+4. URL validation requirements (every source needs valid URL or explicit fallback)
+5. Unknown handling protocol (proxy estimates, 'unknowns' array, descriptive fallbacks like 'Not disclosed')
+6. Placeholder prohibition (forbid [brackets] and {braces}, use actual text)
+
+CRITICAL: 
+- Maintain the same research purpose for each step
+- Each enhanced prompt MUST be at least 1,500 characters
+- Use only approved variables: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}, {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}}, {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, etc.
+
+Steps to enhance:
+${stepsNeedingEnhancement.map(stepNum => {
+  const step = pipelineData.steps.find((s: any) => s.step_number === stepNum);
+  return `
+---
+STEP ${stepNum}: ${step.step_name}
+PURPOSE: ${step.step_description}
+CURRENT PROMPT (${step.prompt_template.length} chars):
+${step.prompt_template}
+---`;
+}).join('\n')}
+
+Return a JSON array with the enhanced prompts:
+[
+  { "step_number": N, "enhanced_prompt": "..." },
+  ...
+]`;
+
+      try {
+        const enhanceResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "google/gemini-3-flash-preview",
+            messages: [
+              { role: "system", content: enhancementPrompt },
+              { role: "user", content: "Enhance these prompts to meet quality standards." },
+            ],
+            response_format: { type: "json_object" }
+          }),
+        });
+
+        if (enhanceResponse.ok) {
+          const enhanceResult = await enhanceResponse.json();
+          const content = enhanceResult.choices?.[0]?.message?.content;
+          if (content) {
+            try {
+              const parsed = JSON.parse(content);
+              const enhancements = Array.isArray(parsed) ? parsed : parsed.enhancements || parsed.steps || [];
+              
+              for (const enhancement of enhancements) {
+                const stepIdx = pipelineData.steps.findIndex((s: any) => s.step_number === enhancement.step_number);
+                if (stepIdx !== -1 && enhancement.enhanced_prompt) {
+                  const newScore = calculateQualityScore(enhancement.enhanced_prompt);
+                  console.log(`Enhanced step ${enhancement.step_number}: ${pipelineData.steps[stepIdx].prompt_template.length} -> ${enhancement.enhanced_prompt.length} chars, quality: ${newScore.total}`);
+                  pipelineData.steps[stepIdx].prompt_template = enhancement.enhanced_prompt;
+                }
+              }
+            } catch (parseErr) {
+              console.error("Failed to parse enhancement response:", parseErr);
+            }
+          }
+        } else {
+          console.warn("Enhancement call failed, proceeding with original prompts");
+        }
+      } catch (enhanceError) {
+        console.warn("Enhancement error, proceeding with original prompts:", enhanceError);
+      }
+    }
+
+    console.log("Step 5: Creating prompt bundle...");
 
     // Map model_tier to actual model identifiers
     const tierToModel: Record<string, string> = {
