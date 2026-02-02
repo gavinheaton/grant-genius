@@ -43,7 +43,7 @@ import {
   PromptBundleStep,
 } from "@/hooks/usePromptBundles";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { PromptStepEditor } from "@/components/admin/PromptStepEditor";
+import { PromptStepEditor, GrantContext } from "@/components/admin/PromptStepEditor";
 import { AddStepDialog } from "@/components/admin/AddStepDialog";
 import { PromptQualityBadge } from "@/components/admin/PromptQualityBadge";
 
@@ -122,12 +122,14 @@ interface InlinePipelineEditorProps {
   bundleId: string;
   showBundleSettings?: boolean;
   className?: string;
+  grantContext?: GrantContext;
 }
 
 export function InlinePipelineEditor({
   bundleId,
   showBundleSettings = false,
   className,
+  grantContext,
 }: InlinePipelineEditorProps) {
   const { isSuperAdmin } = useAdminAuth();
   const { data: bundle, isLoading } = usePromptBundle(bundleId);
@@ -507,6 +509,8 @@ export function InlinePipelineEditor({
                         step={step}
                         models={AVAILABLE_MODELS}
                         canEdit={canEdit}
+                        isSuperAdmin={isSuperAdmin}
+                        grantContext={grantContext}
                         onSave={handleStepUpdate}
                       />
                     </AccordionContent>

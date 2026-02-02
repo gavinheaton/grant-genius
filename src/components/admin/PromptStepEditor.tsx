@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Save, AlertTriangle } from "lucide-react";
+import { Save, AlertTriangle, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,7 +12,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PromptBundleStep } from "@/hooks/usePromptBundles";
+import { PromptBundleStep, useRegenerateStepPrompt } from "@/hooks/usePromptBundles";
+import { RegeneratePromptDialog } from "./RegeneratePromptDialog";
 
 // Processing window options in seconds
 const TIMEOUT_OPTIONS = [
@@ -26,10 +27,18 @@ const TIMEOUT_OPTIONS = [
   { value: "180", label: "180 seconds" },
 ];
 
+export interface GrantContext {
+  grantName?: string;
+  grantSummary?: string;
+  rubricSummary?: string;
+}
+
 interface PromptStepEditorProps {
   step: PromptBundleStep;
   models: { value: string; label: string }[];
   canEdit: boolean;
+  isSuperAdmin?: boolean;
+  grantContext?: GrantContext;
   onSave: (
     stepId: string,
     data: { 
@@ -46,6 +55,8 @@ export function PromptStepEditor({
   step,
   models,
   canEdit,
+  isSuperAdmin = false,
+  grantContext,
   onSave,
 }: PromptStepEditorProps) {
   const [promptTemplate, setPromptTemplate] = useState(step.prompt_template);
@@ -59,6 +70,15 @@ export function PromptStepEditor({
   );
   const [hasChanges, setHasChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Regeneration state
+  const regeneratePrompt = useRegenerateStepPrompt();
+  const [showPreview, setShowPreview] = useState(false);
+  const [regeneratedData, setRegeneratedData] = useState<{
+    regenerated_prompt: string;
+    original_score: { total: number; level: 'good' | 'warning' | 'poor' };
+    new_score: { total: number; level: 'good' | 'warning' | 'poor' };
+  } | null>(null);
 
   // Validation helpers
   const SUSPICIOUS_PATTERNS = [
@@ -107,6 +127,49 @@ export function PromptStepEditor({
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const handleRegenerate = async () => {
+    const result = await regeneratePrompt.mutateAsync({
+      stepId: step.id,
+      additionalContext: grantContext 
+        ? `Grant: ${grantContext.grantName || 'Unknown'}. Summary: ${grantContext.grantSummary || 'N/A'}`
+        : undefined,
+    });
+    
+    setRegeneratedData(result);
+    setShowPreview(true);
+  };
+
+  const handleApplyRegenerated = async () => {
+    if (!regeneratedData) return;
+    
+    setPromptTemplate(regeneratedData.regenerated_prompt);
+    setHasChanges(true);
+    setShowPreview(false);
+    
+    // Auto-save after applying
+    setIsSaving(true);
+    try {
+      await onSave(step.id, {
+        prompt_template: regeneratedData.regenerated_prompt,
+        model_override: modelOverride || null,
+        timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
+        is_heavy: isHeavy,
+        max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
+      });
+      setHasChanges(false);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleEditFirst = () => {
+    if (!regeneratedData) return;
+    
+    setPromptTemplate(regeneratedData.regenerated_prompt);
+    setHasChanges(true);
+    setShowPreview(false);
   };
 
   // Get default model based on step number
@@ -262,8 +325,27 @@ export function PromptStepEditor({
         </div>
       )}
 
-      {canEdit && hasChanges && (
-        <div className="flex justify-end">
+      {/* Action buttons */}
+      <div className="flex items-center justify-end gap-2">
+        {/* Regenerate button - Super Admin only */}
+        {isSuperAdmin && (
+          <Button
+            variant="outline"
+            onClick={handleRegenerate}
+            disabled={regeneratePrompt.isPending}
+            size="sm"
+          >
+            {regeneratePrompt.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Sparkles className="h-4 w-4 mr-2" />
+            )}
+            {regeneratePrompt.isPending ? "Regenerating..." : "Regenerate with AI"}
+          </Button>
+        )}
+        
+        {/* Save button */}
+        {canEdit && hasChanges && (
           <Button 
             onClick={handleSave} 
             disabled={isSaving || !promptValidation.valid} 
@@ -272,7 +354,21 @@ export function PromptStepEditor({
             <Save className="h-4 w-4 mr-2" />
             {isSaving ? "Saving..." : "Save Step"}
           </Button>
-        </div>
+        )}
+      </div>
+
+      {/* Preview Dialog */}
+      {regeneratedData && (
+        <RegeneratePromptDialog
+          open={showPreview}
+          onOpenChange={setShowPreview}
+          originalPrompt={step.prompt_template}
+          regeneratedPrompt={regeneratedData.regenerated_prompt}
+          originalScore={regeneratedData.original_score}
+          newScore={regeneratedData.new_score}
+          onApply={handleApplyRegenerated}
+          onEditFirst={handleEditFirst}
+        />
       )}
     </div>
   );

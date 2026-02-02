@@ -729,6 +729,11 @@ export default function GrantEdit() {
                       bundleId={promptBundleId} 
                       showBundleSettings={false}
                       className="mt-4"
+                      grantContext={{
+                        grantName: name,
+                        grantSummary: aiSuggestions?.grant_summary,
+                        rubricSummary: versionRubric ? `See rubric` : undefined,
+                      }}
                     />
                   )}
                 </>
