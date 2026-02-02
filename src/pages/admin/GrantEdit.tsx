@@ -27,12 +27,13 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ExternalLink } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ChevronDown, ChevronUp } from "lucide-react";
 import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
 import { usePromptBundles } from "@/hooks/usePromptBundles";
+import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -57,6 +58,7 @@ export default function GrantEdit() {
   const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge">("cloud_run");
   const [edgeAllowed, setEdgeAllowed] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
+  const [pipelineExpanded, setPipelineExpanded] = useState(false);
 
   // Fetch all prompt bundles for the pipeline selector
   const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
@@ -675,11 +677,16 @@ export default function GrantEdit() {
                       </Badge>
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="outline" asChild>
-                        <Link to={`/admin/prompt-bundles/${promptBundleId}`}>
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          View & Edit Pipeline
-                        </Link>
+                      <Button 
+                        variant="outline" 
+                        onClick={() => setPipelineExpanded(!pipelineExpanded)}
+                      >
+                        {pipelineExpanded ? (
+                          <ChevronUp className="h-4 w-4 mr-2" />
+                        ) : (
+                          <ChevronDown className="h-4 w-4 mr-2" />
+                        )}
+                        {pipelineExpanded ? "Hide Pipeline Editor" : "View & Edit Pipeline"}
                       </Button>
                       {isSuperAdmin && pipelineStatus === "draft" && (
                         <Button 
@@ -708,6 +715,15 @@ export default function GrantEdit() {
                       ✓ This pipeline is active. Researchers applying for this grant will use this 
                       custom research pipeline.
                     </p>
+                  )}
+
+                  {/* Inline Pipeline Editor */}
+                  {pipelineExpanded && (
+                    <InlinePipelineEditor 
+                      bundleId={promptBundleId} 
+                      showBundleSettings={false}
+                      className="mt-4"
+                    />
                   )}
                 </>
               ) : (
