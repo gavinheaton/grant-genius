@@ -101,7 +101,7 @@ serve(async (req) => {
     const { data: claimed, error: claimError } = await supabaseAdmin
       .from("grant_versions")
       .update({ 
-        ai_analysis_status: "processing",
+        ai_analysis_status: "analyzing",
         pipeline_generation_status: "none"
       })
       .eq("id", grant_version_id)
