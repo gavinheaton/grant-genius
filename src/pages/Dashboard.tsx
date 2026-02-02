@@ -316,20 +316,18 @@ export default function Dashboard() {
                     <div className="flex items-start justify-between">
                       <CardTitle className="text-lg">{app.grant_version?.grant?.name || "Application"}</CardTitle>
                       <div className="flex items-center gap-2">
-                        {app.status === "draft" && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleDeleteDraft(app);
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleDeleteDraft(app);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                         <Badge variant={config.variant} className="flex items-center gap-1">
                           <StatusIcon className="h-3 w-3" />
                           {config.label}
@@ -364,10 +362,14 @@ export default function Dashboard() {
       <AlertDialog open={deleteModalOpen} onOpenChange={setDeleteModalOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Draft Application?</AlertDialogTitle>
+            <AlertDialogTitle>Delete Application?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the "{applicationToDelete?.grant_version?.grant?.name}" 
-              draft. This action cannot be undone.
+              {applicationToDelete?.status === "draft" 
+                ? `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" draft.`
+                : applicationToDelete?.status === "ready"
+                  ? `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" application and all its generated reports.`
+                  : `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" application.`
+              } This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

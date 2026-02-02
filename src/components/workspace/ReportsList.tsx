@@ -2,25 +2,50 @@ import { useState, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Download, Loader2, Eye, FileType } from "lucide-react";
+import { FileText, Download, Loader2, Eye, FileType, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { HtmlReportViewer } from "./HtmlReportViewer";
 import { type Report } from "@/hooks/useReportGeneration";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { extractReportHtml, sanitizeHtml, REPORT_HTML_STYLES } from "@/lib/htmlReportUtils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface ReportsListProps {
   reports: Report[];
   isLoading: boolean;
   onDownload: (reportId: string, format: "pdf" | "docx") => void;
+  onDeleteReport?: (reportId: string) => Promise<boolean>;
   grantName?: string;
 }
 
-export function ReportsList({ reports, isLoading, onDownload, grantName = "Research Report" }: ReportsListProps) {
+export function ReportsList({ reports, isLoading, onDownload, onDeleteReport, grantName = "Research Report" }: ReportsListProps) {
   const [viewingReport, setViewingReport] = useState<Report | null>(null);
   const [generatingPdf, setGeneratingPdf] = useState<string | null>(null);
   const [generatingDocx, setGeneratingDocx] = useState<string | null>(null);
+  const [reportToDelete, setReportToDelete] = useState<Report | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteReport = useCallback(async () => {
+    if (!reportToDelete || !onDeleteReport) return;
+    
+    setIsDeleting(true);
+    const success = await onDeleteReport(reportToDelete.id);
+    setIsDeleting(false);
+    
+    if (success) {
+      setReportToDelete(null);
+    }
+  }, [reportToDelete, onDeleteReport]);
 
   // Simple print-based PDF generation
   const handleGeneratePdf = useCallback(async (report: Report) => {
@@ -219,6 +244,18 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* Delete Report button */}
+                  {onDeleteReport && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      onClick={() => setReportToDelete(report)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                  
                   {/* View Report button */}
                   <Button
                     variant="default"
@@ -275,6 +312,36 @@ export function ReportsList({ reports, isLoading, onDownload, grantName = "Resea
         isGeneratingPdf={generatingPdf === viewingReport?.id}
         isGeneratingDocx={generatingDocx === viewingReport?.id}
       />
+
+      {/* Delete Report Confirmation Dialog */}
+      <AlertDialog open={!!reportToDelete} onOpenChange={(open) => !open && setReportToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Report v{reportToDelete?.version_number}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete this report. The application and other reports will not be affected.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteReport}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                "Delete Report"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
