@@ -6,7 +6,6 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { ProcessingProgress } from "./ProcessingProgress";
-import { Link } from "react-router-dom";
 
 interface RequiredInput {
   key: string;
@@ -42,6 +41,7 @@ interface AIAnalysisPanelProps {
   onRetry: () => void;
   isRetrying?: boolean;
   isUploading?: boolean;
+  onViewPipeline?: () => void;
 }
 
 export function AIAnalysisPanel({
@@ -54,6 +54,7 @@ export function AIAnalysisPanel({
   onRetry,
   isRetrying = false,
   isUploading = false,
+  onViewPipeline,
 }: AIAnalysisPanelProps) {
   const isProcessing = analysisStatus === "analyzing" || pipelineStatus === "generating";
   const hasFailed = analysisStatus === "failed" || pipelineStatus === "failed";
@@ -185,12 +186,10 @@ export function AIAnalysisPanel({
             <Separator />
 
             <div className="flex gap-2">
-              {promptBundleId && (
-                <Button variant="outline" asChild>
-                  <Link to={`/admin/prompt-bundles/${promptBundleId}`}>
-                    <ExternalLink className="h-4 w-4 mr-2" />
-                    View Pipeline
-                  </Link>
+              {promptBundleId && onViewPipeline && (
+                <Button variant="outline" onClick={onViewPipeline}>
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  View Pipeline
                 </Button>
               )}
               <Button variant="ghost" onClick={onRetry} disabled={isRetrying}>
