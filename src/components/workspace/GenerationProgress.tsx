@@ -354,8 +354,8 @@ export function GenerationProgress({
           </div>
         )}
 
-        {/* Log Viewer - show during active generation or failed/stalled states */}
-        {(status === "running" || status === "pending" || status === "failed" || status === "stalled") && (
+        {/* Log Viewer - show whenever there's an active run ID */}
+        {activeRunId && (
           <ReportLogViewer reportRunId={activeRunId} />
         )}
       </CardContent>

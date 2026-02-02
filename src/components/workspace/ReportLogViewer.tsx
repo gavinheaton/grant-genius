@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { ChevronDown, ChevronRight, Terminal, AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { ChevronDown, ChevronRight, Terminal, AlertCircle, AlertTriangle, Info, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useReportLogs, ReportLog } from "@/hooks/useReportLogs";
-import { formatDistanceToNow } from "date-fns";
 
 interface ReportLogViewerProps {
   reportRunId: string | null | undefined;
@@ -73,6 +73,7 @@ function LogEntry({ log }: { log: ReportLog }) {
 
 export function ReportLogViewer({ reportRunId }: ReportLogViewerProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [userDismissed, setUserDismissed] = useState(false);
   const { logs, isLoading, error } = useReportLogs(reportRunId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLogsLength = useRef(logs.length);
@@ -85,17 +86,29 @@ export function ReportLogViewer({ reportRunId }: ReportLogViewerProps) {
     prevLogsLength.current = logs.length;
   }, [logs.length]);
 
-  // Auto-open when first log arrives
+  // Auto-open when first log arrives, but respect user dismissal
   useEffect(() => {
-    if (logs.length > 0 && !isOpen) {
+    if (logs.length > 0 && !isOpen && !userDismissed) {
       setIsOpen(true);
     }
-  }, [logs.length, isOpen]);
+  }, [logs.length, isOpen, userDismissed]);
+
+  // Reset dismissed state when run changes
+  useEffect(() => {
+    setUserDismissed(false);
+    setIsOpen(false);
+  }, [reportRunId]);
 
   if (!reportRunId) return null;
 
   const hasErrors = logs.some((log) => log.level === "error");
   const hasWarnings = logs.some((log) => log.level === "warn");
+
+  const handleDismiss = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setUserDismissed(true);
+    setIsOpen(false);
+  };
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-4">
@@ -115,6 +128,19 @@ export function ReportLogViewer({ reportRunId }: ReportLogViewerProps) {
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-2 border rounded-lg bg-background">
+          {/* Close button */}
+          <div className="flex justify-end p-1 border-b">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              className="h-6 w-6 p-0 text-muted-foreground hover:text-foreground"
+              onClick={handleDismiss}
+              title="Dismiss logs"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+          
           {isLoading && logs.length === 0 && (
             <div className="p-4 text-center text-sm text-muted-foreground">
               Loading logs...
@@ -131,7 +157,7 @@ export function ReportLogViewer({ reportRunId }: ReportLogViewerProps) {
             </div>
           )}
           {logs.length > 0 && (
-            <ScrollArea className="h-[200px]" ref={scrollRef}>
+            <ScrollArea className="h-[300px]" ref={scrollRef}>
               <div className="divide-y divide-border/50">
                 {logs.map((log) => (
                   <LogEntry key={log.id} log={log} />

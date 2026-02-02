@@ -11,7 +11,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
+import { ChevronDown, ChevronUp, CheckCircle2, XCircle, AlertCircle, AlertTriangle } from "lucide-react";
 import { calculateQualityScore, getQualityBadgeVariant, type QualityScore } from "@/hooks/usePromptQuality";
 import { cn } from "@/lib/utils";
 
@@ -49,6 +49,11 @@ export function PromptQualityBadge({ prompt, showDetails = false, className }: P
         </TooltipTrigger>
         <TooltipContent className="max-w-xs">
           <p className="font-medium mb-1">Prompt Quality: {score.level}</p>
+          {score.invalidVariables.length > 0 && (
+            <p className="text-xs text-destructive mb-1">
+              ⚠️ Invalid variables: {score.invalidVariables.join(', ')}
+            </p>
+          )}
           {score.recommendations.length > 0 && (
             <ul className="text-xs space-y-0.5">
               {score.recommendations.slice(0, 3).map((rec, i) => (
@@ -91,12 +96,13 @@ interface QualityBreakdownProps {
 function QualityBreakdown({ score, promptLength }: QualityBreakdownProps) {
   const criteria = [
     { key: 'contextHeader', label: 'Context Header (STEP N, INPUTS)', max: 15 },
-    { key: 'hardRules', label: 'Hard Rules Section', max: 20 },
+    { key: 'hardRules', label: 'Hard Rules Section', max: 15 },
     { key: 'outputSchema', label: 'Output JSON Schema', max: 20 },
     { key: 'urlValidation', label: 'URL Validation Rules', max: 15 },
-    { key: 'unknownHandling', label: 'Unknown Handling Protocol', max: 15 },
+    { key: 'unknownHandling', label: 'Unknown Handling Protocol', max: 10 },
     { key: 'placeholderProhibition', label: 'Placeholder Prohibition', max: 10 },
     { key: 'adequateLength', label: `Length (${promptLength.toLocaleString()} chars)`, max: 5 },
+    { key: 'validVariables', label: 'Valid Variable References', max: 10 },
   ] as const;
 
   return (
@@ -133,6 +139,24 @@ function QualityBreakdown({ score, promptLength }: QualityBreakdownProps) {
           );
         })}
       </div>
+      
+      {/* Invalid Variables Warning */}
+      {score.invalidVariables.length > 0 && (
+        <div className="pt-2 border-t">
+          <div className="flex items-start gap-2 p-2 bg-destructive/10 rounded border border-destructive/20">
+            <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <p className="font-medium text-destructive">Invalid Variables Detected:</p>
+              <p className="text-muted-foreground mt-0.5">
+                {score.invalidVariables.map(v => `{{${v}}}`).join(', ')}
+              </p>
+              <p className="text-muted-foreground mt-1">
+                Approved: <code className="text-[10px] bg-muted px-1 rounded">{'{{summary}}'}</code>, <code className="text-[10px] bg-muted px-1 rounded">{'{{step0}}'}</code>, <code className="text-[10px] bg-muted px-1 rounded">{'{{grantName}}'}</code>, etc.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       
       {score.recommendations.length > 0 && (
         <div className="pt-2 border-t">

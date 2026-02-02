@@ -711,29 +711,44 @@ OUTPUT JSON SCHEMA:
           model_tier: "lite",
           prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
 
-Combine the narrative from {{step${maxAIStep + 1}}} with tables from {{step${maxAIStep + 2}}} into the final report.
+You are merging the research narrative with data tables to produce the final report.
 
-INSTRUCTIONS:
-1. Take the sections_html from step ${maxAIStep + 1}
-2. Replace table anchors with actual tables:
-   - <!-- TABLE:competitors --> → competitors table
-   - <!-- TABLE:market_sizing --> → market_sizing table
-   - <!-- TABLE:partners --> → partners table
-3. Add a References section at the end with all sources
+INPUT DATA FORMAT:
+You will receive two JSON objects from previous steps:
 
-OUTPUT REQUIREMENTS (CRITICAL - READ CAREFULLY):
-1. Return ONLY valid JSON - absolutely NO code fences (\`\`\`json or \`\`\`)
-2. The very first character must be { and the very last must be }
-3. Do NOT wrap the output in any markdown formatting
-4. The report_html field contains the complete HTML document
+Step ${maxAIStep + 1} data ({{step${maxAIStep + 1}}}):
+- "sections_html": string - The complete narrative HTML document
+- "data_gaps": array - List of data gaps identified
+
+Step ${maxAIStep + 2} data ({{step${maxAIStep + 2}}}):
+- "tables": object with keys "competitors", "market_sizing", "partners" - HTML tables
+- "all_sources": array - All citations
+
+YOUR TASK:
+1. PARSE the JSON objects to extract the values
+2. Get the "sections_html" value from Step ${maxAIStep + 1} - this is your base HTML
+3. Find these table anchors in the HTML and replace with tables from Step ${maxAIStep + 2}:
+   - Replace "<!-- TABLE:competitors -->" with tables.competitors
+   - Replace "<!-- TABLE:market_sizing -->" with tables.market_sizing
+   - Replace "<!-- TABLE:partners -->" with tables.partners
+4. Append a References section at the end:
+   <h2>References</h2>
+   <div class="sources"><ul>...formatted citations...</ul></div>
+5. Combine data_gaps from both steps
+
+CRITICAL OUTPUT REQUIREMENTS:
+1. Return ONLY valid JSON - NO code fences (\\\`\\\`\\\`json or \\\`\\\`\\\`)
+2. First character must be { and last must be }
+3. The "report_html" field MUST contain the complete merged HTML document
+4. Do NOT return the raw JSON objects - extract and combine the content
 
 OUTPUT JSON SCHEMA:
 {
-  "title": "Grant Report: [Project Title from research]",
-  "report_html": "<h2>Executive Summary</h2><p>...</p>...<h2>References</h2><div class=\\"sources\\">...</div>",
-  "all_sources": [...],
-  "data_gaps": [...],
-  "tables": {...}
+  "title": "Grant Report: [Project Title]",
+  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with tables inserted]...<h2>References</h2>...",
+  "all_sources": [{"id": "S0-1", "mla_citation": "...", "url": "..."}],
+  "data_gaps": ["gap1", "gap2"],
+  "tables": {"competitors": "...", "market_sizing": "...", "partners": "..."}
 }`
         }
       ];
