@@ -49,6 +49,11 @@ export function PromptQualityBadge({ prompt, showDetails = false, className }: P
         </TooltipTrigger>
         <TooltipContent className="max-w-xs">
           <p className="font-medium mb-1">Prompt Quality: {score.level}</p>
+          {score.hasVariablesInSchema && (
+            <p className="text-xs text-destructive mb-1">
+              🚨 Template variables in OUTPUT SCHEMA will cause runtime failures!
+            </p>
+          )}
           {score.invalidVariables.length > 0 && (
             <p className="text-xs text-destructive mb-1">
               ⚠️ Invalid variables: {score.invalidVariables.join(', ')}

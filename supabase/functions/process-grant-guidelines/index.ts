@@ -289,6 +289,10 @@ MANDATORY PROMPT STRUCTURE (every research step MUST include ALL of these):
    - Every field name with its type
    - Constraints (required, max_length, etc.)
    - Example values
+   CRITICAL: NEVER use {{variable}} syntax inside OUTPUT SCHEMA field descriptions!
+   - BAD:  "ip_strategy_validation": "Does {{ipStatus}} align with sector norms..."
+   - GOOD: "ip_strategy_validation": "Does the provided IP status align with sector norms..."
+   Template variables are ONLY for the INPUTS or HARD RULES sections, not in schema definitions.
 
 4. URL VALIDATION RULES (for steps requiring sources):
    - "Every source MUST have a valid URL or explicit 'URL not available'"
@@ -542,6 +546,10 @@ CRITICAL:
 - Maintain the same research purpose for each step
 - Each enhanced prompt MUST be at least 1,500 characters
 - Use only approved variables: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}, {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}}, {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, etc.
+- Template variables {{...}} are ONLY for the INPUTS or HARD RULES sections
+- NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions - use readable text instead
+  BAD:  "ip_strategy_validation": "Does {{ipStatus}} align..."
+  GOOD: "ip_strategy_validation": "Does the provided IP status align..."
 
 Steps to enhance:
 ${stepsNeedingEnhancement.map(stepNum => {
@@ -603,6 +611,70 @@ Return a JSON array with the enhanced prompts:
         }
       } catch (enhanceError) {
         console.warn("Enhancement error, proceeding with original prompts:", enhanceError);
+      }
+    }
+
+    // ========== POST-PROCESSING: Sanitize OUTPUT SCHEMA sections ==========
+    console.log("Step 4.5: Sanitizing output schemas to remove template variables...");
+    
+    /**
+     * Sanitizes template variables from OUTPUT SCHEMA sections.
+     * Variables like {{ipStatus}} in schema field descriptions can cause the AI model
+     * to echo them literally in its response, which fails JSON Guard validation.
+     */
+    function sanitizeOutputSchemas(prompt: string): string {
+      if (!prompt) return prompt;
+      
+      // Find OUTPUT SCHEMA, JSON SCHEMA, or similar sections
+      // Look for schema-like JSON blocks after these headers
+      const schemaPatterns = [
+        // Pattern 1: "OUTPUT JSON SCHEMA:" followed by JSON block
+        /(OUTPUT\s*JSON\s*SCHEMA|OUTPUT\s*SCHEMA|JSON\s*SCHEMA)[:\s]*(\{[\s\S]*?\n\})/gi,
+        // Pattern 2: Schema embedded in field descriptions like "field": "description with {{var}}"
+        /("[\w_]+":\s*"[^"]*\{\{[\w]+\}\}[^"]*")/gi
+      ];
+      
+      let sanitized = prompt;
+      
+      // First pattern: full schema blocks
+      const schemaBlockMatch = sanitized.match(schemaPatterns[0]);
+      if (schemaBlockMatch) {
+        for (const match of schemaBlockMatch) {
+          // Replace {{variable}} with descriptive text in schema sections only
+          const cleaned = match.replace(/\{\{(\w+)\}\}/g, (_, varName) => {
+            // Convert camelCase to readable: ipStatus -> "the ip status value"
+            const readable = varName
+              .replace(/([A-Z])/g, ' $1')
+              .toLowerCase()
+              .trim();
+            return `the ${readable} value`;
+          });
+          sanitized = sanitized.replace(match, cleaned);
+        }
+      }
+      
+      // Second pattern: individual field descriptions with template vars
+      // Only clean within quoted string values that look like schema field descriptions
+      sanitized = sanitized.replace(
+        /("[\w_]+"\s*:\s*")(string|number|boolean|array|object)?\s*\(([^"]*)\{\{(\w+)\}\}([^"]*)\)(")/gi,
+        (match, prefix, type, before, varName, after, suffix) => {
+          const readable = varName
+            .replace(/([A-Z])/g, ' $1')
+            .toLowerCase()
+            .trim();
+          return `${prefix}${type || ''} (${before}the ${readable} value${after})${suffix}`;
+        }
+      );
+      
+      return sanitized;
+    }
+    
+    // Apply sanitization to all research steps
+    for (const step of pipelineData.steps) {
+      const original = step.prompt_template;
+      step.prompt_template = sanitizeOutputSchemas(step.prompt_template);
+      if (original !== step.prompt_template) {
+        console.log(`Sanitized template variables from step ${step.step_number} (${step.step_name})`);
       }
     }
 

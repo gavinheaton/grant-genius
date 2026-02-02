@@ -16,6 +16,7 @@ export interface QualityScore {
     validVariables: number;     // 10 pts - All {{variables}} are valid shortcodes
   };
   invalidVariables: string[];   // List any invalid variables found
+  hasVariablesInSchema: boolean; // True if {{variables}} found in OUTPUT SCHEMA (bad)
   recommendations: string[];
   level: 'good' | 'warning' | 'poor';
   // Assembly step validation (for finalize_report_html)
@@ -47,27 +48,50 @@ const VALID_VARIABLE_PATTERNS = [
   /^step\d{1,2}$/,
 ];
 
-function validateVariables(prompt: string): { score: number; invalid: string[] } {
+// Check for template variables in OUTPUT SCHEMA sections (bad practice)
+function hasVariablesInOutputSchema(prompt: string): boolean {
+  // Find output schema sections and check for {{variables}} in them
+  const schemaMatch = prompt.match(/(OUTPUT\s*JSON\s*SCHEMA|OUTPUT\s*SCHEMA|JSON\s*SCHEMA)[:\s]*(\{[\s\S]*?\n\})/gi);
+  if (!schemaMatch) return false;
+  
+  for (const match of schemaMatch) {
+    if (/\{\{(\w+)\}\}/.test(match)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function validateVariables(prompt: string): { score: number; invalid: string[]; hasSchemaVars: boolean } {
   const variableMatches = prompt.match(/\{\{(\w+)\}\}/g) || [];
   const variables = variableMatches.map(v => v.replace(/\{\{|\}\}/g, ''));
   
+  const hasSchemaVars = hasVariablesInOutputSchema(prompt);
+  
   if (variables.length === 0) {
     // No variables used - that's okay for some prompts
-    return { score: 10, invalid: [] };
+    return { score: 10, invalid: [], hasSchemaVars };
   }
   
   const invalid = variables.filter(v => 
     !VALID_VARIABLE_PATTERNS.some(pattern => pattern.test(v))
   );
   
-  // Score: 10 points if all valid, 5 if some invalid, 0 if many invalid
-  const invalidRatio = invalid.length / variables.length;
-  const score = invalidRatio === 0 ? 10 : invalidRatio < 0.5 ? 5 : 0;
+  // Score: 10 points if all valid and no schema vars, reduce for issues
+  let score = 10;
+  if (invalid.length > 0) {
+    const invalidRatio = invalid.length / variables.length;
+    score = invalidRatio === 0 ? 10 : invalidRatio < 0.5 ? 5 : 0;
+  }
+  // Penalty for having template vars in output schema
+  if (hasSchemaVars) {
+    score = Math.max(0, score - 5);
+  }
   
-  return { score, invalid: [...new Set(invalid)] };
+  return { score, invalid: [...new Set(invalid)], hasSchemaVars };
 }
 
-function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVars: string[]): string[] {
+function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVars: string[], hasSchemaVars: boolean): string[] {
   const recommendations: string[] = [];
 
   if (breakdown.contextHeader === 0) {
@@ -96,6 +120,11 @@ function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVa
       `Invalid variables: ${invalidVars.join(', ')}. Use approved shortcodes: {{summary}}, {{step0}}, {{grantName}}, etc.`
     );
   }
+  if (hasSchemaVars) {
+    recommendations.push(
+      'CRITICAL: Remove {{variable}} placeholders from OUTPUT SCHEMA section. Use descriptive text like "the IP status value" instead.'
+    );
+  }
 
   return recommendations;
 }
@@ -115,13 +144,14 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
         validVariables: 0,
       },
       invalidVariables: [],
+      hasVariablesInSchema: false,
       recommendations: ['Prompt is empty or invalid'],
       level: 'poor',
     };
   }
 
   // Validate variables first
-  const { score: validVariablesScore, invalid: invalidVariables } = validateVariables(prompt);
+  const { score: validVariablesScore, invalid: invalidVariables, hasSchemaVars } = validateVariables(prompt);
 
   const breakdown = {
     // Context header: STEP N with purpose or INPUTS section
@@ -150,7 +180,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
   };
 
   const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
-  const recommendations = generateRecommendations(breakdown, invalidVariables);
+  const recommendations = generateRecommendations(breakdown, invalidVariables, hasSchemaVars);
   
   let level: QualityScore['level'];
   if (total >= 70) {
@@ -190,6 +220,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     total: Math.round(total),
     breakdown,
     invalidVariables,
+    hasVariablesInSchema: hasSchemaVars,
     recommendations,
     level,
     assemblyValidation,
