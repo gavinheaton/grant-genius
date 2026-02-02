@@ -1,128 +1,136 @@
 
-## What’s happening (root cause)
+# Fix: Pipeline Generator Creating Invalid Prompts with Template Variables in Output Schemas
 
-You’re seeing the same error again because the “quality check” we added only validates the *prompt text* (it contains `"report_html"`, references `{{stepN}}`, etc.). It cannot guarantee the model will actually return valid JSON with a `report_html` key at runtime.
+## Root Cause Analysis
 
-In the failing run we can see exactly what happened in the database:
+The error `JSON Guard failed after 3 attempts: Contains unsubstituted template variable: {{ipStatus}}` occurs because:
 
-- `total_steps = 9` (steps 0–8)
-- Steps 0–7 completed successfully
-- Step 8 `finalize_report_html` **failed** with:
-  `Finalize FAILED: No step output found with 'report_html' field. Available: step0..step7`
-- `finalize_report_html.outputs_json` is `{}` (empty object)
+1. **The AI-generated pipeline includes template variables inside OUTPUT SCHEMA definitions**
 
-So the pipeline structure is correct; the model simply didn’t produce a usable `report_html` payload for the final step. The external Cloud Run worker then fails fast because it requires `report_html` to exist before it saves the report.
-
-This is why “we blocked bad prompts” didn’t prevent it: it wasn’t a bad prompt; it was a bad model response.
-
-## Goal
-
-Make this class of failure recoverable and (ideally) self-healing by adding a deterministic, non-AI fallback finalizer that can assemble `report_html` from:
-- Step 6 `assemble_sections_html.outputs_json.sections_html`
-- Step 7 `build_tables_sources_html.outputs_json.tables` + `all_sources`
-…and then save the report.
-
-## Implementation plan
-
-### 1) Add a deterministic finalization path (backend function)
-Create a new backend function (or extend an existing one) that:
-
-Input:
-- `reportRunId`
-
-Logic:
-1. Load the report run, application, grant_version_id, template_version_id, user_id
-2. Load `report_run_steps` for the run
-3. Find the latest completed `assemble_sections_html` step output:
-   - must have `sections_html` (string)
-4. Find the latest completed `build_tables_sources_html` step output:
-   - must have `tables` (object)
-   - may have `all_sources` (array)
-5. Deterministically build `report_html`:
-   - Replace table anchors in `sections_html`:
-     - `<!-- TABLE:competitors -->`
-     - `<!-- TABLE:market_sizing -->`
-     - `<!-- TABLE:partners -->`
-   - If an anchor is missing, append the relevant table under a sensible `<h2>` heading at the end
-   - Append a `<h2>References</h2>` section (build `<ul><li>…</li></ul>` from `all_sources`)
-6. Construct `content_json` in the format the frontend expects:
+   The Step 2 prompt for the failing run contains:
    ```json
-   {
-     "assembledReport": {
-       "title": "...",
-       "report_html": "...",
-       "tables": {...},
-       "all_sources": [...],
-       "data_gaps": [...]
-     }
-   }
+   "ip_strategy_validation": "string (Does the user's {{ipStatus}} align with sector norms...)"
    ```
-7. Insert a `reports` row (new version_number) and mark run as `completed`
-8. Update `report_run_steps` for `finalize_report_html`:
-   - set `status=completed`
-   - set `outputs_json` to include at least `{ report_html, ... }`
-9. Credit accounting:
-   - Check whether an `entitlement_consumptions` row exists for this run
-   - If none exists (because the worker refunded on failure), re-consume one credit:
-     - choose a non-expired entitlement with available quantity
-     - increment `entitlements.used_quantity`
-     - insert `entitlement_consumptions` row linked to `report_run_id` (and optionally update it with `report_id` after report insert)
 
-Result: even if AI fails on the last step, we can still complete the report reliably.
+2. **The AI model copies the template variable literally into its response**
 
-### 2) Wire this recovery into the UI retry flow
-Update the report retry logic so that when the failure is specifically this finalization error, we call the deterministic recovery instead of re-running the AI final step again.
+   When the model generates JSON output, it sees `{{ipStatus}}` in the schema description and may include it verbatim in the response.
 
-Detection:
-- If the failed step is `finalize_report_html`
-- And `error_message` contains: `No step output found with 'report_html' field`
+3. **The external Cloud Run worker's JSON Guard rejects the response**
 
-Behavior:
-- Show a “Recover final step” action (or reuse existing “Retry” button but route it to recovery)
-- Call the new backend function with `reportRunId`
-- On success:
-  - refresh the reports list
-  - show a toast “Recovered report successfully”
+   The worker validates that AI responses don't contain unsubstituted template variables (like `{{ipStatus}}`), treating them as errors.
 
-### 3) Add better diagnostics so we can prove what failed next time
-Add logging/telemetry improvements to make debugging fast:
-- In the Cloud Run worker proxy `update_step`, log the keys and a short preview for `finalize_report_html` attempts
-- Store a short `raw_output_preview` (if available from the worker) into `error_message` or a dedicated log action (if we have a logging table) so we can see whether the model returned:
-  - non-JSON
-  - JSON missing the key
-  - truncated output
+This is NOT a variable substitution bug - it's a **prompt generation quality issue**. The pipeline generator AI is incorrectly putting template placeholders inside output schema definitions where they will be echoed back.
 
-(If the Cloud Run worker does not send raw output today, we can’t recover it; the deterministic fallback is the pragmatic fix.)
+---
 
-### 4) Ensure “publish guardrail” still applies (no regression)
-Keep the publish-time validation we added, but clarify its scope in UI copy:
-- “This validates the pipeline configuration; it cannot guarantee the model output. Final step has automatic recovery.”
+## Solution: Add Variable Sanitization in Pipeline Generator
 
-## Testing plan (must-do)
-1. Create a grant with a 9-step pipeline (like the failing one).
-2. Force a failure scenario:
-   - Temporarily edit the finalize prompt to encourage malformed output (or simulate step8 outputs_json being `{}`).
-3. Confirm:
-   - Run fails with the same error
-   - UI shows “Recover final step”
-   - Recovery completes and a report is created
-   - Report viewer loads `assembledReport.report_html` correctly
-   - PDF/DOCX exports still work
-4. Confirm credit behavior:
-   - used_quantity changes by +1 net (no free report)
-   - `entitlement_consumptions` row exists after recovery
+### Part 1: Sanitize OUTPUT SCHEMA Sections
 
-## Files expected to change
-- New backend function:
-  - `supabase/functions/recover-finalize-report/index.ts` (or similar)
-- Frontend retry/recovery wiring:
-  - `src/hooks/useReportGeneration.ts` (detect error and call recovery)
-  - Potentially `src/components/workspace/GenerationProgress.tsx` or wherever the retry button is rendered
-- Optional diagnostics:
-  - `supabase/functions/worker-proxy/index.ts` (more logging around finalize step failures)
+After the pipeline AI generates prompts, scan and clean any template variables from OUTPUT SCHEMA sections before saving:
 
-## Why this is the right fix
-- It removes dependence on model compliance for the final “glue step”
-- It works for any pipeline length because it keys off step names (`assemble_sections_html`, `build_tables_sources_html`, `finalize_report_html`)
-- It directly addresses the exact observed failure mode (final step outputs `{}`)
+```text
+Location: supabase/functions/process-grant-guidelines/index.ts
+```
 
+Add a post-processing function that:
+1. Finds OUTPUT SCHEMA / JSON SCHEMA sections in each prompt
+2. Removes or replaces `{{variableName}}` patterns with descriptive text
+3. Keeps variables in the INPUTS section (where they belong)
+
+### Part 2: Add Validation Rule to Pipeline Generator Prompt
+
+Update the pipeline generation prompt to explicitly forbid template variables in output schemas:
+
+```text
+CRITICAL: 
+- Template variables like {{variable}} are ONLY for the INPUTS section
+- NEVER use {{variable}} syntax in OUTPUT SCHEMA field descriptions
+- Use descriptive text instead: "the user's IP status" NOT "{{ipStatus}}"
+```
+
+### Part 3: Add Quality Check for Output Schema Variables
+
+Extend the existing quality scoring to flag prompts containing template variables in their output schemas.
+
+---
+
+## Implementation Details
+
+### File: `supabase/functions/process-grant-guidelines/index.ts`
+
+#### 1. Add sanitization function (after quality scoring):
+
+```typescript
+// Sanitize template variables from OUTPUT SCHEMA sections
+function sanitizeOutputSchemas(prompt: string): string {
+  // Find OUTPUT SCHEMA or JSON SCHEMA sections
+  const schemaMatch = prompt.match(/(OUTPUT.*?SCHEMA|JSON.*?SCHEMA)[:\s]*(\{[\s\S]*?\n\})/gi);
+  
+  if (!schemaMatch) return prompt;
+  
+  let sanitized = prompt;
+  for (const match of schemaMatch) {
+    // Replace {{variable}} with descriptive text in schema sections only
+    const cleaned = match.replace(/\{\{(\w+)\}\}/g, (_, varName) => {
+      // Convert camelCase to readable: ipStatus -> "the IP status value"
+      const readable = varName
+        .replace(/([A-Z])/g, ' $1')
+        .toLowerCase()
+        .trim();
+      return `the ${readable} value`;
+    });
+    sanitized = sanitized.replace(match, cleaned);
+  }
+  
+  return sanitized;
+}
+```
+
+#### 2. Apply sanitization after enhancement (around line 607):
+
+```typescript
+// After quality enhancement loop
+console.log("Step 4.5: Sanitizing output schemas...");
+for (const step of pipelineData.steps) {
+  step.prompt_template = sanitizeOutputSchemas(step.prompt_template);
+}
+```
+
+#### 3. Update pipeline generation prompt (around line 394):
+
+Add this rule to the CRITICAL section:
+```text
+- Template variables {{...}} are ONLY for referencing data in the INPUTS or HARD RULES sections
+- NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions - use readable text instead
+  BAD:  "ip_strategy_validation": "Does {{ipStatus}} align..."
+  GOOD: "ip_strategy_validation": "Does the provided IP status align..."
+```
+
+---
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `supabase/functions/process-grant-guidelines/index.ts` | Add `sanitizeOutputSchemas()` function, apply after enhancement, update pipeline prompt |
+
+---
+
+## Expected Outcome
+
+After implementation:
+1. AI-generated pipelines will not contain `{{variable}}` patterns in OUTPUT SCHEMA sections
+2. The JSON Guard will no longer reject responses for containing template variables
+3. Existing prompts in the database should also be sanitized (can add a one-time migration or manual edit)
+
+---
+
+## Immediate Workaround
+
+For the failing pipeline (`81e751cb-98a6-44a8-afca-99a4c838fc9d`), a Super Admin can manually edit Step 2's prompt to replace:
+- `{{ipStatus}}` in the schema → "the IP status value"
+- `{{trl}}` in the schema → "the TRL value"
+
+This allows the current run to retry successfully while the permanent fix is deployed.
