@@ -1,228 +1,197 @@
 
-# Regenerate Single Prompt Step Feature
+# Quality Check Gap in Pipeline Generator
 
-## Understanding
+## Root Cause Analysis
 
-After a prompt bundle is generated from grant guidelines, some individual step prompts may be low quality (short, lacking structure, missing validation rules). Currently, the only option is to **regenerate the entire pipeline** or **manually edit** each prompt.
+### What Failed
+The report generation failed at **Step 9 (finalize_report_html)** with the error:
+```
+Finalize FAILED: No step output found with 'report_html' field. Available: step0, step1, step2, step3, step4, step5, step6, step7, step8
+```
 
-This feature allows Super Admins to **regenerate a single step's prompt** using AI, keeping the step's purpose/description intact while improving the prompt quality - without affecting other steps.
+### Where the Error Originates
+The error message comes from the **external Cloud Run worker** (not in the Lovable codebase). The worker validates that the final assembly step produces a `report_html` field before saving the report.
 
-## Current State
+### What Actually Happened
+Looking at the database records:
+- **Steps 0-6**: AI-generated research steps (completed successfully)
+- **Step 7 (assemble_sections_html)**: Produced correct `sections_html` output
+- **Step 8 (build_tables_sources_html)**: Produced correct `tables` and `all_sources` output
+- **Step 9 (finalize_report_html)**: **Failed** - outputs_json is empty `{}`
 
-| Component | Current Behavior |
-|-----------|-----------------|
-| `PromptStepEditor.tsx` | Manual editing only - Save button, no AI regeneration |
-| `process-grant-guidelines` | Has enhancement logic (lines 527-607) that improves low-quality prompts in bulk |
-| Quality Badge | Shows score but no action to improve |
+The AI in Step 9 was supposed to parse the JSON from steps 7 and 8, merge the HTML, and output `report_html`, but it returned empty JSON.
 
-## Solution Overview
+### Why the Quality Check Didn't Catch This
 
-Add a "Regenerate with AI" button to the `PromptStepEditor` component that:
-1. Calls a new edge function to regenerate just that step's prompt
-2. Uses the same quality improvement logic from `process-grant-guidelines`
-3. Shows a preview of the new prompt before applying
-4. Preserves step metadata (step_name, step_description, model_override, etc.)
+The current quality check in `process-grant-guidelines/index.ts` (lines 497-514) and `usePromptQuality.ts` validates:
+- Context header presence
+- Hard rules section
+- Output JSON schema definition
+- URL validation mentions
+- Unknown handling protocol
+- Placeholder prohibition
+- Adequate length (1000+ chars)
+- Valid variable usage
+
+**What it does NOT validate:**
+1. **Inter-step variable consistency** - Whether Step 9's prompt references `{{step7}}` and `{{step8}}` correctly
+2. **Assembly step input requirements** - Whether the steps referenced actually produce the fields the assembly step expects
+3. **Critical output field requirements** - Whether the `finalize_report_html` step is configured to require `report_html` in output
+
+### The Specific Gap
+The `finalize_report_html` prompt template says:
+```
+Step 7 data ({{step7}}):
+- "sections_html": string
+...
+Step 8 data ({{step8}}):
+- "tables": object
+```
+
+But the prompt template uses **hardcoded step numbers** based on `maxAIStep + 1` and `maxAIStep + 2`:
+```typescript
+// Line 712 in process-grant-guidelines/index.ts
+prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
+...
+Step ${maxAIStep + 1} data ({{step${maxAIStep + 1}}}):
+```
+
+If the AI generates a pipeline with steps 0-6, then:
+- `maxAIStep = 6`
+- Assembly steps are numbered 7, 8, 9
+- `finalize_report_html` (step 9) expects `{{step7}}` and `{{step8}}`
+
+This is correct! But the **actual failure** was that the AI in Step 9 returned empty JSON instead of the expected structure.
 
 ---
 
-## Technical Implementation
+## Solution: Add Assembly Step Validation to Pipeline Generator
 
-### 1. New Edge Function: `regenerate-step-prompt`
+### Proposed Changes
 
-Creates a new edge function that takes a step ID and regenerates its prompt using AI.
-
-**File: `supabase/functions/regenerate-step-prompt/index.ts`**
-
-```typescript
-// Takes: step_id, optional additional_context
-// Returns: regenerated_prompt
-
-// Logic:
-// 1. Fetch the step from prompt_bundle_steps
-// 2. Fetch the bundle's system_prompt and grant context (if linked to grant_version)
-// 3. Call AI with enhancement prompt (reuse logic from process-grant-guidelines lines 531-562)
-// 4. Return the enhanced prompt for preview (don't auto-save)
-```
-
-Key prompt structure (reusing from process-grant-guidelines):
-- Include QUALITY_TEMPLATE and REFERENCE_EXAMPLE constants
-- Provide the current step's purpose and description
-- Ask AI to enhance the prompt to meet quality standards
-- Enforce 1,500+ character minimum
-
-### 2. Update `PromptStepEditor.tsx`
-
-Add a "Regenerate" button and preview workflow:
+#### 1. Add Assembly Step Validation After Generation
+In `process-grant-guidelines/index.ts`, after generating and enhancing prompts, add a validation pass specifically for assembly steps:
 
 ```typescript
-interface PromptStepEditorProps {
-  step: PromptBundleStep;
-  models: { value: string; label: string }[];
-  canEdit: boolean;
-  onSave: (...) => Promise<void>;
-  grantContext?: {  // Optional: passed when editing grant-linked bundle
-    grantName?: string;
-    grantSummary?: string;
-    rubricSummary?: string;
-  };
-}
-```
+// After line 607 (after quality enhancement)
+console.log("Step 4.5: Validating assembly step consistency...");
 
-Add states:
-- `isRegenerating: boolean` - Loading state during AI call
-- `previewPrompt: string | null` - The AI-generated prompt to preview
-- `showPreview: boolean` - Whether to show the preview dialog
-
-Add UI:
-- "Regenerate with AI" button (Sparkles icon) next to Save button
-- Preview dialog showing old vs new prompt
-- "Apply" and "Cancel" buttons in preview
-
-### 3. Update `InlinePipelineEditor.tsx`
-
-Pass grant context to PromptStepEditor when available:
-- If the bundle is linked to a grant_version, fetch grant context
-- Pass grantName, grantSummary, rubricSummary to each step editor
-
-### 4. Add Hook: `useRegenerateStepPrompt`
-
-New hook in `src/hooks/usePromptBundles.ts`:
-
-```typescript
-export function useRegenerateStepPrompt() {
-  return useMutation({
-    mutationFn: async (data: { 
-      stepId: string; 
-      additionalContext?: string;
-    }) => {
-      const response = await supabase.functions.invoke("regenerate-step-prompt", {
-        body: data
-      });
-      if (response.error) throw response.error;
-      return response.data.regenerated_prompt as string;
+function validateAssemblySteps(steps: any[], assemblySteps: any[]): string[] {
+  const errors: string[] = [];
+  const maxResearchStep = Math.max(...steps.map(s => s.step_number));
+  
+  // Check finalize_report_html references correct steps
+  const finalizeStep = assemblySteps.find(s => s.step_name === "finalize_report_html");
+  if (finalizeStep) {
+    const prompt = finalizeStep.prompt_template;
+    
+    // Verify it references the two previous assembly steps
+    const expectedHtmlStep = `{{step${maxResearchStep + 1}}}`;
+    const expectedTablesStep = `{{step${maxResearchStep + 2}}}`;
+    
+    if (!prompt.includes(expectedHtmlStep)) {
+      errors.push(`finalize_report_html missing reference to ${expectedHtmlStep}`);
     }
-  });
+    if (!prompt.includes(expectedTablesStep)) {
+      errors.push(`finalize_report_html missing reference to ${expectedTablesStep}`);
+    }
+    
+    // Verify it mentions report_html in output schema
+    if (!prompt.includes('"report_html"')) {
+      errors.push("finalize_report_html OUTPUT SCHEMA missing 'report_html' field");
+    }
+  }
+  
+  return errors;
+}
+```
+
+#### 2. Add Quality Flag for Critical Assembly Steps
+Extend the quality scoring to flag assembly steps that don't include critical output fields:
+
+```typescript
+// In usePromptQuality.ts, add new check
+criticalOutputField: number;  // 15 pts for assembly steps
+
+// For finalize_report_html step specifically
+criticalOutputField: 
+  stepName === 'finalize_report_html' && !prompt.includes('"report_html"') ? 0 : 15
+```
+
+#### 3. Add UI Warning for Low-Quality Assembly Steps
+In `InlinePipelineEditor.tsx`, add a special warning badge for assembly steps that may fail:
+
+```tsx
+// After PromptQualityBadge
+{step.step_name === 'finalize_report_html' && 
+ !step.prompt_template.includes('"report_html"') && (
+  <Badge variant="destructive" className="ml-2">
+    Missing report_html field
+  </Badge>
+)}
+```
+
+#### 4. Pre-flight Validation Before Publishing
+Add a validation check when Super Admin attempts to publish a pipeline:
+
+```typescript
+// Before publishing grant version
+const validatePipelineForPublish = (steps: PromptBundleStep[]): string[] => {
+  const errors: string[] = [];
+  
+  const finalStep = steps.find(s => s.step_name === 'finalize_report_html');
+  if (!finalStep) {
+    errors.push("Pipeline missing finalize_report_html step");
+  } else if (!finalStep.prompt_template.includes('"report_html"')) {
+    errors.push("finalize_report_html step missing required 'report_html' output field");
+  }
+  
+  return errors;
+};
+```
+
+---
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `supabase/functions/process-grant-guidelines/index.ts` | Add assembly step validation after prompt enhancement |
+| `src/hooks/usePromptQuality.ts` | Add critical output field check for assembly steps |
+| `src/components/admin/InlinePipelineEditor.tsx` | Add warning badge for finalize_report_html without report_html |
+| `src/pages/admin/GrantEdit.tsx` | Add pre-flight validation before publishing pipeline |
+
+---
+
+## Alternative Quick Fix
+
+If the immediate concern is preventing this specific failure, we can add a **runtime validation** in the pipeline generator that ensures the `finalize_report_html` prompt always contains the correct references:
+
+```typescript
+// After generating assembly steps (line 802)
+// Ensure finalize_report_html has correct step references
+const finalizeStepIdx = assemblySteps.findIndex(s => s.step_name === 'finalize_report_html');
+if (finalizeStepIdx !== -1) {
+  const prompt = assemblySteps[finalizeStepIdx].prompt_template;
+  
+  // Validate references exist
+  if (!prompt.includes(`{{step${maxAIStep + 1}}}`) || !prompt.includes(`{{step${maxAIStep + 2}}}`)) {
+    console.error("CRITICAL: finalize_report_html has incorrect step references!");
+    // Regenerate with correct template
+    assemblySteps[finalizeStepIdx].prompt_template = createHtmlAssemblySteps(maxAIStep)[2].prompt_template;
+  }
 }
 ```
 
 ---
 
-## User Experience Flow
+## Expected Outcome
 
-1. Super Admin opens a prompt bundle step
-2. Sees current prompt with quality badge (possibly showing "Warning" or "Poor")
-3. Clicks "Regenerate with AI" button
-4. Loading spinner shows while AI generates
-5. Preview dialog appears showing:
-   - Current prompt (collapsed/scrollable)
-   - New regenerated prompt (full view)
-   - Quality score comparison (e.g., "32 -> 78")
-6. Super Admin can:
-   - "Apply" - Replaces prompt and triggers save
-   - "Cancel" - Closes dialog without changes
-   - "Edit" - Apply to editor without saving (allows further tweaks)
-
----
-
-## Files to Create/Modify
-
-| File | Action | Description |
-|------|--------|-------------|
-| `supabase/functions/regenerate-step-prompt/index.ts` | Create | New edge function for AI prompt regeneration |
-| `src/hooks/usePromptBundles.ts` | Modify | Add `useRegenerateStepPrompt` hook |
-| `src/components/admin/PromptStepEditor.tsx` | Modify | Add regenerate button, preview dialog, apply workflow |
-| `src/components/admin/InlinePipelineEditor.tsx` | Modify | Pass grant context to step editors |
-
----
-
-## Edge Function Implementation Details
-
-**`supabase/functions/regenerate-step-prompt/index.ts`**
-
-```text
-Request: POST { step_id: string, additional_context?: string }
-
-Steps:
-1. Verify user is Super Admin
-2. Fetch step from prompt_bundle_steps with bundle info
-3. Optionally fetch grant context if bundle is linked to a grant_version
-4. Build enhancement prompt with:
-   - QUALITY_TEMPLATE (from process-grant-guidelines)
-   - REFERENCE_EXAMPLE (from process-grant-guidelines)
-   - Current step purpose and description
-   - Grant context (if available)
-   - Additional context (if provided by admin)
-5. Call Gemini 3 Flash to generate improved prompt
-6. Return { regenerated_prompt, quality_score }
-```
-
----
-
-## UI Component Changes
-
-**PromptStepEditor.tsx - New UI Elements**
-
-```text
-[Processing Window dropdown]
-[Model dropdown]
-[Heavy Step toggle]
-[Max Expected Seconds input]
-
-[Prompt Template textarea]
-
-[Quality Badge] [Regenerate with AI button] [Save Step button]
-                ^^^^^^^^^^^^^^^^^^^^^^^^
-                NEW - Only shown for Super Admins
-```
-
-**Preview Dialog**
-
-```text
-+------------------------------------------------+
-| Regenerated Prompt Preview                      |
-+-------------------------------------------------+
-| Quality Score: 32 -> 78 (Good)                  |
-|                                                 |
-| [Current Prompt - collapsed by default]         |
-|                                                 |
-| [New Prompt - full height, scrollable]          |
-|   STEP 3 - Market Sizing                        |
-|   INPUTS: {{summary}}, {{step0}}, {{step2}}     |
-|   HARD RULES:                                   |
-|   - Do NOT invent facts...                      |
-|   ...                                           |
-|                                                 |
-| [Cancel]        [Edit First]        [Apply]     |
-+-------------------------------------------------+
-```
-
----
-
-## Quality Validation
-
-Reuse the quality scoring function from process-grant-guidelines (lines 497-514):
-
-```typescript
-function calculateQualityScore(prompt: string): { total: number; level: 'good' | 'warning' | 'poor' }
-```
-
-Display score comparison in preview to show improvement.
-
----
-
-## Security Considerations
-
-- Only Super Admins can regenerate prompts (existing RLS already enforces this for prompt_bundle_steps)
-- Edge function validates role before processing
-- No auto-save - Admin must explicitly apply the regenerated prompt
-
----
-
-## Expected Behavior After Implementation
-
-1. Super Admin opens step with poor quality prompt (score 25)
-2. Clicks "Regenerate with AI"
-3. After ~3-5 seconds, preview shows new prompt (score 82)
-4. Admin reviews, clicks "Apply"
-5. Prompt is saved, quality badge updates to "Good"
-6. Step is ready for use in report generation
+After implementing these changes:
+1. Pipeline generator validates assembly step consistency before saving
+2. UI shows warning badges for assembly steps missing critical fields
+3. Publishing is blocked if validation fails
+4. The specific "No step output found with 'report_html'" error cannot occur because:
+   - The prompt is validated to include correct step references
+   - The output schema is validated to include `report_html`
+   - Pre-flight checks prevent publishing broken pipelines
