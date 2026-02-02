@@ -53,12 +53,13 @@ export function AIAnalysisPanel({
   onRetry,
   isRetrying = false,
 }: AIAnalysisPanelProps) {
-  const isProcessing = analysisStatus === "processing" || pipelineStatus === "generating";
+  const isProcessing = analysisStatus === "analyzing" || pipelineStatus === "generating";
   const hasFailed = analysisStatus === "failed" || pipelineStatus === "failed";
   const isComplete = analysisStatus === "completed" && (pipelineStatus === "draft" || pipelineStatus === "published");
 
   const statusIcon = {
     pending: <AlertCircle className="h-4 w-4 text-muted-foreground" />,
+    analyzing: <Loader2 className="h-4 w-4 text-primary animate-spin" />,
     processing: <Loader2 className="h-4 w-4 text-primary animate-spin" />,
     completed: <CheckCircle className="h-4 w-4 text-green-500" />,
     failed: <XCircle className="h-4 w-4 text-destructive" />,

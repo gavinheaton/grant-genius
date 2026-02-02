@@ -37,7 +37,7 @@ export function ProcessingProgress({
     }
 
     // Step 2: Extraction
-    if (aiStatus === "processing") {
+    if (aiStatus === "analyzing") {
       steps[0].state = "completed";
       steps[1].state = "active";
     } else if (aiStatus === "completed" || aiStatus === "failed") {
