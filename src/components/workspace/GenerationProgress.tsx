@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2 } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2, Wrench } from "lucide-react";
 import { ReportRunStep } from "@/hooks/useReportGeneration";
 import { ReportLogViewer } from "./ReportLogViewer";
 
@@ -21,6 +21,7 @@ interface GenerationProgressProps {
   onRestart?: () => void;
   onResume?: () => void;
   onClearAndRestart?: () => void;
+  onRecoverFinalize?: () => void;
   isSuperAdmin?: boolean;
   emailOnComplete?: boolean;
   onToggleEmailOnComplete?: (enabled: boolean) => void;
@@ -64,6 +65,7 @@ export function GenerationProgress({
   onRestart,
   onResume,
   onClearAndRestart,
+  onRecoverFinalize,
   isSuperAdmin = false,
   emailOnComplete = false,
   onToggleEmailOnComplete,
@@ -246,8 +248,16 @@ export function GenerationProgress({
             
             {/* Action buttons */}
             <div className="flex flex-wrap gap-2">
-              {/* Resume button - available to all users */}
-              {onResume && (
+              {/* Recover Final Step - shown when finalize step failed with missing report_html */}
+              {onRecoverFinalize && (
+                <Button variant="default" size="sm" onClick={onRecoverFinalize} className="gap-2">
+                  <Wrench className="h-4 w-4" />
+                  Recover Final Step
+                </Button>
+              )}
+              
+              {/* Resume button - available to all users (hide if recovery is available) */}
+              {onResume && !onRecoverFinalize && (
                 <Button variant="default" size="sm" onClick={onResume} className="gap-2">
                   <RefreshCw className="h-4 w-4" />
                   {showNetworkErrorMessage ? "Retry Now" : "Resume Report"}
@@ -255,7 +265,7 @@ export function GenerationProgress({
               )}
               
               {/* Fallback to onRestart if no onResume provided */}
-              {!onResume && onRestart && (
+              {!onResume && !onRecoverFinalize && onRestart && (
                 <Button variant="default" size="sm" onClick={handleManualRetry} className="gap-2">
                   <RefreshCw className="h-4 w-4" />
                   Try Again Now
