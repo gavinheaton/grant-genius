@@ -340,6 +340,40 @@ export function useDeletePromptStep() {
   });
 }
 
+export function useRegenerateStepPrompt() {
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async (data: { 
+      stepId: string; 
+      additionalContext?: string;
+    }) => {
+      const response = await supabase.functions.invoke("regenerate-step-prompt", {
+        body: {
+          step_id: data.stepId,
+          additional_context: data.additionalContext,
+        },
+      });
+      
+      if (response.error) throw response.error;
+      if (response.data?.error) throw new Error(response.data.error);
+      
+      return response.data as {
+        regenerated_prompt: string;
+        original_score: { total: number; level: 'good' | 'warning' | 'poor' };
+        new_score: { total: number; level: 'good' | 'warning' | 'poor' };
+      };
+    },
+    onError: (error) => {
+      toast({
+        title: "Failed to regenerate prompt",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+}
+
 export function useReorderPromptSteps() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
