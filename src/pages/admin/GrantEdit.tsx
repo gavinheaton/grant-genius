@@ -59,6 +59,7 @@ export default function GrantEdit() {
   const [edgeAllowed, setEdgeAllowed] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [pipelineExpanded, setPipelineExpanded] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   // Fetch all prompt bundles for the pipeline selector
   const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
@@ -577,14 +578,18 @@ export default function GrantEdit() {
                       versionId={selectedVersionId}
                       versionNumber={selectedVersion?.version_number || 1}
                       currentPath={guidelinesPath}
+                      onUploadStart={() => {
+                        setIsUploading(true);
+                      }}
                       onUploadComplete={(path, rawText) => {
+                        setIsUploading(false);
                         setGuidelinesPath(path);
                         setGuidelinesRawText(rawText);
                         setAiAnalysisStatus("pending");
                         setPipelineStatus("none");
                       }}
                       onProcessingStart={() => {
-                        setAiAnalysisStatus("processing");
+                        setAiAnalysisStatus("analyzing");
                         queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
                       }}
                     />
@@ -608,6 +613,7 @@ export default function GrantEdit() {
                   suggestions={aiSuggestions}
                   onRetry={handleRetryProcessing}
                   isRetrying={isRetrying}
+                  isUploading={isUploading}
                 />
               )}
             </div>

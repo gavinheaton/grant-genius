@@ -11,6 +11,7 @@ interface GuidelinesUploaderProps {
   versionNumber: number;
   currentPath?: string | null;
   onUploadComplete: (path: string, rawText: string) => void;
+  onUploadStart?: () => void;
   onProcessingStart?: () => void;
 }
 
@@ -20,6 +21,7 @@ export function GuidelinesUploader({
   versionNumber,
   currentPath,
   onUploadComplete,
+  onUploadStart,
   onProcessingStart,
 }: GuidelinesUploaderProps) {
   const [isDragging, setIsDragging] = useState(false);
@@ -53,10 +55,9 @@ export function GuidelinesUploader({
   const triggerProcessing = async (rawText: string) => {
     if (isProcessing) return; // Guard against duplicate calls
     setIsProcessing(true);
+    onProcessingStart?.(); // Call immediately - don't wait for auth
     
     try {
-      onProcessingStart?.();
-      
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error("Not authenticated");
 
@@ -120,6 +121,7 @@ export function GuidelinesUploader({
     }
 
     setIsUploading(true);
+    onUploadStart?.(); // Notify parent immediately
 
     try {
       const filePath = `${grantId}/${versionNumber}/guidelines.pdf`;

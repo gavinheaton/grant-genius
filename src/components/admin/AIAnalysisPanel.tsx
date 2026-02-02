@@ -41,6 +41,7 @@ interface AIAnalysisPanelProps {
   suggestions: Suggestions | null;
   onRetry: () => void;
   isRetrying?: boolean;
+  isUploading?: boolean;
 }
 
 export function AIAnalysisPanel({
@@ -52,6 +53,7 @@ export function AIAnalysisPanel({
   suggestions,
   onRetry,
   isRetrying = false,
+  isUploading = false,
 }: AIAnalysisPanelProps) {
   const isProcessing = analysisStatus === "analyzing" || pipelineStatus === "generating";
   const hasFailed = analysisStatus === "failed" || pipelineStatus === "failed";
@@ -65,13 +67,14 @@ export function AIAnalysisPanel({
     failed: <XCircle className="h-4 w-4 text-destructive" />,
   };
 
-  // Show processing progress if actively processing
-  if (isProcessing) {
+  // Show processing progress if actively processing or uploading
+  if (isProcessing || isUploading) {
     return (
       <div className="space-y-6">
         <ProcessingProgress 
           aiStatus={analysisStatus} 
-          pipelineStatus={pipelineStatus} 
+          pipelineStatus={pipelineStatus}
+          isUploading={isUploading}
         />
       </div>
     );
