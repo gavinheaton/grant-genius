@@ -1,210 +1,225 @@
 
-# Enable Delete for Reports and Applications on Dashboard
+# Speed Up Processing Notification for Grant Upload
 
-## Current State
+## Problem Analysis
 
-### Dashboard Application Cards
-- Delete button **already exists** for draft applications (status === "draft")
-- Other statuses (in_progress, ready, failed) have **no delete option**
-- User can only delete drafts, not completed or failed applications
+When a new grant PDF is uploaded, there's a noticeable delay before the processing progress indicator appears. The user sees:
 
-### Reports
-- No delete functionality exists in `ReportsList.tsx`
-- Reports are displayed with View, DOCX, and PDF buttons only
+1. "Uploading guidelines..." spinner (correct)
+2. Brief moment showing "Guidelines PDF" uploaded card with **no processing indicator**
+3. Eventually the processing progress bar appears
 
-### Database Constraints (BLOCKING ISSUE)
-The following foreign key constraints will **block deletion**:
+### Root Causes Identified
 
-| Table | Column | References | Cascade? |
-|-------|--------|------------|----------|
-| `entitlement_consumptions` | `report_id` | `reports(id)` | **NO** |
-| `entitlement_consumptions` | `report_run_id` | `report_runs(id)` | **NO** |
+**1. Sequential Operations Delay**
+In `GuidelinesUploader.tsx`, the flow is:
+```typescript
+// Lines 148-153
+setUploadedFile(filePath);
+onUploadComplete(filePath, rawText);
+setIsUploading(false);
+await triggerProcessing(rawText);  // Processing starts AFTER upload UI updates
+```
 
-This means:
-- Deleting a **report** fails if it has an entitlement consumption record
-- Deleting an **application** cascades to reports, but will fail at entitlement_consumptions
-- Deleting a **report_run** fails if linked to entitlement_consumptions
+**2. Auth Session Fetch Before Callback**
+In `triggerProcessing`, the `onProcessingStart` callback is only called **after** fetching the auth session:
+```typescript
+// Lines 60-62
+const { data: { session } } = await supabase.auth.getSession();  // Takes time
+if (!session) throw new Error("Not authenticated");
+// THEN calls onProcessingStart...
+```
 
-### RLS Policies
-- `applications`: Users CAN delete their own applications (policy exists)
-- `reports`: Users **CANNOT** delete (no DELETE policy exists)
-- `report_runs`: Users **CANNOT** delete (no DELETE policy exists)
+**3. Status Value Mismatch**
+- `GrantEdit.tsx` line 587: `onProcessingStart` sets `aiAnalysisStatus = "processing"`
+- `AIAnalysisPanel.tsx` line 56: `isProcessing = analysisStatus === "analyzing"`
+- The panel looks for `"analyzing"` but the callback sets `"processing"` - they don't match!
 
----
+**4. ProcessingProgress Not Showing Upload State**
+The `ProcessingProgress` component supports `isUploading` prop but it's never passed from `AIAnalysisPanel`.
 
 ## Solution
 
-### Part 1: Database Migration (Foreign Key Fixes + RLS)
+### Part 1: Fix Status Value Mismatch
+Update `GrantEdit.tsx` to set `"analyzing"` instead of `"processing"`:
+```typescript
+onProcessingStart={() => {
+  setAiAnalysisStatus("analyzing");  // Was "processing"
+  queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+}}
+```
 
-Add `ON DELETE SET NULL` to entitlement_consumptions so deleting reports/runs doesn't fail:
-
-```sql
--- 1. Fix foreign key constraints to allow deletion
-ALTER TABLE public.entitlement_consumptions 
-  DROP CONSTRAINT IF EXISTS entitlement_consumptions_report_id_fkey;
+### Part 2: Show Processing Indicator Immediately
+Call `onProcessingStart()` at the START of `triggerProcessing`, before the auth fetch:
+```typescript
+const triggerProcessing = async (rawText: string) => {
+  if (isProcessing) return;
+  setIsProcessing(true);
   
-ALTER TABLE public.entitlement_consumptions
-  ADD CONSTRAINT entitlement_consumptions_report_id_fkey 
-    FOREIGN KEY (report_id) REFERENCES public.reports(id) ON DELETE SET NULL;
-
-ALTER TABLE public.entitlement_consumptions 
-  DROP CONSTRAINT IF EXISTS entitlement_consumptions_report_run_id_fkey;
-
-ALTER TABLE public.entitlement_consumptions
-  ADD CONSTRAINT entitlement_consumptions_report_run_id_fkey 
-    FOREIGN KEY (report_run_id) REFERENCES public.report_runs(id) ON DELETE SET NULL;
-
--- 2. Add RLS policy for users to delete their own reports
-CREATE POLICY "Users can delete own reports"
-  ON public.reports
-  FOR DELETE
-  USING (auth.uid() = user_id);
-
--- 3. Add RLS policy for users to delete their own report runs (via application ownership)
-CREATE POLICY "Users can delete own report runs"
-  ON public.report_runs
-  FOR DELETE
-  USING (EXISTS (
-    SELECT 1 FROM applications
-    WHERE applications.id = report_runs.application_id
-    AND applications.user_id = auth.uid()
-  ));
-```
-
-### Part 2: UI Changes - Dashboard (Applications)
-
-**File: `src/pages/Dashboard.tsx`**
-
-Currently, delete is only allowed for `draft` status. Extend to **all statuses** with appropriate confirmation messaging:
-
-1. Remove the `app.status === "draft"` condition (line 319)
-2. Update the confirmation dialog to show different messages based on status
-3. For applications with reports, warn that reports will also be deleted
-
-```typescript
-// Current (line 319-331):
-{app.status === "draft" && (
-  <Button variant="ghost" size="icon" ...>
-
-// Updated:
-<Button
-  variant="ghost"
-  size="icon"
-  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-  onClick={(e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    handleDeleteApplication(app);
-  }}
->
-  <Trash2 className="h-4 w-4" />
-</Button>
-```
-
-Update confirmation dialog messaging:
-- Draft: "This will permanently delete the draft."
-- Ready/In Progress: "This will permanently delete the application and all generated reports."
-- Failed: "This will permanently delete the application."
-
-### Part 3: UI Changes - Reports List
-
-**File: `src/components/workspace/ReportsList.tsx`**
-
-Add delete button for each report:
-
-1. Add state for `reportToDelete` and `deleteReportModalOpen`
-2. Add `onDelete` callback prop or handle inline
-3. Add Trash2 icon button beside each report row
-4. Add confirmation dialog
-5. Call `supabase.from("reports").delete().eq("id", reportId)`
-
-```typescript
-interface ReportsListProps {
-  reports: Report[];
-  isLoading: boolean;
-  onDownload: (reportId: string, format: "pdf" | "docx") => void;
-  onDeleteReport?: (reportId: string) => void;  // New callback
-  grantName?: string;
-}
-
-// Add delete button in the row (before View button):
-<Button
-  variant="ghost"
-  size="icon"
-  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-  onClick={() => handleDeleteReport(report)}
->
-  <Trash2 className="h-4 w-4" />
-</Button>
-```
-
-### Part 4: Hook Updates
-
-**File: `src/hooks/useReportGeneration.ts`**
-
-Add a `deleteReport` function:
-
-```typescript
-const deleteReport = useCallback(async (reportId: string) => {
-  const { error } = await supabase
-    .from("reports")
-    .delete()
-    .eq("id", reportId);
-
-  if (error) {
-    toast({
-      title: "Error deleting report",
-      description: error.message,
-      variant: "destructive",
-    });
-    return false;
+  onProcessingStart?.();  // Call immediately - don't wait for auth
+  
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    // ... rest of processing
   }
-
-  // Remove from local state
-  setReports(prev => prev.filter(r => r.id !== reportId));
-  toast({
-    title: "Report deleted",
-    description: "The report has been permanently removed.",
-  });
-  return true;
-}, [toast]);
+}
 ```
 
----
+### Part 3: Pass Upload State to AIAnalysisPanel
+Add `isUploading` prop to `AIAnalysisPanel` so it can show the progress during upload phase too:
+
+In `GrantEdit.tsx`:
+- Add `isUploading` state that tracks when `GuidelinesUploader` is uploading
+- Pass it to `AIAnalysisPanel`
+
+In `AIAnalysisPanel.tsx`:
+- Accept `isUploading` prop
+- Show `ProcessingProgress` with `isUploading={true}` during upload
+
+### Part 4: Add Uploading Callback to GuidelinesUploader
+Add `onUploadStart` callback to notify parent when upload begins:
+```typescript
+interface GuidelinesUploaderProps {
+  // ... existing props
+  onUploadStart?: () => void;
+}
+```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| **Database Migration** | Add ON DELETE SET NULL to entitlement_consumptions FKs, add DELETE policies for reports and report_runs |
-| `src/pages/Dashboard.tsx` | Enable delete for all application statuses (not just drafts), update confirmation messaging |
-| `src/components/workspace/ReportsList.tsx` | Add delete button with confirmation dialog for each report |
-| `src/hooks/useReportGeneration.ts` | Add `deleteReport` function, export in return object |
+| `src/components/admin/GuidelinesUploader.tsx` | Add `onUploadStart` prop, call `onProcessingStart` immediately in `triggerProcessing` |
+| `src/pages/admin/GrantEdit.tsx` | Add `isUploading` state, fix `"processing"` to `"analyzing"`, pass states to components |
+| `src/components/admin/AIAnalysisPanel.tsx` | Accept `isUploading` prop, show progress during upload |
 
----
+## Implementation Details
 
-## UX Considerations
+### GuidelinesUploader.tsx
 
-1. **Delete Application**: Shows different warnings based on status
-   - Draft: Simple deletion
-   - Ready: Warns that reports will be deleted
-   - In Progress: May need to cancel run first (or block deletion)
+```typescript
+interface GuidelinesUploaderProps {
+  grantId: string;
+  versionId: string;
+  versionNumber: number;
+  currentPath?: string | null;
+  onUploadComplete: (path: string, rawText: string) => void;
+  onUploadStart?: () => void;      // NEW
+  onProcessingStart?: () => void;
+}
 
-2. **Delete Report**: Simple confirmation
-   - "Delete Report v{version_number}?"
-   - "This will permanently delete this report. The application and other reports will not be affected."
+// In triggerProcessing, move callback to top:
+const triggerProcessing = async (rawText: string) => {
+  if (isProcessing) return;
+  setIsProcessing(true);
+  onProcessingStart?.();  // MOVED: Call immediately
+  
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    // ... rest unchanged
+  }
+}
 
-3. **Cascade Behavior**:
-   - Deleting an application cascades to all its reports and report_runs
-   - Deleting a report only deletes that report (not the application or other reports)
-   - Entitlement consumption records are preserved (with NULL references) for billing audit
+// In handleFileUpload, call onUploadStart:
+const handleFileUpload = async (file: File) => {
+  // ... validation
+  setIsUploading(true);
+  onUploadStart?.();  // NEW: Notify parent immediately
+  
+  // ... rest unchanged
+}
+```
 
----
+### GrantEdit.tsx
 
-## Expected Behavior After Implementation
+```typescript
+const [isUploading, setIsUploading] = useState(false);
 
-1. **Dashboard**: All application cards show delete button
-2. **Application deletion**: Confirmation shows appropriate warning based on status
-3. **Reports list**: Each report row has a delete button
-4. **Report deletion**: Confirmation dialog, then remove from UI
-5. **Database**: Cascades work correctly, entitlement history preserved
+// In the GuidelinesUploader component:
+<GuidelinesUploader
+  grantId={id}
+  versionId={selectedVersionId}
+  versionNumber={selectedVersion?.version_number || 1}
+  currentPath={guidelinesPath}
+  onUploadStart={() => {
+    setIsUploading(true);
+  }}
+  onUploadComplete={(path, rawText) => {
+    setIsUploading(false);
+    setGuidelinesPath(path);
+    setGuidelinesRawText(rawText);
+    setAiAnalysisStatus("pending");
+    setPipelineStatus("none");
+  }}
+  onProcessingStart={() => {
+    setAiAnalysisStatus("analyzing");  // FIXED: Was "processing"
+    queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+  }}
+/>
+
+// In AIAnalysisPanel:
+<AIAnalysisPanel
+  versionId={selectedVersionId}
+  guidelinesText={guidelinesRawText}
+  analysisStatus={aiAnalysisStatus}
+  pipelineStatus={pipelineStatus}
+  promptBundleId={promptBundleId}
+  suggestions={aiSuggestions}
+  onRetry={handleRetryProcessing}
+  isRetrying={isRetrying}
+  isUploading={isUploading}  // NEW
+/>
+```
+
+### AIAnalysisPanel.tsx
+
+```typescript
+interface AIAnalysisPanelProps {
+  // ... existing props
+  isUploading?: boolean;  // NEW
+}
+
+export function AIAnalysisPanel({
+  // ... existing props
+  isUploading = false,
+}: AIAnalysisPanelProps) {
+  const isProcessing = analysisStatus === "analyzing" || pipelineStatus === "generating";
+
+  // Show processing progress during upload OR processing
+  if (isProcessing || isUploading) {
+    return (
+      <div className="space-y-6">
+        <ProcessingProgress 
+          aiStatus={analysisStatus} 
+          pipelineStatus={pipelineStatus}
+          isUploading={isUploading}  // NEW: Pass through
+        />
+      </div>
+    );
+  }
+  // ... rest unchanged
+}
+```
+
+## Expected Behavior After Fix
+
+1. User drops PDF → **Immediately** shows "Processing Guidelines" card with Step 1 active
+2. Upload completes → Step 1 shows checkmark, Step 2 becomes active  
+3. Analysis completes → Step 2 shows checkmark, Step 3 becomes active
+4. Pipeline generated → All steps complete
+5. **No gap** between upload complete and processing start
+
+## Visual Timeline Comparison
+
+**Before:**
+```
+[Upload spinner] → [Uploaded card, no indicator] → [Wait...] → [Processing progress]
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                   This gap is the user-visible delay
+```
+
+**After:**
+```
+[Processing progress: Step 1 active] → [Step 2 active] → [Step 3 active] → [Complete]
+No gaps - continuous feedback throughout
+```
