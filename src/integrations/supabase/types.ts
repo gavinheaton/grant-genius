@@ -700,6 +700,7 @@ export type Database = {
           bundle_id: string
           created_at: string
           id: string
+          is_assembly_step: boolean | null
           is_heavy: boolean | null
           max_expected_seconds: number | null
           model_override: string | null
@@ -714,6 +715,7 @@ export type Database = {
           bundle_id: string
           created_at?: string
           id?: string
+          is_assembly_step?: boolean | null
           is_heavy?: boolean | null
           max_expected_seconds?: number | null
           model_override?: string | null
@@ -728,6 +730,7 @@ export type Database = {
           bundle_id?: string
           created_at?: string
           id?: string
+          is_assembly_step?: boolean | null
           is_heavy?: boolean | null
           max_expected_seconds?: number | null
           model_override?: string | null
@@ -878,6 +881,7 @@ export type Database = {
           execution_engine: string | null
           execution_engine_reason: string | null
           id: string
+          phase: string | null
           report_template_version_id: string
           started_at: string | null
           status: Database["public"]["Enums"]["step_status"]
@@ -894,6 +898,7 @@ export type Database = {
           execution_engine?: string | null
           execution_engine_reason?: string | null
           id?: string
+          phase?: string | null
           report_template_version_id: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["step_status"]
@@ -910,6 +915,7 @@ export type Database = {
           execution_engine?: string | null
           execution_engine_reason?: string | null
           id?: string
+          phase?: string | null
           report_template_version_id?: string
           started_at?: string | null
           status?: Database["public"]["Enums"]["step_status"]

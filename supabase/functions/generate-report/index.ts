@@ -492,6 +492,7 @@ serve(async (req) => {
         status: "running",
         current_step: 0,
         total_steps: pipelineSteps.length, // Dynamic: 11 for AEA, 15 for default
+        phase: "research",  // Initial phase - worker will transition to 'assembly' when ready
         started_at: new Date().toISOString(),
         execution_engine: executionEngine,
         execution_engine_reason: executionEngineReason,
