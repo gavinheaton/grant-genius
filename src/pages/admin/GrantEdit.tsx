@@ -32,7 +32,7 @@ import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
-import { usePromptBundles } from "@/hooks/usePromptBundles";
+import { usePromptBundles, usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 
 export default function GrantEdit() {
@@ -337,9 +337,42 @@ export default function GrantEdit() {
     },
   });
 
+  // Fetch the prompt bundle for validation
+  const { data: currentBundle } = usePromptBundle(promptBundleId || "");
+
+  // Validate pipeline before publishing
+  const validatePipelineForPublish = (): string[] => {
+    if (!currentBundle?.steps) return ["No pipeline steps found"];
+    
+    const errors: string[] = [];
+    const finalStep = currentBundle.steps.find(s => s.step_name === 'finalize_report_html');
+    
+    if (!finalStep) {
+      errors.push("Pipeline missing finalize_report_html step");
+    } else if (!finalStep.prompt_template.includes('"report_html"')) {
+      errors.push("finalize_report_html step missing required 'report_html' output field");
+    }
+    
+    // Check for step references in finalize step
+    if (finalStep) {
+      const stepRefMatches = finalStep.prompt_template.match(/\{\{step\d+\}\}/g) || [];
+      if (stepRefMatches.length < 2) {
+        errors.push("finalize_report_html missing references to previous assembly steps");
+      }
+    }
+    
+    return errors;
+  };
+
   const publishPipelineMutation = useMutation({
     mutationFn: async () => {
       if (!selectedVersionId) return;
+
+      // Pre-flight validation
+      const validationErrors = validatePipelineForPublish();
+      if (validationErrors.length > 0) {
+        throw new Error(`Pipeline validation failed:\n• ${validationErrors.join('\n• ')}`);
+      }
 
       const { error } = await supabase
         .from("grant_versions")
@@ -354,8 +387,12 @@ export default function GrantEdit() {
       toast({ title: "Pipeline published successfully" });
       queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
     },
-    onError: () => {
-      toast({ title: "Error publishing pipeline", variant: "destructive" });
+    onError: (error: any) => {
+      toast({ 
+        title: "Error publishing pipeline", 
+        description: error.message,
+        variant: "destructive" 
+      });
     },
   });
 

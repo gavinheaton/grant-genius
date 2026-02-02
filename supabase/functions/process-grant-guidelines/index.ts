@@ -806,6 +806,47 @@ OUTPUT JSON SCHEMA:
     
     console.log(`Inserting ${researchSteps.length} research steps + ${assemblySteps.length} HTML assembly steps = ${stepsToInsert.length} total`);
 
+    // ========== ASSEMBLY STEP VALIDATION ==========
+    // Ensure finalize_report_html has correct step references and output field
+    console.log("Step 5.5: Validating assembly step consistency...");
+    
+    const finalizeStep = assemblySteps.find((s: any) => s.step_name === "finalize_report_html");
+    if (finalizeStep) {
+      const prompt = finalizeStep.prompt_template;
+      const expectedHtmlStep = `{{step${maxAIStep + 1}}}`;
+      const expectedTablesStep = `{{step${maxAIStep + 2}}}`;
+      
+      const validationErrors: string[] = [];
+      
+      if (!prompt.includes(expectedHtmlStep)) {
+        validationErrors.push(`finalize_report_html missing reference to ${expectedHtmlStep}`);
+      }
+      if (!prompt.includes(expectedTablesStep)) {
+        validationErrors.push(`finalize_report_html missing reference to ${expectedTablesStep}`);
+      }
+      if (!prompt.includes('"report_html"')) {
+        validationErrors.push("finalize_report_html OUTPUT SCHEMA missing 'report_html' field");
+      }
+      
+      if (validationErrors.length > 0) {
+        console.error("CRITICAL: Assembly step validation failed:", validationErrors);
+        // Auto-fix by regenerating the finalize step with correct template
+        const correctTemplate = createHtmlAssemblySteps(maxAIStep)[2];
+        const finalizeIdx = assemblySteps.findIndex((s: any) => s.step_name === "finalize_report_html");
+        if (finalizeIdx !== -1) {
+          console.log("Auto-fixing finalize_report_html step with correct template...");
+          assemblySteps[finalizeIdx].prompt_template = correctTemplate.prompt_template;
+          // Also update stepsToInsert
+          const insertIdx = stepsToInsert.findIndex((s: any) => s.step_name === "finalize_report_html");
+          if (insertIdx !== -1) {
+            stepsToInsert[insertIdx].prompt_template = correctTemplate.prompt_template;
+          }
+        }
+      } else {
+        console.log("Assembly step validation passed ✓");
+      }
+    }
+
     const { error: stepsError } = await supabaseAdmin
       .from("prompt_bundle_steps")
       .insert(stepsToInsert);
