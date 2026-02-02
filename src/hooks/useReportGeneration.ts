@@ -736,6 +736,31 @@ export function useReportGeneration(
     }
   }, [toast, checkActiveRun]);
 
+  // Delete a report
+  const deleteReport = useCallback(async (reportId: string) => {
+    const { error } = await supabase
+      .from("reports")
+      .delete()
+      .eq("id", reportId);
+
+    if (error) {
+      toast({
+        title: "Error deleting report",
+        description: error.message,
+        variant: "destructive",
+      });
+      return false;
+    }
+
+    // Remove from local state
+    setReports(prev => prev.filter(r => r.id !== reportId));
+    toast({
+      title: "Report deleted",
+      description: "The report has been permanently removed.",
+    });
+    return true;
+  }, [toast]);
+
   return {
     isStarting,
     isGenerating,
@@ -751,6 +776,7 @@ export function useReportGeneration(
     toggleEmailOnComplete,
     resumeReport,
     clearAndRestart,
+    deleteReport,
     refetch: fetchReports,
   };
 }

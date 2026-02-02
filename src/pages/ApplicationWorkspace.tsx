@@ -83,6 +83,7 @@ export default function ApplicationWorkspace() {
     toggleEmailOnComplete,
     resumeReport,
     clearAndRestart,
+    deleteReport,
   } = useReportGeneration(id, { onNoCredits: handleNoCredits });
 
   useEffect(() => {
@@ -395,6 +396,7 @@ export default function ApplicationWorkspace() {
           reports={reports}
           isLoading={isLoadingReports}
           onDownload={downloadReport}
+          onDeleteReport={deleteReport}
         />
       </main>
 
