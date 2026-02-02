@@ -25,19 +25,22 @@ const corsHeaders = {
 };
 
 // Step 14 assembled report structure (supports both HTML and markdown)
+// Tables can be either array format (legacy) or object format (new HTML-first pipeline)
+type TableArrayItem = {
+  id?: string;
+  title: string;
+  section: string;
+  columns?: string[];
+  rows?: string[][];
+  html?: string;
+  markdown?: string;
+};
+
 interface AssembledReport {
   title?: string;
   report_markdown?: string;
   report_html?: string;
-  tables?: Array<{
-    id?: string;
-    title: string;
-    section: string;
-    columns?: string[];
-    rows?: string[][];
-    html?: string;
-    markdown?: string;
-  }>;
+  tables?: TableArrayItem[] | Record<string, string>; // Object format: { tableId: htmlString }
   all_sources?: Array<{
     id: string;
     title?: string;
@@ -675,13 +678,175 @@ function sectionMatchesHeading(sectionName: string, headingText: string): boolea
     normalize(sectionName).includes(normalize(headingText));
 }
 
+// Convert table ID to display title
+function formatTableId(id: string): string {
+  return id
+    .split("_")
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+// Map table ID to expected section name for insertion
+function mapTableIdToSection(id: string): string {
+  const sectionMap: Record<string, string> = {
+    competitors: "Competitive Analysis",
+    market_sizing: "Market Sizing",
+    partners: "Partners",
+  };
+  return sectionMap[id] || formatTableId(id);
+}
+
+// Normalize tables to array format
+// Handles both object { id: htmlString } and array formats
+function normalizeTables(
+  tables: AssembledReport["tables"]
+): TableArrayItem[] {
+  if (!tables) return [];
+  
+  // Already an array - return as-is
+  if (Array.isArray(tables)) {
+    return tables;
+  }
+  
+  // Object format: convert to array
+  // { "competitors": "<table>...", "market_sizing": "<table>..." }
+  console.log("Converting object tables format to array:", Object.keys(tables));
+  return Object.entries(tables).map(([id, html]) => ({
+    id,
+    title: formatTableId(id),
+    section: mapTableIdToSection(id),
+    html: html as string,
+  }));
+}
+
+// Parse HTML table into 2D array of cell text
+function parseHtmlTableRows(html: string): string[][] {
+  const rows: string[][] = [];
+  
+  // Match all table rows
+  const rowMatches = html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+  
+  for (const rowMatch of rowMatches) {
+    const rowHtml = rowMatch[1];
+    const cells: string[] = [];
+    
+    // Match all cells (th or td)
+    const cellMatches = rowHtml.matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi);
+    
+    for (const cellMatch of cellMatches) {
+      // Strip HTML tags from cell content
+      const cellText = cellMatch[1]
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .trim();
+      cells.push(cellText);
+    }
+    
+    if (cells.length > 0) {
+      rows.push(cells);
+    }
+  }
+  
+  return rows;
+}
+
+// Build Word table from HTML table string
+function buildTableFromHtml(
+  tableData: TableArrayItem
+): (Paragraph | Table)[] {
+  const elements: (Paragraph | Table)[] = [];
+
+  if (tableData.title) {
+    elements.push(
+      new Paragraph({
+        children: [
+          new TextRun({
+            text: tableData.title,
+            bold: true,
+            size: STYLES.fontSize.h3,
+          }),
+        ],
+        spacing: { before: 240, after: 120 },
+      })
+    );
+  }
+
+  if (!tableData.html) return elements;
+
+  // Parse HTML table to extract rows and cells
+  const rows = parseHtmlTableRows(tableData.html);
+  if (rows.length === 0) {
+    console.log("No rows parsed from HTML table:", tableData.id);
+    return elements;
+  }
+
+  console.log(`Parsed ${rows.length} rows from HTML table: ${tableData.id}`);
+
+  const tableRows: TableRow[] = rows.map((row, rowIndex) => {
+    const isHeader = rowIndex === 0;
+    return new TableRow({
+      tableHeader: isHeader,
+      children: row.map(cellText =>
+        new TableCell({
+          children: [
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: cellText,
+                  bold: isHeader,
+                  size: STYLES.fontSize.body,
+                  color: isHeader ? "FFFFFF" : undefined,
+                }),
+              ],
+            }),
+          ],
+          shading: isHeader
+            ? { fill: STYLES.headerColor, type: ShadingType.SOLID }
+            : undefined,
+          margins: {
+            top: isHeader ? 100 : 80,
+            bottom: isHeader ? 100 : 80,
+            left: 100,
+            right: 100,
+          },
+        })
+      ),
+    });
+  });
+
+  elements.push(
+    new Table({
+      rows: tableRows,
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: {
+        top: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        bottom: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        left: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        right: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+        insideVertical: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+      },
+    })
+  );
+
+  elements.push(new Paragraph({ spacing: { after: 200 } }));
+
+  return elements;
+}
+
 // Main document builder
 function buildDocument(
   assembledReport: AssembledReport,
   metadata: { grantName: string; reportTitle: string; generatedDate: string; version: number }
 ): Document {
   const sections = parseMarkdownStructure(assembledReport.report_markdown || "");
-  const tables = (assembledReport.tables || []).filter(t => t.columns && t.rows);
+  // Normalize tables to array format (handles both object and array formats)
+  const normalizedTables = normalizeTables(assembledReport.tables);
+  // Filter for structured tables (have columns/rows) OR HTML tables
+  const tables = normalizedTables.filter(t => (t.columns && t.rows) || t.html);
   const dataGaps = assembledReport.data_gaps || [];
   const sources = assembledReport.all_sources || [];
 
@@ -772,7 +937,13 @@ function buildDocument(
         if (!insertedTables.has(i)) {
           const table = tables[i];
           if (sectionMatchesHeading(table.section, currentSectionName)) {
-            children.push(...buildTable(table));
+            if (table.columns && table.rows) {
+              // Structured table with columns/rows
+              children.push(...buildTable(table));
+            } else if (table.html) {
+              // HTML table - parse and build
+              children.push(...buildTableFromHtml(table));
+            }
             insertedTables.add(i);
           }
         }
@@ -806,7 +977,12 @@ function buildDocument(
   // Insert any remaining tables that weren't matched to sections
   for (let i = 0; i < tables.length; i++) {
     if (!insertedTables.has(i)) {
-      children.push(...buildTable(tables[i]));
+      const table = tables[i];
+      if (table.columns && table.rows) {
+        children.push(...buildTable(table));
+      } else if (table.html) {
+        children.push(...buildTableFromHtml(table));
+      }
     }
   }
 
