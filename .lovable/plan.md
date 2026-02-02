@@ -1,138 +1,217 @@
 
-
-# Inline Pipeline Editor on Pipeline Tab
+# Fix Pipeline Generator Assembly Steps & Add Variable Validation
 
 ## Overview
 
-Currently, when viewing a grant's Pipeline tab, the Super Admin sees the pipeline status and a "View & Edit Pipeline" button that navigates to a completely separate page (`/admin/prompt-bundles/:id`). This requires context switching and makes the workflow clunky.
+Two related issues need to be addressed:
 
-The solution is to embed the pipeline editor directly below the "View & Edit Pipeline" button, so clicking it expands/collapses the editor inline rather than navigating away.
+1. **Assembly Steps Fail**: The `finalize_report_html` step expects to extract `sections_html` from a prior step, but the AI receives the full JSON object via `{{stepN}}` and doesn't understand how to parse it
+2. **No Variable Validation**: The quality checker doesn't verify that variable references like `{{step7}}` or `{{sections_html}}` are actually valid
 
-## Current Flow vs Proposed Flow
+## Root Cause Analysis
 
-```text
-CURRENT FLOW:
-┌─────────────────────────────┐
-│ Grant Edit > Pipeline Tab   │
-│ ├── Pipeline Selector       │
-│ ├── Status Badge            │
-│ └── [View & Edit Pipeline]──┼──► Navigate to /admin/prompt-bundles/:id
-└─────────────────────────────┘
+When the pipeline generator creates the final assembly step:
 
-PROPOSED FLOW:
-┌─────────────────────────────┐
-│ Grant Edit > Pipeline Tab   │
-│ ├── Pipeline Selector       │
-│ ├── Status Badge            │
-│ └── [View & Edit Pipeline]  │
-│       ↓ (toggles expand)    │
-│     ┌───────────────────┐   │
-│     │ Inline Editor     │   │
-│     │ • System Prompt   │   │
-│     │ • Steps Accordion │   │
-│     │ • Add/Delete/Move │   │
-│     └───────────────────┘   │
-└─────────────────────────────┘
+```
+// Current template says:
+"Take the sections_html from step ${maxAIStep + 1}"
+
+// But the injected variable looks like:
+{{step7}} = {"sections_html": "<h2>...</h2>", "data_gaps": [...]}
 ```
 
-## Implementation Approach
+The AI gets confused because:
+- It's told to "take sections_html" but receives a JSON object
+- There's no explicit instruction on how to parse the JSON
+- The output schema requires `report_html` but isn't told how to build it
 
-### Option A: Extract Reusable Component (Recommended)
+## Solution
 
-Create a new `InlinePipelineEditor` component that contains the core editing functionality currently in `PromptBundleEdit.tsx`, and use it in both places:
+### Part 1: Fix Pipeline Generator Assembly Templates
 
-1. Embedded in the Pipeline tab (GrantEdit.tsx)
-2. Standalone page (PromptBundleEdit.tsx) - keeps working as-is for direct access
+Update `supabase/functions/process-grant-guidelines/index.ts` to improve the `finalize_report_html` template with:
 
-### Files to Create/Modify
+1. **Explicit JSON parsing instructions** - Tell the AI the exact structure it will receive
+2. **Clear field extraction** - Show how to access nested properties
+3. **Step-by-step merge instructions** - Explicitly describe combining sections + tables + sources
 
-| File | Action | Description |
-|------|--------|-------------|
-| `src/components/admin/InlinePipelineEditor.tsx` | **Create** | New component containing the bundle editor (settings, system prompt, step accordion) |
-| `src/pages/admin/GrantEdit.tsx` | **Modify** | Add toggle state, import and render InlinePipelineEditor when expanded |
-| `src/pages/admin/PromptBundleEdit.tsx` | **Modify** | Refactor to use the shared InlinePipelineEditor component |
+**Updated Template (lines 708-738):**
 
-## Detailed Changes
-
-### 1. Create `InlinePipelineEditor.tsx`
-
-Extract the following from PromptBundleEdit.tsx into a reusable component:
-
-- Bundle settings (name, description) - optional display
-- System prompt editor
-- Variable reference panel (collapsible)
-- Steps accordion with:
-  - Step reordering (up/down)
-  - Step deletion
-  - Step editing (PromptStepEditor)
-  - Add step dialog
-
-**Props interface:**
 ```typescript
-interface InlinePipelineEditorProps {
-  bundleId: string;
-  showBundleSettings?: boolean;  // false when embedded, true on standalone page
-  showBackButton?: boolean;      // false when embedded
+{
+  step_name: "finalize_report_html",
+  step_description: "Merge sections, tables, and sources into final report_html output",
+  model_tier: "lite",
+  prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
+
+You are merging the research narrative with data tables to produce the final report.
+
+INPUT DATA FORMAT:
+You will receive two JSON objects from previous steps:
+
+Step ${maxAIStep + 1} data ({{step${maxAIStep + 1}}}):
+- "sections_html": string - The complete narrative HTML document
+- "data_gaps": array - List of data gaps identified
+
+Step ${maxAIStep + 2} data ({{step${maxAIStep + 2}}}):
+- "tables": object with keys "competitors", "market_sizing", "partners" - HTML tables
+- "all_sources": array - All citations
+
+YOUR TASK:
+1. PARSE the JSON objects to extract the values
+2. Get the "sections_html" value from Step ${maxAIStep + 1} - this is your base HTML
+3. Find these table anchors in the HTML and replace with tables from Step ${maxAIStep + 2}:
+   - Replace "<!-- TABLE:competitors -->" with tables.competitors
+   - Replace "<!-- TABLE:market_sizing -->" with tables.market_sizing
+   - Replace "<!-- TABLE:partners -->" with tables.partners
+4. Append a References section at the end:
+   <h2>References</h2>
+   <div class="sources"><ul>...formatted citations...</ul></div>
+5. Combine data_gaps from both steps
+
+CRITICAL OUTPUT REQUIREMENTS:
+1. Return ONLY valid JSON - NO code fences (\`\`\`json or \`\`\`)
+2. First character must be { and last must be }
+3. The "report_html" field MUST contain the complete merged HTML document
+4. Do NOT return the raw JSON objects - extract and combine the content
+
+OUTPUT JSON SCHEMA:
+{
+  "title": "Grant Report: [Project Title]",
+  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with tables inserted]...<h2>References</h2>...",
+  "all_sources": [{"id": "S0-1", "mla_citation": "...", "url": "..."}],
+  "data_gaps": ["gap1", "gap2"],
+  "tables": {"competitors": "...", "market_sizing": "...", "partners": "..."}
+}`
 }
 ```
 
-### 2. Modify `GrantEdit.tsx` Pipeline Tab
+### Part 2: Add Variable Validation to Quality Checker
 
-- Add state: `const [pipelineExpanded, setPipelineExpanded] = useState(false)`
-- Change "View & Edit Pipeline" button from navigation to toggle:
+Update `src/hooks/usePromptQuality.ts` to add a new scoring criterion that validates variable references.
+
+**Approved Variables (from shortcode specification):**
+- User Inputs: `{{summary}}`, `{{publicArticleUrl}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
+- Grant Context: `{{grantName}}`, `{{grantVersionLabel}}`, `{{grantGuidelines}}`, `{{grantRubric}}`, `{{grantSummary}}`
+- Step 0 Source Pack: `{{sources}}`, `{{unknowns}}`
+- Step Outputs: `{{step0}}`, `{{step1}}`, ..., `{{step99}}`
+
+**New Quality Check:**
 
 ```typescript
-<Button 
-  variant="outline" 
-  onClick={() => setPipelineExpanded(!pipelineExpanded)}
->
-  {pipelineExpanded ? <ChevronUp /> : <ChevronDown />}
-  {pipelineExpanded ? "Hide Pipeline Editor" : "View & Edit Pipeline"}
-</Button>
+export interface QualityScore {
+  total: number;
+  breakdown: {
+    // ... existing fields ...
+    validVariables: number;     // 10 pts - All {{variables}} are valid shortcodes
+  };
+  invalidVariables: string[];   // List any invalid variables found
+  recommendations: string[];
+  level: 'good' | 'warning' | 'poor';
+}
+
+// Approved variable patterns
+const VALID_VARIABLE_PATTERNS = [
+  // User inputs
+  /^summary$/,
+  /^publicArticleUrl$/,
+  /^articleContent$/,
+  /^trl$/,
+  /^ipStatus$/,
+  // Grant context
+  /^grantName$/,
+  /^grantVersionLabel$/,
+  /^grantGuidelines$/,
+  /^grantRubric$/,
+  /^grantSummary$/,
+  // Source pack
+  /^sources$/,
+  /^unknowns$/,
+  // Step outputs (step0 through step99)
+  /^step\d{1,2}$/,
+];
+
+function validateVariables(prompt: string): { score: number; invalid: string[] } {
+  const variableMatches = prompt.match(/\{\{(\w+)\}\}/g) || [];
+  const variables = variableMatches.map(v => v.replace(/\{\{|\}\}/g, ''));
+  
+  const invalid = variables.filter(v => 
+    !VALID_VARIABLE_PATTERNS.some(pattern => pattern.test(v))
+  );
+  
+  // Score: 10 points if all valid, 5 if some invalid, 0 if many invalid
+  const invalidRatio = variables.length > 0 ? invalid.length / variables.length : 0;
+  const score = invalidRatio === 0 ? 10 : invalidRatio < 0.5 ? 5 : 0;
+  
+  return { score, invalid: [...new Set(invalid)] };
+}
 ```
 
-- Conditionally render the inline editor below:
+**Updated Recommendations:**
 
 ```typescript
-{pipelineExpanded && promptBundleId && (
-  <div className="mt-6">
-    <InlinePipelineEditor 
-      bundleId={promptBundleId}
-      showBundleSettings={false}
-      showBackButton={false}
-    />
-  </div>
+function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVars: string[]): string[] {
+  const recommendations: string[] = [];
+  
+  // ... existing recommendations ...
+  
+  if (invalidVars.length > 0) {
+    recommendations.push(
+      `Invalid variables found: ${invalidVars.join(', ')}. Use only approved shortcodes: {{summary}}, {{step0}}, {{grantName}}, etc.`
+    );
+  }
+  
+  return recommendations;
+}
+```
+
+### Part 3: Keep Worker Logs Open Longer
+
+Update `src/components/workspace/GenerationProgress.tsx` and `src/components/workspace/ReportLogViewer.tsx`:
+
+1. Show logs for ANY run that has an activeRunId (not just running/failed)
+2. Add a "user dismissed" state so logs stay open until explicitly closed
+3. Increase log viewer height from 200px to 300px
+
+**GenerationProgress.tsx change (line 358):**
+```typescript
+// Before: only show for active/error states
+{(status === "running" || status === "pending" || status === "failed" || status === "stalled") && (
+  <ReportLogViewer reportRunId={activeRunId} />
+)}
+
+// After: show whenever there's an active run ID
+{activeRunId && (
+  <ReportLogViewer reportRunId={activeRunId} />
 )}
 ```
 
-### 3. Keep Standalone Page Working
+**ReportLogViewer.tsx changes:**
+- Add `userDismissed` state to track if user closed the panel
+- Reset `userDismissed` when `reportRunId` changes
+- Increase ScrollArea height to 300px
 
-The `/admin/prompt-bundles/:id` page will still work for:
-- Direct links from audit logs
-- Accessing global bundles not attached to a grant
-- Breadcrumb navigation from the bundles list
+## Files to Modify
 
-## UI Behavior
+| File | Changes |
+|------|---------|
+| `supabase/functions/process-grant-guidelines/index.ts` | Update `finalize_report_html` template (lines 708-738) with explicit JSON parsing instructions |
+| `src/hooks/usePromptQuality.ts` | Add `validVariables` scoring criterion and `invalidVariables` array |
+| `src/components/admin/PromptQualityBadge.tsx` | Display invalid variables in the breakdown panel |
+| `src/components/workspace/GenerationProgress.tsx` | Show log viewer for any activeRunId |
+| `src/components/workspace/ReportLogViewer.tsx` | Add userDismissed state, increase height to 300px |
 
-1. **Collapsed state** (default): Shows pipeline selector, status badge, and "View & Edit Pipeline" button
-2. **Click button**: Expands inline editor with smooth transition
-3. **Inline editor shows**:
-   - System prompt (editable)
-   - Variable reference (collapsible section)
-   - Step accordion (full editing capabilities)
-4. **Click button again**: Collapses the editor
+## Expected Outcomes
 
-## Benefits
+1. **Pipeline Generator**: The finalize step will correctly extract `sections_html` from the JSON and produce a valid `report_html` field
+2. **Quality Checker**: Invalid variable references like `{{report_html}}` will be flagged with a recommendation showing approved shortcodes
+3. **Log Viewer**: Logs remain visible after run completion until the user dismisses them
 
-- No page navigation required - stay in context
-- Faster workflow for reviewing/editing pipeline
-- Still accessible via standalone page if needed
-- Quality badges visible inline while reviewing grant
+## Testing
 
-## Technical Notes
-
-- Use the existing `usePromptBundle` hook to fetch bundle data
-- Reuse existing mutation hooks (`useUpdatePromptBundle`, `useUpdatePromptStep`, etc.)
-- The `PromptStepEditor`, `AddStepDialog`, and `PromptQualityBadge` components remain unchanged
-- Consider adding a loading skeleton during bundle fetch when expanding
-
+After implementation:
+1. Create a new grant version and upload guidelines
+2. Let the pipeline generator create the bundle
+3. Check that the finalize step prompt includes clear JSON parsing instructions
+4. Verify quality badges show valid variable scores
+5. Run a report and confirm logs stay visible after completion
