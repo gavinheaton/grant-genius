@@ -186,6 +186,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
       status,
       current_step,
       total_steps,
+      phase,
       checkpoint_data_json,
       checkpoint_citations_json,
       report_template_version_id,
@@ -239,16 +240,17 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
           .select(`
             id,
             system_prompt,
-            steps:prompt_bundle_steps (
-              step_number,
-              step_name,
-              step_description,
-              prompt_template,
-              model_override,
-              timeout_seconds,
-              is_heavy,
-              max_expected_seconds
-            )
+          steps:prompt_bundle_steps (
+            step_number,
+            step_name,
+            step_description,
+            prompt_template,
+            model_override,
+            timeout_seconds,
+            is_heavy,
+            max_expected_seconds,
+            is_assembly_step
+          )
           `)
           .eq("id", grantVersion.prompt_bundle_id)
           .single();
@@ -311,7 +313,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
       .select(`
         id,
         system_prompt,
-        steps:prompt_bundle_steps (
+          steps:prompt_bundle_steps (
           step_number,
           step_name,
           step_description,
@@ -319,7 +321,8 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
           model_override,
           timeout_seconds,
           is_heavy,
-          max_expected_seconds
+          max_expected_seconds,
+          is_assembly_step
         )
       `)
       .eq("is_active", true)
@@ -371,6 +374,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
       status: run.status,
       current_step: run.current_step,
       total_steps: run.total_steps,
+      phase: run.phase || "research",  // Include phase for coordination
       checkpoint_data_json: run.checkpoint_data_json,
       checkpoint_citations_json: run.checkpoint_citations_json,
       report_template_version_id: run.report_template_version_id,
@@ -379,7 +383,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     prompt_bundle: {
       id: bundle.id,
       system_prompt: bundle.system_prompt,
-      steps: stepsWithModel,
+      steps: stepsWithModel,  // Each step includes is_assembly_step flag
       is_grant_specific: usingGrantBundle,
     },
     grant_context: grantContext,
@@ -437,7 +441,7 @@ async function handleUpdateStep(supabase: any, params: Record<string, unknown>) 
 }
 
 async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
-  const { report_run_id, status, current_step, checkpoint_data_json, checkpoint_citations_json, started_at, completed_at } = params;
+  const { report_run_id, status, current_step, phase, checkpoint_data_json, checkpoint_citations_json, started_at, completed_at } = params;
 
   if (!report_run_id || typeof report_run_id !== "string" || !isValidUUID(report_run_id)) {
     return errorResponse("Invalid report_run_id");
@@ -447,6 +451,14 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
   
   if (status !== undefined) updateData.status = status;
   if (current_step !== undefined) updateData.current_step = current_step;
+  // Phase coordination: worker can transition between research/assembly/complete
+  if (phase !== undefined) {
+    if (!["research", "assembly", "complete"].includes(phase as string)) {
+      return errorResponse("Invalid phase. Valid values: research, assembly, complete");
+    }
+    updateData.phase = phase;
+    console.log(`[PHASE] Run ${report_run_id} transitioning to phase: ${phase}`);
+  }
   if (checkpoint_data_json !== undefined) updateData.checkpoint_data_json = checkpoint_data_json;
   if (checkpoint_citations_json !== undefined) updateData.checkpoint_citations_json = checkpoint_citations_json;
   if (started_at !== undefined) updateData.started_at = started_at;
