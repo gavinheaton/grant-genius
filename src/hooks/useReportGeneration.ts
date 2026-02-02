@@ -147,9 +147,39 @@ export function useReportGeneration(
       // Fetch steps for this run
       fetchSteps(data.id);
     } else {
-      setActiveRun(null);
+      // No active run - check for recent completed/failed run to keep logs visible
+      const { data: recentRun } = await supabase
+        .from("report_runs")
+        .select("id, status, current_step, total_steps, created_at, started_at, completed_at, email_on_complete")
+        .eq("application_id", applicationId)
+        .in("status", ["completed", "failed"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (recentRun) {
+        // Keep the recent run in state so logs remain visible
+        const failedSteps = steps.filter(s => s.status === 'failed');
+        const has504Error = failedSteps.some(s => isTransientError(s.error_message));
+        
+        // Check for stale runs
+        const startedAt = new Date(recentRun.started_at || recentRun.created_at);
+        const now = new Date();
+        const isStale = recentRun.status === "running" && (now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS);
+        
+        setActiveRun({
+          ...recentRun,
+          status: isStale ? "stalled" : recentRun.status,
+          completed_at: recentRun.completed_at ?? null,
+          email_on_complete: recentRun.email_on_complete ?? false,
+          is504Error: has504Error,
+        } as ReportRun);
+        fetchSteps(recentRun.id);
+      } else {
+        setActiveRun(null);
+        setSteps([]);
+      }
       setIsGenerating(false);
-      setSteps([]);
     }
   }, [applicationId, fetchSteps, steps]);
 

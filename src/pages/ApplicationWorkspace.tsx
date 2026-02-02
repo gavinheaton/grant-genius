@@ -355,8 +355,8 @@ export default function ApplicationWorkspace() {
             />
           )}
           
-          {/* Show processing/failed/stalled state */}
-          {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled") && activeRun && (
+          {/* Show processing/failed/stalled/completed state - keep logs visible */}
+          {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
             <GenerationProgress
               currentStep={activeRun.current_step}
               totalSteps={activeRun.total_steps}
