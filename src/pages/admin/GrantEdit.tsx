@@ -60,6 +60,7 @@ export default function GrantEdit() {
   const [isRetrying, setIsRetrying] = useState(false);
   const [pipelineExpanded, setPipelineExpanded] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [activeTab, setActiveTab] = useState("details");
 
   // Fetch all prompt bundles for the pipeline selector
   const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
@@ -138,7 +139,7 @@ export default function GrantEdit() {
       const selectedVer = data?.grant_versions?.find((v: any) => v.id === selectedVersionId);
       if (selectedVer) {
         const isProcessing = 
-          selectedVer.ai_analysis_status === "processing" || 
+          selectedVer.ai_analysis_status === "analyzing" || 
           selectedVer.pipeline_generation_status === "generating";
         return isProcessing ? 3000 : false;
       }
@@ -437,7 +438,7 @@ export default function GrantEdit() {
         </div>
       </div>
 
-      <Tabs defaultValue="details">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="details">Details</TabsTrigger>
           <TabsTrigger value="versions">Versions</TabsTrigger>
@@ -651,6 +652,7 @@ export default function GrantEdit() {
                   onRetry={handleRetryProcessing}
                   isRetrying={isRetrying}
                   isUploading={isUploading}
+                  onViewPipeline={() => setActiveTab("pipeline")}
                 />
               )}
             </div>
