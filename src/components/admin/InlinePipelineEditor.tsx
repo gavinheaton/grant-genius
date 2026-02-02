@@ -473,9 +473,16 @@ export function InlinePipelineEditor({
                               {step.step_number}
                             </Badge>
                             <div className="flex-1">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="font-medium">{step.step_description}</p>
                                 <PromptQualityBadge prompt={step.prompt_template} />
+                                {/* Assembly step warning for finalize_report_html */}
+                                {step.step_name === 'finalize_report_html' && 
+                                 !step.prompt_template.includes('"report_html"') && (
+                                  <Badge variant="destructive" className="text-xs">
+                                    ⚠️ Missing report_html field
+                                  </Badge>
+                                )}
                               </div>
                               <p className="text-xs text-muted-foreground font-mono">
                                 {step.step_name}

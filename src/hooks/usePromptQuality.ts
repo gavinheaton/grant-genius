@@ -18,6 +18,12 @@ export interface QualityScore {
   invalidVariables: string[];   // List any invalid variables found
   recommendations: string[];
   level: 'good' | 'warning' | 'poor';
+  // Assembly step validation (for finalize_report_html)
+  assemblyValidation?: {
+    hasReportHtmlField: boolean;
+    hasPreviousStepRefs: boolean;
+    errors: string[];
+  };
 }
 
 // Approved variable patterns (from shortcode specification)
@@ -94,7 +100,7 @@ function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVa
   return recommendations;
 }
 
-export function calculateQualityScore(prompt: string): QualityScore {
+export function calculateQualityScore(prompt: string, stepName?: string): QualityScore {
   if (!prompt || typeof prompt !== 'string') {
     return {
       total: 0,
@@ -155,12 +161,38 @@ export function calculateQualityScore(prompt: string): QualityScore {
     level = 'poor';
   }
 
+  // Assembly step validation for finalize_report_html
+  let assemblyValidation: QualityScore['assemblyValidation'];
+  if (stepName === 'finalize_report_html') {
+    const hasReportHtmlField = prompt.includes('"report_html"');
+    // Check for step references like {{step7}}, {{step8}}, etc.
+    const stepRefMatches = prompt.match(/\{\{step\d+\}\}/g) || [];
+    const hasPreviousStepRefs = stepRefMatches.length >= 2;
+    
+    const errors: string[] = [];
+    if (!hasReportHtmlField) {
+      errors.push('Missing required "report_html" field in OUTPUT SCHEMA');
+      recommendations.push('Add "report_html" field to OUTPUT JSON SCHEMA - this is required for report finalization');
+    }
+    if (!hasPreviousStepRefs) {
+      errors.push('Missing references to previous assembly steps (need at least {{stepN}} and {{stepN+1}})');
+      recommendations.push('Add references to previous assembly step outputs using {{stepN}} syntax');
+    }
+    
+    assemblyValidation = {
+      hasReportHtmlField,
+      hasPreviousStepRefs,
+      errors,
+    };
+  }
+
   return {
     total: Math.round(total),
     breakdown,
     invalidVariables,
     recommendations,
     level,
+    assemblyValidation,
   };
 }
 
