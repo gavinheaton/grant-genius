@@ -1,168 +1,210 @@
 
-# Fix Worker Logs Visibility & Pipeline Generator
+# Enable Delete for Reports and Applications on Dashboard
 
-## Issues Identified
+## Current State
 
-### 1. Worker Logs Disappear
-The logs disappear because:
-- **`useReportGeneration.ts`** (line 116): Only fetches runs with `status IN ['pending', 'running']`
-- Once a run completes/fails, the next poll returns nothing, setting `activeRun = null`
-- **`ApplicationWorkspace.tsx`** (line 359): Only renders `GenerationProgress` for `isGenerating`, `failed`, or `stalled` status - not `completed`
-- When `activeRun` becomes `null`, the entire progress card (including logs) unmounts
+### Dashboard Application Cards
+- Delete button **already exists** for draft applications (status === "draft")
+- Other statuses (in_progress, ready, failed) have **no delete option**
+- User can only delete drafts, not completed or failed applications
 
-### 2. Report Generation Failed
-The error `Finalize FAILED: No step output found with 'report_html' field` occurs because:
-- The pipeline bundle for "AEA Ignite 2026" was generated BEFORE the fix was deployed
-- The `finalize_report_html` step in this bundle still has the old broken prompt
-- The fix only applies to newly generated pipelines
+### Reports
+- No delete functionality exists in `ReportsList.tsx`
+- Reports are displayed with View, DOCX, and PDF buttons only
+
+### Database Constraints (BLOCKING ISSUE)
+The following foreign key constraints will **block deletion**:
+
+| Table | Column | References | Cascade? |
+|-------|--------|------------|----------|
+| `entitlement_consumptions` | `report_id` | `reports(id)` | **NO** |
+| `entitlement_consumptions` | `report_run_id` | `report_runs(id)` | **NO** |
+
+This means:
+- Deleting a **report** fails if it has an entitlement consumption record
+- Deleting an **application** cascades to reports, but will fail at entitlement_consumptions
+- Deleting a **report_run** fails if linked to entitlement_consumptions
+
+### RLS Policies
+- `applications`: Users CAN delete their own applications (policy exists)
+- `reports`: Users **CANNOT** delete (no DELETE policy exists)
+- `report_runs`: Users **CANNOT** delete (no DELETE policy exists)
+
+---
 
 ## Solution
 
-### Part 1: Keep Logs Visible After Completion/Failure
+### Part 1: Database Migration (Foreign Key Fixes + RLS)
+
+Add `ON DELETE SET NULL` to entitlement_consumptions so deleting reports/runs doesn't fail:
+
+```sql
+-- 1. Fix foreign key constraints to allow deletion
+ALTER TABLE public.entitlement_consumptions 
+  DROP CONSTRAINT IF EXISTS entitlement_consumptions_report_id_fkey;
+  
+ALTER TABLE public.entitlement_consumptions
+  ADD CONSTRAINT entitlement_consumptions_report_id_fkey 
+    FOREIGN KEY (report_id) REFERENCES public.reports(id) ON DELETE SET NULL;
+
+ALTER TABLE public.entitlement_consumptions 
+  DROP CONSTRAINT IF EXISTS entitlement_consumptions_report_run_id_fkey;
+
+ALTER TABLE public.entitlement_consumptions
+  ADD CONSTRAINT entitlement_consumptions_report_run_id_fkey 
+    FOREIGN KEY (report_run_id) REFERENCES public.report_runs(id) ON DELETE SET NULL;
+
+-- 2. Add RLS policy for users to delete their own reports
+CREATE POLICY "Users can delete own reports"
+  ON public.reports
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+-- 3. Add RLS policy for users to delete their own report runs (via application ownership)
+CREATE POLICY "Users can delete own report runs"
+  ON public.report_runs
+  FOR DELETE
+  USING (EXISTS (
+    SELECT 1 FROM applications
+    WHERE applications.id = report_runs.application_id
+    AND applications.user_id = auth.uid()
+  ));
+```
+
+### Part 2: UI Changes - Dashboard (Applications)
+
+**File: `src/pages/Dashboard.tsx`**
+
+Currently, delete is only allowed for `draft` status. Extend to **all statuses** with appropriate confirmation messaging:
+
+1. Remove the `app.status === "draft"` condition (line 319)
+2. Update the confirmation dialog to show different messages based on status
+3. For applications with reports, warn that reports will also be deleted
+
+```typescript
+// Current (line 319-331):
+{app.status === "draft" && (
+  <Button variant="ghost" size="icon" ...>
+
+// Updated:
+<Button
+  variant="ghost"
+  size="icon"
+  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+  onClick={(e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleDeleteApplication(app);
+  }}
+>
+  <Trash2 className="h-4 w-4" />
+</Button>
+```
+
+Update confirmation dialog messaging:
+- Draft: "This will permanently delete the draft."
+- Ready/In Progress: "This will permanently delete the application and all generated reports."
+- Failed: "This will permanently delete the application."
+
+### Part 3: UI Changes - Reports List
+
+**File: `src/components/workspace/ReportsList.tsx`**
+
+Add delete button for each report:
+
+1. Add state for `reportToDelete` and `deleteReportModalOpen`
+2. Add `onDelete` callback prop or handle inline
+3. Add Trash2 icon button beside each report row
+4. Add confirmation dialog
+5. Call `supabase.from("reports").delete().eq("id", reportId)`
+
+```typescript
+interface ReportsListProps {
+  reports: Report[];
+  isLoading: boolean;
+  onDownload: (reportId: string, format: "pdf" | "docx") => void;
+  onDeleteReport?: (reportId: string) => void;  // New callback
+  grantName?: string;
+}
+
+// Add delete button in the row (before View button):
+<Button
+  variant="ghost"
+  size="icon"
+  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+  onClick={() => handleDeleteReport(report)}
+>
+  <Trash2 className="h-4 w-4" />
+</Button>
+```
+
+### Part 4: Hook Updates
 
 **File: `src/hooks/useReportGeneration.ts`**
-- Modify `checkActiveRun` to also fetch the most recent `completed` or `failed` run (not just pending/running)
-- Add a new query to fetch the last run regardless of status if no active run is found
-- This ensures `activeRun` remains populated after completion
+
+Add a `deleteReport` function:
 
 ```typescript
-// After checking for active runs, if none found, fetch the most recent run
-if (!data) {
-  const { data: recentRun } = await supabase
-    .from("report_runs")
-    .select("id, status, current_step, total_steps, created_at, started_at, completed_at, email_on_complete")
-    .eq("application_id", applicationId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-    
-  if (recentRun && (recentRun.status === "completed" || recentRun.status === "failed" || recentRun.status === "stalled")) {
-    setActiveRun(recentRun as ReportRun);
-    fetchSteps(recentRun.id);
+const deleteReport = useCallback(async (reportId: string) => {
+  const { error } = await supabase
+    .from("reports")
+    .delete()
+    .eq("id", reportId);
+
+  if (error) {
+    toast({
+      title: "Error deleting report",
+      description: error.message,
+      variant: "destructive",
+    });
+    return false;
   }
-}
+
+  // Remove from local state
+  setReports(prev => prev.filter(r => r.id !== reportId));
+  toast({
+    title: "Report deleted",
+    description: "The report has been permanently removed.",
+  });
+  return true;
+}, [toast]);
 ```
 
-**File: `src/pages/ApplicationWorkspace.tsx`**
-- Update the conditional rendering to also show `GenerationProgress` when status is `completed`
-- Add a prop to indicate the run is completed so the UI can adjust messaging
-
-```typescript
-// Line 359: Add completed status to the condition
-{!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
-  <GenerationProgress
-    // ... existing props
-  />
-)}
-```
-
-**File: `src/components/workspace/GenerationProgress.tsx`**
-- The log viewer is already shown for any `activeRunId` (lines 357-360) - this is correct
-- No changes needed here
-
-### Part 2: Fix Existing Pipeline Bundle
-
-The fix to `process-grant-guidelines` was deployed, but it only affects NEW pipelines. For the existing "AEA Ignite 2026" bundle:
-
-**Option A: Regenerate the Pipeline**
-- Delete the current prompt bundle
-- Re-upload the grant guidelines to regenerate the pipeline with the fixed templates
-
-**Option B: Manually Fix the Prompt** (Using Inline Editor)
-- Go to Admin > Grants > AEA Ignite 2026 > Pipeline tab
-- Expand the pipeline editor
-- Find Step 10 (`finalize_report_html`)
-- Update the prompt to correctly reference `step8.sections_html` and `step9.tables`
+---
 
 ## Files to Modify
 
-| File | Change |
-|------|--------|
-| `src/hooks/useReportGeneration.ts` | Add fallback query to fetch most recent completed/failed run |
-| `src/pages/ApplicationWorkspace.tsx` | Include `completed` status in render condition |
+| File | Changes |
+|------|---------|
+| **Database Migration** | Add ON DELETE SET NULL to entitlement_consumptions FKs, add DELETE policies for reports and report_runs |
+| `src/pages/Dashboard.tsx` | Enable delete for all application statuses (not just drafts), update confirmation messaging |
+| `src/components/workspace/ReportsList.tsx` | Add delete button with confirmation dialog for each report |
+| `src/hooks/useReportGeneration.ts` | Add `deleteReport` function, export in return object |
 
-## Implementation Details
+---
 
-### `useReportGeneration.ts` Changes
+## UX Considerations
 
-Update the `checkActiveRun` function (~lines 109-165):
+1. **Delete Application**: Shows different warnings based on status
+   - Draft: Simple deletion
+   - Ready: Warns that reports will be deleted
+   - In Progress: May need to cancel run first (or block deletion)
 
-```typescript
-const checkActiveRun = useCallback(async () => {
-  if (!applicationId) return;
+2. **Delete Report**: Simple confirmation
+   - "Delete Report v{version_number}?"
+   - "This will permanently delete this report. The application and other reports will not be affected."
 
-  // First, check for active runs (pending/running)
-  const { data, error } = await supabase
-    .from("report_runs")
-    .select("id, status, current_step, total_steps, created_at, started_at, completed_at, email_on_complete")
-    .eq("application_id", applicationId)
-    .in("status", ["pending", "running"])
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+3. **Cascade Behavior**:
+   - Deleting an application cascades to all its reports and report_runs
+   - Deleting a report only deletes that report (not the application or other reports)
+   - Entitlement consumption records are preserved (with NULL references) for billing audit
 
-  if (error) {
-    console.error("Error checking active run:", error);
-    return;
-  }
+---
 
-  if (data) {
-    // Active run found - existing logic
-    // ... stale detection, 504 error checking, etc.
-    setActiveRun(runData);
-    setIsGenerating(true);
-    fetchSteps(data.id);
-  } else {
-    // No active run - check for recent completed/failed run to keep logs visible
-    const { data: recentRun } = await supabase
-      .from("report_runs")
-      .select("id, status, current_step, total_steps, created_at, started_at, completed_at, email_on_complete")
-      .eq("application_id", applicationId)
-      .in("status", ["completed", "failed", "stalled"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+## Expected Behavior After Implementation
 
-    if (recentRun) {
-      // Keep the recent run in state so logs remain visible
-      const failedSteps = steps.filter(s => s.status === 'failed');
-      const has504Error = failedSteps.some(s => isTransientError(s.error_message));
-      
-      setActiveRun({
-        ...recentRun,
-        completed_at: recentRun.completed_at ?? null,
-        email_on_complete: recentRun.email_on_complete ?? false,
-        is504Error: has504Error,
-      } as ReportRun);
-      fetchSteps(recentRun.id);
-    } else {
-      setActiveRun(null);
-    }
-    setIsGenerating(false);
-  }
-}, [applicationId, fetchSteps, steps]);
-```
-
-### `ApplicationWorkspace.tsx` Changes
-
-Update line 359 to include `completed` status:
-
-```typescript
-{!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
-```
-
-## Expected Behavior After Fix
-
-1. **During generation**: Progress card visible with logs
-2. **After completion**: Progress card remains visible showing "Report generation complete!" with logs accessible
-3. **After failure**: Progress card remains visible with error message and logs
-4. **User starts new generation**: Old run clears, new run takes over
-5. **Page refresh**: Most recent run (including completed) is fetched, logs remain accessible
-
-## Testing
-
-1. Start a report generation and let it complete
-2. Verify the progress card stays visible after completion
-3. Verify logs remain accessible and expandable
-4. Refresh the page - logs should still be accessible
-5. Start a new generation - old run should be replaced
+1. **Dashboard**: All application cards show delete button
+2. **Application deletion**: Confirmation shows appropriate warning based on status
+3. **Reports list**: Each report row has a delete button
+4. **Report deletion**: Confirmation dialog, then remove from UI
+5. **Database**: Cascades work correctly, entitlement history preserved
