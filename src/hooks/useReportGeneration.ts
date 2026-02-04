@@ -53,15 +53,30 @@ function isTransientError(errorMessage: string | null | undefined): boolean {
   return TRANSIENT_ERROR_PATTERNS.some(pattern => pattern.test(errorMessage));
 }
 
-// Detect finalize step failure that can be recovered deterministically
+// Detect any final step failure that can potentially be recovered
 function isRecoverableFinalizeError(step: ReportRunStep | undefined): boolean {
   if (!step) return false;
-  return (
+  
+  // Standard finalize step failure
+  if (
     step.step_name === "finalize_report_html" &&
     step.status === "failed" &&
     (step.error_message?.includes("No step output found with 'report_html'") ||
      step.error_message?.includes("Finalize FAILED"))
-  );
+  ) {
+    return true;
+  }
+  
+  // Any final step that failed with missing variable errors
+  // (single-prompt pipelines may fail at step 1 with variable issues)
+  if (
+    step.status === "failed" &&
+    step.error_message?.includes("missingVars")
+  ) {
+    return true;
+  }
+  
+  return false;
 }
 
 interface UseReportGenerationOptions {

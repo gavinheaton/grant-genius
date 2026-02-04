@@ -19,13 +19,77 @@ function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+// ============ Strategy Detection Functions ============
+
+// Detect if a value looks like report HTML
+function isReportHtml(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  // Must be substantial HTML with heading tags
+  return value.length > 500 && (
+    value.includes("<h1") || 
+    value.includes("<h2") || 
+    value.includes("<section") ||
+    value.includes("<article")
+  );
+}
+
+// Try to extract report HTML from step outputs
+function extractReportFromStep(outputs: Record<string, unknown>): string | null {
+  // Priority order of field names to check
+  const fieldPriority = ["report_html", "report", "html", "content", "sections_html"];
+  
+  for (const field of fieldPriority) {
+    if (outputs[field] && isReportHtml(outputs[field])) {
+      return outputs[field] as string;
+    }
+  }
+  
+  // Also check nested structures (e.g., { assembledReport: { report_html: ... } })
+  if (outputs.assembledReport && typeof outputs.assembledReport === "object") {
+    const nested = outputs.assembledReport as Record<string, unknown>;
+    for (const field of fieldPriority) {
+      if (nested[field] && isReportHtml(nested[field])) {
+        return nested[field] as string;
+      }
+    }
+  }
+  
+  return null;
+}
+
+// Extract tables from step outputs (flexible field names)
+function extractTablesFromStep(outputs: Record<string, unknown>): Record<string, string> {
+  if (outputs.tables && typeof outputs.tables === "object" && !Array.isArray(outputs.tables)) {
+    return outputs.tables as Record<string, string>;
+  }
+  return {};
+}
+
+// Extract sources from step outputs (flexible field names)
+function extractSourcesFromStep(outputs: Record<string, unknown>): Array<{title?: string; url?: string; source?: string}> {
+  const fieldNames = ["all_sources", "sources", "references", "citations"];
+  for (const field of fieldNames) {
+    if (Array.isArray(outputs[field])) {
+      return outputs[field];
+    }
+  }
+  return [];
+}
+
+// Extract data gaps from step outputs
+function extractDataGapsFromStep(outputs: Record<string, unknown>): string[] {
+  if (Array.isArray(outputs.data_gaps)) {
+    return outputs.data_gaps;
+  }
+  return [];
+}
+
 /**
- * Deterministic finalization fallback
+ * Multi-Strategy Finalization Recovery
  * 
- * When the AI final step (finalize_report_html) fails to produce valid output,
- * this function assembles the report from the completed prior steps:
- * - assemble_sections_html → sections_html
- * - build_tables_sources_html → tables, all_sources
+ * Strategy 1 (Standard): Look for assemble_sections_html + build_tables_sources_html
+ * Strategy 2 (Single-Prompt): Scan all completed steps for HTML content
+ * Strategy 3 (Fallback): Return descriptive error with available data
  */
 serve(async (req) => {
   // Handle CORS preflight
@@ -61,7 +125,7 @@ serve(async (req) => {
       return errorResponse("reportRunId is required");
     }
 
-    console.log(`[RECOVER] Starting deterministic finalization for run: ${reportRunId}`);
+    console.log(`[RECOVER] Starting multi-strategy finalization for run: ${reportRunId}`);
 
     // 1. Load the report run with application data
     const { data: run, error: runError } = await supabase
@@ -98,7 +162,7 @@ serve(async (req) => {
       return errorResponse("Unauthorized - you don't own this application", 403);
     }
 
-    // 2. Load all completed steps
+    // 2. Load all steps
     const { data: steps, error: stepsError } = await supabase
       .from("report_run_steps")
       .select("step_number, step_name, status, outputs_json")
@@ -112,67 +176,151 @@ serve(async (req) => {
 
     console.log(`[RECOVER] Found ${steps?.length || 0} steps`);
 
-    // 3. Find the assembly steps by name (works with any pipeline length)
+    // Log all available step data for debugging
+    for (const step of steps || []) {
+      const outputKeys = step.outputs_json ? Object.keys(step.outputs_json) : [];
+      console.log(`[RECOVER] Step ${step.step_number} (${step.step_name}): status=${step.status}, outputs=[${outputKeys.join(", ")}]`);
+    }
+
+    // ============ STRATEGY 1: Standard Multi-Step Pipeline ============
     const assembleSectionsStep = steps?.find(
       (s: any) => s.step_name === "assemble_sections_html" && s.status === "completed"
     );
     const buildTablesStep = steps?.find(
       (s: any) => s.step_name === "build_tables_sources_html" && s.status === "completed"
     );
-    const finalizeStep = steps?.find(
-      (s: any) => s.step_name === "finalize_report_html"
-    );
 
-    if (!assembleSectionsStep?.outputs_json?.sections_html) {
-      console.error("[RECOVER] Missing sections_html from assemble_sections_html step");
-      return errorResponse("Cannot recover: missing sections_html from assembly step. Manual intervention required.", 400);
-    }
+    let reportHtml: string | null = null;
+    let tables: Record<string, string> = {};
+    let allSources: Array<{title?: string; url?: string; source?: string}> = [];
+    let dataGaps: string[] = [];
+    let recoveryStrategy = "unknown";
 
-    if (!buildTablesStep?.outputs_json) {
-      console.error("[RECOVER] Missing outputs from build_tables_sources_html step");
-      return errorResponse("Cannot recover: missing tables data from build step. Manual intervention required.", 400);
-    }
+    if (assembleSectionsStep?.outputs_json?.sections_html && buildTablesStep?.outputs_json) {
+      // Standard multi-step recovery
+      console.log("[RECOVER] Using STANDARD multi-step recovery strategy");
+      recoveryStrategy = "multi-step";
+      
+      reportHtml = assembleSectionsStep.outputs_json.sections_html as string;
+      tables = (buildTablesStep.outputs_json.tables || {}) as Record<string, string>;
+      allSources = (buildTablesStep.outputs_json.all_sources || []);
+      dataGaps = (buildTablesStep.outputs_json.data_gaps || []) as string[];
+      
+      // Merge tables into report (anchor replacement)
+      const tableAnchors = ["competitors", "market_sizing", "partners"];
+      for (const tableId of tableAnchors) {
+        const anchor = `<!-- TABLE:${tableId} -->`;
+        if (tables[tableId]) {
+          if (reportHtml.includes(anchor)) {
+            reportHtml = reportHtml.replace(anchor, tables[tableId]);
+          } else {
+            // Append missing table at the end
+            const tableTitle = tableId.replace("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+            reportHtml += `\n<h2>${tableTitle}</h2>\n${tables[tableId]}`;
+          }
+        }
+      }
 
-    const sectionsHtml = assembleSectionsStep.outputs_json.sections_html as string;
-    const tables = (buildTablesStep.outputs_json.tables || {}) as Record<string, string>;
-    const allSources = (buildTablesStep.outputs_json.all_sources || []) as Array<{
-      title?: string;
-      url?: string;
-      source?: string;
-    }>;
-    const dataGaps = (buildTablesStep.outputs_json.data_gaps || []) as string[];
-
-    console.log(`[RECOVER] sections_html length: ${sectionsHtml.length}`);
-    console.log(`[RECOVER] tables keys: ${Object.keys(tables).join(", ")}`);
-    console.log(`[RECOVER] sources count: ${allSources.length}`);
-
-    // 4. Deterministically build report_html
-    let reportHtml = sectionsHtml;
-
-    // Replace table anchors
-    const tableAnchors = ["competitors", "market_sizing", "partners"];
-    for (const tableId of tableAnchors) {
-      const anchor = `<!-- TABLE:${tableId} -->`;
-      if (tables[tableId]) {
-        if (reportHtml.includes(anchor)) {
-          reportHtml = reportHtml.replace(anchor, tables[tableId]);
-        } else {
-          // Append missing table at the end
-          const tableTitle = tableId.replace("_", " ").replace(/\b\w/g, c => c.toUpperCase());
-          reportHtml += `\n<h2>${tableTitle}</h2>\n${tables[tableId]}`;
+      // Append any remaining tables not in the standard list
+      for (const [tableId, tableHtml] of Object.entries(tables)) {
+        if (!tableAnchors.includes(tableId) && tableHtml) {
+          const tableTitle = tableId.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+          reportHtml += `\n<h2>${tableTitle}</h2>\n${tableHtml}`;
         }
       }
     }
 
-    // Append any remaining tables not in the standard list
-    for (const [tableId, tableHtml] of Object.entries(tables)) {
-      if (!tableAnchors.includes(tableId) && tableHtml) {
-        const tableTitle = tableId.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-        reportHtml += `\n<h2>${tableTitle}</h2>\n${tableHtml}`;
+    // ============ STRATEGY 2: Single-Prompt Pipeline ============
+    if (!reportHtml) {
+      console.log("[RECOVER] Standard strategy failed, trying SINGLE-PROMPT strategy");
+      
+      // Scan completed steps for report content (latest first)
+      const completedSteps = (steps || [])
+        .filter((s: any) => s.status === "completed" && s.outputs_json)
+        .sort((a: any, b: any) => b.step_number - a.step_number);
+      
+      for (const step of completedSteps) {
+        const extracted = extractReportFromStep(step.outputs_json);
+        if (extracted) {
+          console.log(`[RECOVER] Found report HTML in step ${step.step_number} (${step.step_name})`);
+          recoveryStrategy = "single-prompt";
+          reportHtml = extracted;
+          
+          // Also try to extract tables and sources from same or other steps
+          if (Object.keys(tables).length === 0) {
+            tables = extractTablesFromStep(step.outputs_json);
+          }
+          if (allSources.length === 0) {
+            allSources = extractSourcesFromStep(step.outputs_json);
+          }
+          if (dataGaps.length === 0) {
+            dataGaps = extractDataGapsFromStep(step.outputs_json);
+          }
+          break;
+        }
+      }
+      
+      // If still no report found, try extracting from any step's nested fields
+      if (!reportHtml) {
+        for (const step of completedSteps) {
+          const outputs = step.outputs_json || {};
+          for (const [key, value] of Object.entries(outputs)) {
+            if (isReportHtml(value)) {
+              console.log(`[RECOVER] Found report HTML in step ${step.step_number}.${key}`);
+              recoveryStrategy = "single-prompt-nested";
+              reportHtml = value as string;
+              break;
+            }
+          }
+          if (reportHtml) break;
+        }
+      }
+
+      // Try to collect tables/sources from other steps if not found yet
+      if (reportHtml && (Object.keys(tables).length === 0 || allSources.length === 0)) {
+        for (const step of completedSteps) {
+          if (Object.keys(tables).length === 0) {
+            tables = extractTablesFromStep(step.outputs_json);
+          }
+          if (allSources.length === 0) {
+            allSources = extractSourcesFromStep(step.outputs_json);
+          }
+          if (dataGaps.length === 0) {
+            dataGaps = extractDataGapsFromStep(step.outputs_json);
+          }
+        }
       }
     }
 
-    // Append references section
+    // ============ STRATEGY 3: Cannot Recover ============
+    if (!reportHtml) {
+      const availableData = (steps || [])
+        .filter((s: any) => s.status === "completed")
+        .map((s: any) => ({
+          step: s.step_number as number,
+          name: s.step_name as string,
+          outputFields: s.outputs_json ? Object.keys(s.outputs_json) : [] as string[],
+        }));
+      
+      console.error("[RECOVER] No recovery strategy succeeded. Available:", JSON.stringify(availableData));
+      
+      const stepsDescription = availableData.map((s: { name: string; outputFields: string[] }) => 
+        `${s.name}(${s.outputFields.join(",")})`
+      ).join(", ");
+      
+      return errorResponse(
+        `Cannot recover: no report HTML found in any completed step. ` +
+        `Available steps: ${stepsDescription}. ` +
+        `Manual intervention required.`,
+        400
+      );
+    }
+
+    console.log(`[RECOVER] Using ${recoveryStrategy} strategy, report_html length: ${reportHtml.length}`);
+    console.log(`[RECOVER] tables keys: ${Object.keys(tables).join(", ")}`);
+    console.log(`[RECOVER] sources count: ${allSources.length}`);
+
+    // Append references section if we have sources
     if (allSources.length > 0) {
       const sourcesList = allSources.map((src, idx) => {
         const title = src.title || src.source || `Source ${idx + 1}`;
@@ -183,7 +331,10 @@ serve(async (req) => {
         return `<li>${title}</li>`;
       }).join("\n");
       
-      reportHtml += `\n<h2>References</h2>\n<ul>\n${sourcesList}\n</ul>`;
+      // Only append if not already in the report
+      if (!reportHtml.includes("<h2>References</h2>") && !reportHtml.includes("<h2>Sources</h2>")) {
+        reportHtml += `\n<h2>References</h2>\n<ul>\n${sourcesList}\n</ul>`;
+      }
     }
 
     console.log(`[RECOVER] Final report_html length: ${reportHtml.length}`);
@@ -233,7 +384,11 @@ serve(async (req) => {
 
     console.log(`[RECOVER] Created report: ${newReport.id}`);
 
-    // 8. Update finalize step to completed
+    // 8. Update finalize step if it exists
+    const finalizeStep = steps?.find(
+      (s: any) => s.step_name === "finalize_report_html"
+    );
+
     if (finalizeStep) {
       await supabase
         .from("report_run_steps")
@@ -243,12 +398,32 @@ serve(async (req) => {
           outputs_json: {
             report_html: reportHtml,
             recovered: true,
+            recovery_strategy: recoveryStrategy,
             recovery_timestamp: new Date().toISOString(),
           },
           error_message: null,
         })
         .eq("report_run_id", reportRunId)
         .eq("step_name", "finalize_report_html");
+    } else {
+      // For pipelines without finalize step, mark the last failed step as recovered
+      const lastStep = steps?.[steps.length - 1];
+      if (lastStep && lastStep.status === "failed") {
+        await supabase
+          .from("report_run_steps")
+          .update({
+            status: "completed",
+            completed_at: new Date().toISOString(),
+            outputs_json: {
+              ...lastStep.outputs_json,
+              recovered: true,
+              recovery_strategy: recoveryStrategy,
+            },
+            error_message: null,
+          })
+          .eq("report_run_id", reportRunId)
+          .eq("step_number", lastStep.step_number);
+      }
     }
 
     // 9. Mark run as completed
@@ -262,7 +437,6 @@ serve(async (req) => {
       .eq("id", reportRunId);
 
     // 10. Handle credit re-consumption if needed
-    // Check if entitlement_consumptions exists for this run
     const { data: existingConsumption } = await supabase
       .from("entitlement_consumptions")
       .select("id")
@@ -319,12 +493,13 @@ serve(async (req) => {
       .insert({
         report_run_id: reportRunId,
         level: "info",
-        message: "Report recovered using deterministic finalization",
+        message: `Report recovered using ${recoveryStrategy} strategy`,
         timestamp: new Date().toISOString(),
         details: {
           report_id: newReport.id,
           version_number: nextVersion,
-          sections_html_length: sectionsHtml.length,
+          recovery_strategy: recoveryStrategy,
+          report_html_length: reportHtml.length,
           tables_count: Object.keys(tables).length,
           sources_count: allSources.length,
         },
@@ -335,7 +510,8 @@ serve(async (req) => {
     return jsonResponse({
       success: true,
       reportId: newReport.id,
-      message: "Report recovered successfully using deterministic finalization",
+      recoveryStrategy,
+      message: `Report recovered successfully using ${recoveryStrategy} strategy`,
     });
 
   } catch (error) {
