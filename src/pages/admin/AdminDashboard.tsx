@@ -11,6 +11,7 @@ import { StepFailureBreakdown } from "@/components/admin/StepFailureBreakdown";
 import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
 import { StalledRunsTable } from "@/components/admin/StalledRunsTable";
+import { QuickHealthWidget } from "@/components/admin/QuickHealthWidget";
 
 // Helper to check if an error message indicates cancellation
 function isCancellation(errorMessage: string | null | undefined): boolean {
