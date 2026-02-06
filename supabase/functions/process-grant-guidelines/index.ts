@@ -1013,7 +1013,7 @@ Return ONLY valid JSON matching the schema.`;
       `- ${m.role_name}: ${m.role_goal}`
     ).join('\n');
 
-    const pipelinePrompt = `You are an expert at designing research pipelines for ${archetype} grant applications.
+    const pipelinePrompt = `You are an expert at designing high-quality research pipelines for ${archetype} grant applications.
 
 Context:
 - Grant: ${grantName}
@@ -1028,13 +1028,26 @@ ${modulesDescription}
 
 ${WRITER_STANCE_PREAMBLE}
 
+${PROMPT_QUALITY_TEMPLATE}
+
+${PROMPT_REFERENCE_EXAMPLE}
+
 Design a research pipeline that addresses the rubric criteria. 
 
-KEY REQUIREMENTS:
-1. RESEARCH FOCUS: Generate steps that produce citable evidence, NOT application writing
-2. MODULE ALIGNMENT: Include steps that cover all required modules above
-3. EVIDENCE-BASED: Each step should gather external data that can be cited
-4. PROMPT QUALITY: Every prompt must be 1,500+ characters with HARD RULES and OUTPUT SCHEMA
+=== CRITICAL PROMPT QUALITY REQUIREMENTS ===
+Each prompt_template you generate MUST:
+1. Be at least 1,500 characters long
+2. Start with "STEP N — [Purpose]" header and INPUTS section
+3. Include a "HARD RULES:" section with 5+ explicit constraints including:
+   - "Do NOT invent facts or numbers"
+   - "NEVER use placeholder tokens like [Company] or {value}"
+   - Placeholder prohibition rule
+4. Include an "UNKNOWN HANDLING:" section specifying how to handle missing data
+5. Include an "OUTPUT JSON SCHEMA:" section with exact field definitions
+6. Include URL validation requirements where applicable
+
+=== RESEARCH FOCUS ===
+Generate steps that produce CITABLE EVIDENCE, not application writing. Each step should gather external data.
 
 REQUIRED PIPELINE STRUCTURE:
 - Step 0: build_source_pack (ALWAYS first - curates authoritative sources)
@@ -1047,7 +1060,7 @@ For each step:
 - step_number: Sequential integer starting at 0
 - step_name: snake_case identifier
 - step_description: What research this step produces
-- prompt_template: Full prompt with {{variable}} placeholders, HARD RULES, and OUTPUT SCHEMA
+- prompt_template: Full prompt with all quality sections (1,500+ chars minimum)
   APPROVED VARIABLES: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}, 
   {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
   {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
