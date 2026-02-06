@@ -1378,11 +1378,30 @@ export function generateBundleFromSpec(
     phase: module.step_template.phase
   }));
 
-  // Step 5: Generate HTML assembly steps
-  const maxAIStep = firecrawlOffset + aiSteps.length - 1;
-  const assemblyStepTemplates = createHtmlAssemblySteps(maxAIStep);
+  // Step 5: Generate QA Gates step (if enabled)
+  const maxResearchStep = firecrawlOffset + aiSteps.length - 1;
+  let qaGatesSteps: typeof aiSteps = [];
+  
+  if (fullConfig.enable_qa_gates) {
+    const qaGatesTemplate = createQAGatesStep(maxResearchStep, rubricSections);
+    qaGatesSteps = [{
+      step_number: maxResearchStep + 1,
+      step_name: qaGatesTemplate.step_name,
+      step_description: qaGatesTemplate.step_description,
+      step_type: "ai_prompt" as const,
+      step_config_json: {},
+      prompt_template: qaGatesTemplate.prompt_template,
+      model_override: tierToModel[qaGatesTemplate.model_tier] || null,
+      is_heavy: false,
+      phase: qaGatesTemplate.phase
+    }];
+  }
+
+  // Step 6: Generate HTML assembly steps (after QA gates)
+  const preAssemblyStepCount = maxResearchStep + qaGatesSteps.length;
+  const assemblyStepTemplates = createHtmlAssemblySteps(preAssemblyStepCount);
   const assemblySteps = assemblyStepTemplates.map((template, idx) => ({
-    step_number: maxAIStep + 1 + idx,
+    step_number: preAssemblyStepCount + 1 + idx,
     step_name: template.step_name,
     step_description: template.step_description,
     step_type: "ai_prompt" as const,
@@ -1393,7 +1412,7 @@ export function generateBundleFromSpec(
     phase: template.phase
   }));
 
-  // Combine all steps
+  // Combine all steps in order: Firecrawl → AI Research → QA Gates → Assembly
   const allSteps = [
     ...firecrawlSteps.map(s => ({
       ...s,
@@ -1403,6 +1422,7 @@ export function generateBundleFromSpec(
       phase: "intake"
     })),
     ...aiSteps,
+    ...qaGatesSteps,
     ...assemblySteps
   ];
 
