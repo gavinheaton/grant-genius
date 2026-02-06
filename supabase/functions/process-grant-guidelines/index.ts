@@ -1211,7 +1211,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[qaGatesTemplate.model_tier] || null,
       is_heavy: false,
-      phase: qaGatesTemplate.phase
+      is_assembly_step: false
     };
     
     // Max step is now after QA gates
