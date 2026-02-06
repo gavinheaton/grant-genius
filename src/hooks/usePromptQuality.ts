@@ -173,7 +173,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden/i.test(prompt) ? 10 : 0,
     
     // Adequate length: at least 1000 characters (5 pts max)
-    adequateLength: prompt.length >= 1000 ? 5 : Math.round((prompt.length / 1000) * 5 * 10) / 10,
+    adequateLength: prompt.length >= 1500 ? 5 : Math.round((prompt.length / 1500) * 5 * 10) / 10,
     
     // Valid variables: all {{variables}} are approved shortcodes
     validVariables: validVariablesScore,
