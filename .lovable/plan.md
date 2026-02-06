@@ -1,155 +1,149 @@
 
 
-# Fix: Pipeline Fails Because Worker Expects `report_html` But Gets `report`
+# Fix: Eliminate Finalize Step for Single-Prompt Pipeline
 
-## Root Cause Analysis
+## Problem
 
-The error chain is:
+The external Cloud Run worker's finalization logic is failing because:
+
+1. Step 0 (`one_prompt`) generates a complete HTML report successfully
+2. Step 1 (`finalize_report_html`) tries to run but has mismatched variable expectations
+3. The worker's deterministic fallback then fails to find `report_html` in prior step outputs
+
+The worker expects either a full multi-step pipeline (with dedicated assembly steps) or direct `report_html` output. The 2-step "passthrough" pattern doesn't work reliably.
+
+## Solution: Single-Step Pipeline
+
+Convert the AMT Bio pipeline to a true single-step pipeline where Step 0 outputs the final `report_html` directly, and remove the finalize step.
+
+### Changes Required
+
+**1. Update Step 0 (`one_prompt`) prompt template**
+
+Ensure the OUTPUT SCHEMA explicitly outputs `report_html` as the main field:
 
 ```text
-Step 0 (one_prompt) → outputs { "report": "<html>..." } ✓ succeeds
-                                    ↓
-Step 1 (finalize_report_html) → Worker sees missingVars, triggers deterministic merge
-                                    ↓
-Worker deterministic merge → Searches for 'report_html' field in step outputs
-                                    ↓
-                           Field doesn't exist! Only 'report' exists
-                                    ↓
-                           ❌ "Finalize FAILED: No step output found with 'report_html'"
-```
-
-The worker's finalization logic is **hardcoded to look for `report_html`**, but your `one_prompt` step outputs a field named `report`.
-
-Additionally, the `finalize_report_html` prompt template has invalid variable references that don't exist in this 2-step pipeline.
-
-## Solution: Two-Part Fix
-
-### Part 1: Fix the Prompt Bundle (Immediate)
-
-Update the `finalize_report_html` step in bundle `6abbcd3f-3cf0-41ef-869b-2138abfbc788` to:
-
-1. **Remove invalid variable references**: Replace `{{one_prompt}}`, `{{sources}}`, `{{step1}}`, `{{step2}}` with `{{step0}}`
-2. **Make it a simple passthrough**: Since Step 0 already generates a complete report, the finalize step should just extract and output it
-
-**New Prompt Template for Step 1:**
-```text
-TASK: Extract the report HTML from the previous step and output it in the required format.
-
-PREVIOUS STEP OUTPUT:
-{{step0}}
-
-INSTRUCTIONS:
-1. Extract the HTML report content from the 'report' field of the input above
-2. Output it exactly as-is in the 'report_html' field
-
 OUTPUT (return ONLY this JSON, no code fences):
 {
-  "report_html": "the HTML content from the input's 'report' field",
-  "metadata": {
-    "project_title": "extracted from report title",
-    "source": "passthrough from step0"
-  },
-  "unknowns": []
+  "report_html": "full HTML document here",
+  "metadata": { ... },
+  "unknowns": [ ... ]
 }
 ```
 
-This is a simple extraction task that even a lite model can handle.
+The prompt may already have this, but we need to verify the actual output field name matches.
 
-### Part 2: Fix Step 0 Output Field Name (Recommended)
+**2. Delete Step 1 (`finalize_report_html`) from bundle**
 
-Update the `one_prompt` step prompt template to output `report_html` instead of `report`:
+Remove the passthrough step entirely. With only 1 step in the pipeline:
+- The worker completes Step 0
+- The worker sees Step 0 is the final step
+- The worker saves the report directly from Step 0's `report_html` output
 
-Find and replace in the prompt's OUTPUT SCHEMA section:
+**3. How the Worker Handles This**
+
+The external worker has logic to detect when a step is the "final step" (highest step number in the pipeline). When it completes the final step, it automatically:
+- Extracts `report_html` from the step output
+- Creates the report record
+- Marks the run as completed
+
+By making Step 0 the only (and thus final) step, the worker's standard completion logic kicks in.
+
+---
+
+## Technical Details
+
+### Current State
+
 ```text
-// Change FROM:
-{ "report": "..." }
-
-// Change TO:
-{ "report_html": "..." }
+Bundle: 6abbcd3f-3cf0-41ef-869b-2138abfbc788 (AMT Bio Single Prompt)
+├── Step 0: one_prompt (outputs report_html) ✓
+└── Step 1: finalize_report_html (passthrough - CAUSES FAILURE)
 ```
 
-This makes Step 0 compatible with the worker's expectations.
+### Target State
 
-### Part 3 (Optional): Update Worker's Deterministic Finalization
+```text
+Bundle: 6abbcd3f-3cf0-41ef-869b-2138abfbc788 (AMT Bio Single Prompt)
+└── Step 0: one_prompt (outputs report_html, IS FINAL STEP) ✓
+```
 
-The external Cloud Run worker's finalization code should use flexible field detection (like our recovery function):
+### Database Changes
+
+```sql
+-- 1. Verify Step 0 outputs report_html (not report)
+-- Already confirmed from query: has_report_html_output = true
+
+-- 2. Delete the finalize step
+DELETE FROM prompt_bundle_steps 
+WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788'
+  AND step_name = 'finalize_report_html';
+```
+
+### No Code Changes Required
+
+The worker already handles single-step pipelines correctly when the final step outputs `report_html`. No edge function or frontend changes needed.
+
+---
+
+## Why This Works
+
+The external worker's completion logic:
 
 ```javascript
-// Current (hardcoded):
-const reportHtml = stepOutputs.find(s => s.report_html);
-
-// Should be (flexible):
-const HTML_FIELD_PRIORITY = ["report_html", "report", "html", "content", "sections_html"];
-const reportHtml = stepOutputs.find(s => 
-  HTML_FIELD_PRIORITY.some(field => s[field] && s[field].length > 500)
-);
+// Pseudocode from worker
+if (currentStep === totalSteps - 1) {
+  // This is the final step - save the report
+  const reportHtml = stepOutput.report_html;
+  if (reportHtml) {
+    await saveReport(reportHtml);
+    await markRunCompleted();
+  }
+}
 ```
 
-This would make the worker resilient to different pipeline output conventions.
+With Step 0 as the only step (total_steps = 1), Step 0 becomes the final step, and the worker's save logic triggers immediately after Step 0 completes.
 
 ---
 
 ## Implementation Steps
 
-### Step 1: Update Step 0 (`one_prompt`) Output Schema
+1. **Delete Step 1** from the prompt bundle via the admin UI or SQL
+2. **Start a new report run** (important: don't retry an old run)
+3. **Verify completion**: Step 0 completes → Report saved → Run marked complete
 
-SQL to update the prompt:
-```sql
-UPDATE prompt_bundle_steps
-SET prompt_template = REPLACE(
-  prompt_template,
-  '"report":',
-  '"report_html":'
-)
-WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788'
-  AND step_name = 'one_prompt'
-  AND prompt_template LIKE '%"report":%';
+---
+
+## Fallback: Update Worker Logic (External System)
+
+If deleting the finalize step doesn't work, the external worker code needs to be updated to use flexible field detection (like our recovery function):
+
+```javascript
+// Instead of:
+const reportHtml = stepOutput.report_html;
+
+// Use flexible detection:
+const HTML_FIELDS = ["report_html", "report", "html", "content"];
+const reportHtml = HTML_FIELDS.map(f => stepOutput[f]).find(v => v && v.length > 500);
 ```
 
-### Step 2: Simplify Step 1 (`finalize_report_html`)
-
-Replace the complex finalize prompt with a simple passthrough that:
-- Takes `{{step0}}` as input
-- Extracts the `report_html` field
-- Outputs it directly
-
-### Step 3: Test the Pipeline
-
-Run a new report generation to verify:
-1. Step 0 outputs `{ "report_html": "..." }`
-2. Step 1 (finalize) successfully extracts and outputs the HTML
-3. Report is saved correctly
+This is an external system change outside of Lovable.
 
 ---
 
 ## Files to Modify
 
-| Source | Change |
-|--------|--------|
-| Database: `prompt_bundle_steps` (bundle `6abbcd3f...`) | Update `one_prompt` output field from `report` to `report_html` |
-| Database: `prompt_bundle_steps` (bundle `6abbcd3f...`) | Simplify `finalize_report_html` prompt to use only `{{step0}}` |
+| Location | Change |
+|----------|--------|
+| Database: `prompt_bundle_steps` | Delete `finalize_report_html` step from bundle `6abbcd3f...` |
 
 ---
 
-## Alternative: Remove Finalize Step Entirely
+## Testing Checklist
 
-Since your `one_prompt` step already generates a complete HTML report, you could:
-
-1. **Delete the `finalize_report_html` step** from the bundle
-2. Update `one_prompt` to output `report_html` field
-3. Configure the worker to recognize single-step pipelines
-
-This would make the pipeline truly single-step and eliminate the finalization failure entirely.
-
----
-
-## Quick Manual Fix (For Immediate Testing)
-
-If you want to test immediately without code changes:
-
-1. Click the **"Recover Final Step"** button on the failed run
-2. The recovery function (which we just updated) will use Strategy 2 to find the `report` field in Step 0
-3. It will create the report successfully
-
-This works because our recovery function already has flexible field detection. The permanent fix is updating the prompt bundle so future runs don't need manual recovery.
+- [ ] Delete the finalize step from the bundle
+- [ ] Verify bundle now has only 1 step (Step 0)
+- [ ] Start a fresh report run on an AMT Bio application  
+- [ ] Verify `total_steps` is set to 1 in the new run
+- [ ] Confirm report completes without needing recovery
 
