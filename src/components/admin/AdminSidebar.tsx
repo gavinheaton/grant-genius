@@ -11,6 +11,7 @@ import {
   Bot,
   FileType,
   Activity,
+  Sparkles,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -54,6 +55,10 @@ const reportItems = [
 const systemItems = [
   { title: "System Health", url: "/admin/system-health", icon: Activity },
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
+];
+
+const superAdminItems = [
+  { title: "AI Assistant", url: "/admin/assistant", icon: Sparkles },
 ];
 
 export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
@@ -184,6 +189,30 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {isSuperAdmin && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Super Admin</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {superAdminItems.map((item) => (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton asChild isActive={isActive(item.url)}>
+                      <NavLink
+                        to={item.url}
+                        className="flex items-center gap-2"
+                        activeClassName="bg-accent text-accent-foreground"
+                      >
+                        <item.icon className="h-4 w-4" />
+                        {!collapsed && <span>{item.title}</span>}
+                      </NavLink>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter className="border-t border-border p-4 space-y-2">
