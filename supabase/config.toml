@@ -56,3 +56,6 @@ verify_jwt = false
 
 [functions.recover-finalize-report]
 verify_jwt = false
+
+[functions.trigger-deploy]
+verify_jwt = false
