@@ -2,6 +2,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import type { Json } from "@/integrations/supabase/types";
+import type { GrantArchetype } from "@/lib/bundleGeneratorSpec";
+
+// ============================================================================
+// TYPES
+// ============================================================================
 
 export interface PromptBundle {
   id: string;
@@ -14,6 +19,18 @@ export interface PromptBundle {
 }
 
 export type StepType = 'ai_prompt' | 'firecrawl_search' | 'firecrawl_scrape';
+
+// Pipeline phases for organizing steps
+export type PipelinePhase = 'intake' | 'research' | 'argument_build' | 'assembly' | 'qa' | 'render';
+
+// Module metadata for step categorization
+export interface StepModuleMetadata {
+  module_name?: string;
+  phase?: PipelinePhase;
+  archetype_specific?: boolean;
+  provides_outputs?: string[];
+  depends_on?: string[];
+}
 
 export interface PromptBundleStep {
   id: string;
@@ -28,6 +45,7 @@ export interface PromptBundleStep {
   max_expected_seconds: number | null;
   step_type: StepType;
   step_config_json: Record<string, unknown> | null;
+  is_assembly_step?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -44,11 +62,27 @@ export type PromptBundleStepUpdate = {
   max_expected_seconds?: number | null;
   step_type?: StepType;
   step_config_json?: Json;
+  is_assembly_step?: boolean;
 };
 
+// Extended bundle with steps and metadata
 export interface PromptBundleWithSteps extends PromptBundle {
   steps: PromptBundleStep[];
 }
+
+// Grant-specific pipeline metadata
+export interface GrantPipelineMetadata {
+  archetype: GrantArchetype;
+  archetype_confidence: 'high' | 'medium' | 'low';
+  firecrawl_step_count: number;
+  ai_analysis_step_count: number;
+  assembly_step_count: number;
+  total_step_count: number;
+  modules_included: string[];
+}
+
+// Re-export GrantArchetype for convenience
+export type { GrantArchetype } from "@/lib/bundleGeneratorSpec";
 
 export function usePromptBundles() {
   return useQuery({
