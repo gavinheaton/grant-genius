@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, ChevronUp, ChevronDown, Info, Save } from "lucide-react";
+import { Plus, Trash2, ChevronUp, ChevronDown, Info, Save, Bot, Globe, FileSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Json } from "@/integrations/supabase/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -484,10 +484,30 @@ export function InlinePipelineEditor({
                             <Badge variant="outline" className="font-mono">
                               {step.step_number}
                             </Badge>
+                            {/* Step Type Icon Badge */}
+                            {step.step_type === 'firecrawl_search' ? (
+                              <Badge variant="secondary" className="gap-1 text-xs">
+                                <Globe className="h-3 w-3" />
+                                Search
+                              </Badge>
+                            ) : step.step_type === 'firecrawl_scrape' ? (
+                              <Badge variant="secondary" className="gap-1 text-xs">
+                                <FileSearch className="h-3 w-3" />
+                                Scrape
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="gap-1 text-xs">
+                                <Bot className="h-3 w-3" />
+                                AI
+                              </Badge>
+                            )}
                             <div className="flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <p className="font-medium">{step.step_description}</p>
-                                <PromptQualityBadge prompt={step.prompt_template} />
+                                {/* Only show quality badge for AI steps */}
+                                {step.step_type === 'ai_prompt' && (
+                                  <PromptQualityBadge prompt={step.prompt_template} />
+                                )}
                                 {/* Assembly step warning for finalize_report_html */}
                                 {step.step_name === 'finalize_report_html' && 
                                  !step.prompt_template.includes('"report_html"') && (
