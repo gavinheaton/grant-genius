@@ -1,46 +1,105 @@
 
+# Fix Prompt Quality Issues and Regeneration Flow
 
-# Reset Stuck Grant Version for Fresh Pipeline Generation
+## Summary
 
-## Current State
+Two issues were identified:
 
-The grant version `5d26ac52-5cba-4264-b463-1fe22a9af733` (AEA Ignite) is stuck with:
-- `pipeline_generation_status: 'generating'`
-- `prompt_bundle_id: null` (no bundle was created - the function crashed before reaching that step)
+1. **Regeneration Error** - The `regenerate-step-prompt` edge function was not deployed
+2. **Low Quality Scores** - Generated prompts score 40-60/100 because they're missing quality markers
 
-## What Needs to Be Done
+## Issue 1: Regeneration (RESOLVED)
 
-Reset the grant version status so you can retry the pipeline generation with the now-fixed code.
+The edge function has been deployed. You can now use the "Regenerate with AI" button for any step.
 
-### Database Update Required
+---
 
-Run this SQL to reset the status:
+## Issue 2: Low Prompt Quality from Pipeline Generation
 
-```sql
-UPDATE grant_versions 
-SET pipeline_generation_status = 'none'
-WHERE id = '5d26ac52-5cba-4264-b463-1fe22a9af733';
+### Root Cause
+
+The `process-grant-guidelines` edge function generates prompts that:
+- Are only 1,000-1,200 characters (minimum should be 1,500)
+- Missing "unknown handling" language that scores 10 points
+- Missing "placeholder prohibition" rules that score 10 points
+- Missing explicit `STEP N` headers that score 15 points
+
+### Current State of Generated Prompts
+
+| Step | Name | Length | Has Hard Rules | Has Schema | Quality |
+|------|------|--------|----------------|------------|---------|
+| 4 | build_source_pack | 1,201 | Yes | Yes | ~45 |
+| 5 | calculate_economic_impact | 1,230 | Yes | Yes | ~50 |
+| 6 | calculate_market_sizing | 1,164 | Yes | Yes | ~45 |
+
+### Solution: Enhance Pipeline Generator Prompts
+
+Update the prompt generation logic in `process-grant-guidelines` to include all quality markers:
+
+1. Add `STEP N — [Purpose]` headers
+2. Add unknown handling protocol section
+3. Add placeholder prohibition rules
+4. Expand prompts to 1,500+ characters
+
+---
+
+## Files to Modify
+
+**File: `supabase/functions/process-grant-guidelines/index.ts`**
+
+### Changes Required
+
+1. **Enhance the AI prompt template** that generates step prompts (around line 850-950)
+   - Add mandatory quality sections to the system prompt
+   - Include the QUALITY_TEMPLATE and REFERENCE_EXAMPLE patterns from the regenerate function
+
+2. **Update step prompt generation** to enforce:
+   - Minimum 1,500 character length
+   - `STEP N` context headers
+   - Unknown handling protocol
+   - Placeholder prohibition rules
+
+### Sample Enhanced Prompt Structure
+
+Each generated prompt should include:
+
+```text
+STEP N — [Purpose]. 
+INPUTS: {{summary}}, {{stepN-1}}, etc.
+
+You are [role description].
+
+HARD RULES:
+1. Do NOT invent facts or numbers
+2. NEVER use placeholder tokens like [Company] or {value}
+3. If data unavailable, provide conservative proxy estimate
+4. Prefer Australian authoritative sources
+5. [Additional domain-specific rules]
+
+UNKNOWN HANDLING:
+- If data unavailable, use descriptive text like "Not publicly disclosed"
+- Include "unknowns" array listing what couldn't be found
+- Provide proxy estimates with methodology shown
+
+OUTPUT JSON SCHEMA:
+{
+  [Detailed schema with types and examples]
+}
 ```
 
-This single update will:
-1. Clear the stuck `generating` status
-2. Allow the UI to show the "Generate Pipeline" button again
-3. Enable a fresh attempt with the corrected edge function code
+---
 
-## After Reset
+## Immediate Workaround
 
-Once approved, you can:
-1. Navigate to the Admin Grants page
-2. Click on the AEA Ignite grant
-3. Use the "Generate Pipeline" button to run the corrected pipeline generation
-4. Verify the archetype detection and step creation complete successfully
+While the fix is pending, you can:
+1. Use the **"Regenerate with AI"** button on each step (now working after deployment)
+2. The regeneration uses the quality template to enhance each prompt to 1,500+ characters
 
-## Technical Context
+---
 
-- **AI Analysis**: Already completed successfully (status: `completed`)
-- **Archetype**: Detected as "Commercialisation/Innovation" with medium confidence
-- **Selected Modules**: `evidence_source_pack`, `economic_impact`, `stakeholder_mapping`, `market_sizing`, `competitor_analysis`, `ip_regulatory_strategy`
-- **Rubric**: 3 sections extracted (Research Quality, Commercialisation Potential, Delivery Capability)
+## Testing After Fix
 
-All the AI analysis data is preserved - only the pipeline generation step needs to be retried.
-
+1. Reset the grant version status to `pipeline_generation_status = 'none'`
+2. Re-trigger "Generate Pipeline"
+3. Verify all AI prompt steps score 70+ on quality
+4. Confirm prompts are 1,500+ characters with all quality markers
