@@ -1356,7 +1356,9 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_count: totalStepCount,
       firecrawl_steps: firecrawlSteps.length,
       ai_analysis_steps: aiAnalysisSteps.length,
+      qa_gates_steps: 1,
       assembly_steps: assemblySteps.length,
+      qa_gates_enabled: true,
       modules_included: selectedModules.map(m => m.module_name),
       suggestions: {
         grant_summary: suggestions.grant_summary,
