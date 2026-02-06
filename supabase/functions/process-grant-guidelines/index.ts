@@ -1228,7 +1228,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: false,
-      phase: step.phase
+      is_assembly_step: true
     }));
 
     // Create the prompt bundle
