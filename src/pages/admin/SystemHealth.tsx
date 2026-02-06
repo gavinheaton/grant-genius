@@ -192,7 +192,7 @@ export default function SystemHealth() {
                     <div key={name} className="flex items-center justify-between p-2 border rounded">
                       <span className="font-mono text-xs">{name}</span>
                       {present ? (
-                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <CheckCircle className="h-4 w-4 text-primary" />
                       ) : (
                         <XCircle className="h-4 w-4 text-destructive" />
                       )}

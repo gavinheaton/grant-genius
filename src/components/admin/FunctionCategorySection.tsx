@@ -38,7 +38,7 @@ export function FunctionCategorySection({
           </div>
           <div className="flex items-center gap-2">
             {allHealthy ? (
-              <Badge variant="outline" className="gap-1 text-green-600 border-green-200 bg-green-50">
+              <Badge variant="outline" className="gap-1 text-primary border-primary/30 bg-primary/10">
                 <CheckCircle className="h-3 w-3" />
                 {healthy}/{total}
               </Badge>
