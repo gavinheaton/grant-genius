@@ -213,26 +213,26 @@ WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788';
 
 ## Implementation Phases
 
-### Phase A: Immediate Fix (1-2 hours)
+### Phase A: Immediate Fix (1-2 hours) — PENDING
 1. Update AMT Bio `one_prompt` to remove search instructions
 2. Add explicit "Data sources: User-provided article only" disclaimer
 3. Mark all market data as "ESTIMATE - REQUIRES VALIDATION"
 
-### Phase B: Worker-Proxy Search Action (2-3 hours)
-1. Add `execute_firecrawl_search` action to worker-proxy
-2. Add `execute_firecrawl_scrape` action (for article scraping)
-3. Deploy and test via edge function
+### Phase B: Worker-Proxy Search Action (2-3 hours) — ✅ COMPLETE
+1. ✅ Add `execute_firecrawl_search` action to worker-proxy
+2. ✅ Add `execute_firecrawl_scrape` action (for article scraping)
+3. ✅ Deploy and test via edge function
 
-### Phase C: Database Schema Update (30 min)
-1. Add `step_type` column to `prompt_bundle_steps`
-2. Add `step_config_json` column for search/scrape configuration
+### Phase C: Database Schema Update (30 min) — ✅ COMPLETE
+1. ✅ Add `step_type` column to `prompt_bundle_steps`
+2. ✅ Add `step_config_json` column for search/scrape configuration
 
-### Phase D: Pipeline Generator Update (2-3 hours)
+### Phase D: Pipeline Generator Update (2-3 hours) — PENDING
 1. Modify `process-grant-guidelines` to generate hybrid pipelines
 2. Add Firecrawl search steps before AI analysis steps
 3. Update step numbering and references
 
-### Phase E: External Worker Update (External - 2-3 hours)
+### Phase E: External Worker Update (External - 2-3 hours) — PENDING
 1. Add step type detection logic
 2. Implement Firecrawl step execution
 3. Test full hybrid pipeline

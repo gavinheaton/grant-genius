@@ -705,9 +705,11 @@ export type Database = {
           max_expected_seconds: number | null
           model_override: string | null
           prompt_template: string
+          step_config_json: Json | null
           step_description: string
           step_name: string
           step_number: number
+          step_type: string | null
           timeout_seconds: number | null
           updated_at: string
         }
@@ -720,9 +722,11 @@ export type Database = {
           max_expected_seconds?: number | null
           model_override?: string | null
           prompt_template: string
+          step_config_json?: Json | null
           step_description: string
           step_name: string
           step_number: number
+          step_type?: string | null
           timeout_seconds?: number | null
           updated_at?: string
         }
@@ -735,9 +739,11 @@ export type Database = {
           max_expected_seconds?: number | null
           model_override?: string | null
           prompt_template?: string
+          step_config_json?: Json | null
           step_description?: string
           step_name?: string
           step_number?: number
+          step_type?: string | null
           timeout_seconds?: number | null
           updated_at?: string
         }
