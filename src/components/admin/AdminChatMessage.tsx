@@ -107,7 +107,7 @@ export function AdminChatMessage({ message }: AdminChatMessageProps) {
                 ),
                 // Blockquote styling for errors/warnings
                 blockquote: ({ children }) => (
-                  <blockquote className="border-l-4 border-amber-500 pl-4 my-4 italic text-muted-foreground">
+                  <blockquote className="border-l-4 border-primary pl-4 my-4 italic text-muted-foreground">
                     {children}
                   </blockquote>
                 ),

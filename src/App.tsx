@@ -58,6 +58,7 @@ const App = () => (
           <Route path="/admin/prompt-bundles/:id" element={<AdminLayout><PromptBundleEdit /></AdminLayout>} />
           <Route path="/admin/audit-logs" element={<AdminLayout><AuditLogs /></AdminLayout>} />
           <Route path="/admin/system-health" element={<AdminLayout><SystemHealth /></AdminLayout>} />
+          <Route path="/admin/assistant" element={<AdminLayout><AdminAssistant /></AdminLayout>} />
           
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
