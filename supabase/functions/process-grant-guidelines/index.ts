@@ -1199,9 +1199,8 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
     
     const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
 
-    // Generate QA Gates step
+    // Generate QA Gates step (reusing rubricSections from line 918)
     console.log("Step 5.1: Adding QA Gates validation step...");
-    const rubricSections = suggestions.rubric?.sections || [];
     const qaGatesTemplate = createQAGatesStep(maxResearchStep, rubricSections);
     const qaGatesStep = {
       step_number: maxResearchStep + 1,
