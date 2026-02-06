@@ -1336,11 +1336,13 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
         archetype_confidence: archetypeConfidence,
         firecrawl_steps: firecrawlSteps.length,
         ai_analysis_steps: aiAnalysisSteps.length,
+        qa_gates_steps: 1,
         assembly_steps: assemblySteps.length,
         total_steps: totalStepCount,
         pipeline_name: pipelineData.pipeline_name,
         modules_included: selectedModules.map(m => m.module_name),
-        hybrid_architecture: true
+        hybrid_architecture: true,
+        qa_gates_enabled: true
       }
     });
 
