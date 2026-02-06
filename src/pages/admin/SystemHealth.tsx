@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Server, Key, Zap, Rocket } from "lucide-react";
 import { useBackendHealth, FUNCTION_CATEGORIES } from "@/hooks/useBackendHealth";
 import { FunctionCategorySection } from "@/components/admin/FunctionCategorySection";
-import { toast } from "@/hooks/use-toast";
 
 function StatusBadge({ status }: { status: "ok" | "error" | "not_deployed" | "unreachable" }) {
   const variants: Record<typeof status, { variant: "default" | "destructive" | "secondary"; icon: typeof CheckCircle }> = {
