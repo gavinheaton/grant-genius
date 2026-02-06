@@ -1231,6 +1231,142 @@ Now generate the pipeline steps using the rubric weights and required inputs as 
       throw new Error("Failed to parse pipeline response");
     }
 
+    // ========== Validate mandatory steps exist ==========
+    console.log("Step 3.5: Validating mandatory pipeline steps...");
+    const stepNames = pipelineData.steps.map((s: any) => s.step_name);
+    
+    // Check for rubric_coverage_map (should be step 1)
+    if (!stepNames.includes('rubric_coverage_map')) {
+      console.warn("Missing rubric_coverage_map step - adding default");
+      pipelineData.steps.splice(1, 0, {
+        step_number: 1,
+        step_name: "rubric_coverage_map",
+        step_description: "Convert rubric into assessor-facing evidence checklist and scoring intent",
+        prompt_template: `STEP 1 — Rubric Coverage Map
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{grantRubric}}: The grant assessment criteria/rubric
+- {{grantGuidelines}}: Full grant guidelines text
+- {{step0}}: Source pack from previous step
+
+PURPOSE:
+Analyze the grant rubric and transform it into an actionable evidence checklist that maps each criterion to the specific evidence types needed to score well.
+
+HARD RULES:
+1. Do NOT invent facts or numbers
+2. Do NOT add criteria that are not in the rubric
+3. Each criterion must have specific, measurable evidence requirements
+4. Map evidence requirements to source types (academic, government, industry, etc.)
+5. Identify which criteria have highest weights and need deepest evidence
+6. NEVER use placeholder tokens like [Company] or {value}
+7. All assessment language must be objective and assessor-focused
+8. Include specific AU-relevant evidence sources where applicable
+
+OUTPUT JSON SCHEMA:
+{
+  "rubric_sections": [
+    {
+      "key": "innovation",
+      "title": "Innovation and Technical Merit",
+      "weight": 30,
+      "criteria": ["Novelty of approach", "Technical feasibility"],
+      "evidence_required": [
+        {"type": "Prior art search", "sources": ["Patents", "Academic papers"], "priority": "high"},
+        {"type": "TRL assessment", "sources": ["Technical documentation"], "priority": "high"}
+      ],
+      "scoring_intent": "Assessors looking for differentiated approach with validated feasibility"
+    }
+  ],
+  "total_criteria_count": 12,
+  "high_weight_sections": ["innovation", "impact"],
+  "evidence_gaps": ["Competitor patent analysis not available"]
+}
+
+UNKNOWN HANDLING:
+- If weight not specified, estimate based on rubric section length and emphasis
+- If criteria are vague, infer specific measurable requirements
+- Include unknowns array for evidence that cannot be determined from rubric`,
+        model_tier: "balanced"
+      });
+    }
+
+    // Check for inputs_and_compliance_gap_check (should be step 2)
+    if (!stepNames.includes('inputs_and_compliance_gap_check')) {
+      console.warn("Missing inputs_and_compliance_gap_check step - adding default");
+      const insertIndex = stepNames.includes('rubric_coverage_map') ? 2 : 1;
+      pipelineData.steps.splice(insertIndex, 0, {
+        step_number: 2,
+        step_name: "inputs_and_compliance_gap_check",
+        step_description: "Validate required inputs and identify compliance constraints from guidelines",
+        prompt_template: `STEP 2 — Inputs and Compliance Gap Check
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{requiredInputs}}: Required application inputs JSON
+- {{grantGuidelines}}: Full grant guidelines text
+- {{summary}}: User's research summary
+- {{step1}}: Rubric coverage map from previous step
+
+PURPOSE:
+Analyze required inputs against what the applicant has provided, and extract all compliance constraints from the guidelines.
+
+HARD RULES:
+1. Do NOT invent or assume applicant data
+2. Only flag as missing what is genuinely not provided
+3. Compliance constraints must be verbatim or accurately paraphrased from guidelines
+4. NEVER use placeholder tokens like [Company] or {value}
+5. Questions for applicant must be specific and actionable
+6. Page limits and formatting constraints must be exact
+7. All mandatory attachments must be listed
+8. Do NOT skip any compliance rules found in guidelines
+
+OUTPUT JSON SCHEMA:
+{
+  "required_inputs_status": {
+    "required_present": ["summary", "public_article_url", "trl"],
+    "required_missing": ["budget_breakdown", "team_cvs"],
+    "optional_missing": ["letters_of_support"]
+  },
+  "compliance_constraints": {
+    "page_limits": [{"section": "Project Description", "max_pages": 10}],
+    "mandatory_sections": ["Executive Summary", "Budget Justification"],
+    "forbidden_claims": ["Guaranteed outcomes", "100% success rate"],
+    "mandatory_attachments": ["Financial statements", "ABN verification"],
+    "formatting_requirements": ["11pt font minimum", "2.5cm margins"]
+  },
+  "questions_for_applicant": [
+    {"field": "budget_breakdown", "question": "Please provide itemized budget with justification", "priority": "required"},
+    {"field": "team_cvs", "question": "Provide CVs for key personnel", "priority": "required"}
+  ],
+  "validation_summary": {
+    "inputs_complete": false,
+    "critical_gaps": 2,
+    "advisory_gaps": 1
+  }
+}
+
+UNKNOWN HANDLING:
+- If input status unclear, mark as "needs_clarification"
+- If compliance rule is ambiguous, include both interpretations
+- Include unknowns array for constraints that cannot be determined`,
+        model_tier: "balanced"
+      });
+    }
+
+    // Re-number steps to ensure sequential ordering
+    pipelineData.steps.sort((a: any, b: any) => a.step_number - b.step_number);
+    pipelineData.steps.forEach((step: any, index: number) => {
+      step.step_number = index;
+    });
+
+    // Check minimum step count
+    if (pipelineData.steps.length < 8) {
+      console.warn(`Only ${pipelineData.steps.length} steps generated - pipeline may need enhancement`);
+    }
+
     console.log("Step 4: Validating and enhancing prompt quality...");
 
     // Quality validation and auto-enhancement
