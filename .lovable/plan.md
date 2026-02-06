@@ -1,25 +1,18 @@
 
-
-# Fix: Report Recovery Function Not Working
+# Fix: Standardize CORS Headers Across All Edge Functions
 
 ## Problem Summary
 
-You reported two issues:
-1. Step 13 (Finalize Report Html) failed with "No step output found with 'report_html' field"
-2. The "Recover Final Step" button did not work
+Two issues were reported:
+1. **Errors persist** - Various edge functions are failing from the custom domain (`grantgenius.disruptorsco.com`)
+2. **Cancel button disappeared** - The Cancel Generation button is not appearing
 
-## Root Causes Identified
+## Root Cause
 
-### Issue 1: Function Not Deployed
-The `recover-finalize-report` edge function was in the config file but **was never deployed**. When called, it returned a 404 error.
+The **cancel-report-run** edge function (along with 12 other functions) has incomplete CORS headers:
 
-**Fix**: I manually deployed the function just now. It's now live and responding.
-
-### Issue 2: CORS Headers Incomplete
-The function has outdated CORS headers that don't include all the Supabase client headers. When called from the custom domain, the preflight request will fail.
-
-Current headers (incomplete):
 ```typescript
+// Current (incomplete) - Lines 4-8 in cancel-report-run/index.ts
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
@@ -27,34 +20,77 @@ const corsHeaders = {
 };
 ```
 
-Required headers (matching `generate-docx` and `trigger-deploy`):
+Missing headers that the Supabase JS client sends:
+- `x-supabase-client-platform-version`
+- `x-supabase-client-runtime`
+- `x-supabase-client-runtime-version`
+
+When the browser preflight check fails, the function invocation silently fails, making it appear as if the Cancel button doesn't exist (the UI likely hides it when the `cancelRun` function fails).
+
+## Functions Requiring Updates
+
+| Function | Status | Impact |
+|----------|--------|--------|
+| cancel-report-run | ❌ Outdated | Cancel button broken |
+| resume-report-run | ❌ Outdated | Resume Report broken |
+| clear-and-restart-run | ❌ Outdated | Clear & Restart broken |
+| enqueue-report | ❌ Outdated | Report generation broken |
+| create-checkout | ❌ Outdated | Purchases broken |
+| generate-pdf | ❌ Outdated | PDF exports broken |
+| worker-proxy | ❌ Outdated | Worker communication broken |
+| regenerate-step-prompt | ❌ Outdated | Admin prompt editing broken |
+| process-grant-guidelines | ❌ Outdated | Guidelines processing broken |
+| invite-admin | ❌ Outdated | Admin invites broken |
+| analyze-grant-guidelines | ❌ Outdated | Grant analysis broken |
+| send-report-email | ❌ Outdated | Email notifications broken |
+| enqueue-cloud-run | ❌ Outdated | Cloud Run dispatch broken |
+
+## Solution
+
+Update the `corsHeaders` object in all 13 functions to match the working standard:
+
 ```typescript
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 ```
 
-## Database Analysis
+## Files to Modify
 
-I verified the failed run data:
+1. `supabase/functions/cancel-report-run/index.ts` - Lines 4-8
+2. `supabase/functions/resume-report-run/index.ts` - Lines 4-8
+3. `supabase/functions/clear-and-restart-run/index.ts` - Lines 4-8
+4. `supabase/functions/enqueue-report/index.ts` - Lines 3-7
+5. `supabase/functions/create-checkout/index.ts` - Lines 5-9
+6. `supabase/functions/generate-pdf/index.ts` - Lines 3-7
+7. `supabase/functions/worker-proxy/index.ts` - Lines 5-9
+8. `supabase/functions/regenerate-step-prompt/index.ts` - Lines 4-8
+9. `supabase/functions/process-grant-guidelines/index.ts` - Lines 4-8
+10. `supabase/functions/invite-admin/index.ts` - Lines 4-8
+11. `supabase/functions/analyze-grant-guidelines/index.ts` - Lines 4-8
+12. `supabase/functions/send-report-email/index.ts` - Lines 4-8
+13. `supabase/functions/enqueue-cloud-run/index.ts` - Lines 4-8
 
-| Step | Name | Status | Data Available |
-|------|------|--------|----------------|
-| 11 | assemble_sections_html | completed | sections_html (10,925 chars), data_gaps |
-| 12 | build_tables_sources_html | completed | tables, all_sources |
-| 13 | finalize_report_html | failed | empty {} |
+## Technical Details
 
-The recovery function has all the data it needs - steps 11 and 12 contain valid `sections_html`, `tables`, and `all_sources`. Once the CORS is fixed, recovery should work.
+### Why the Cancel Button Disappeared
 
-## Solution
+Looking at the UI component (`GenerationProgress.tsx`), the Cancel button is conditionally rendered:
 
-### File to Modify
+```tsx
+{onCancel && (
+  <Button onClick={onCancel}>Cancel Generation</Button>
+)}
+```
 
-**supabase/functions/recover-finalize-report/index.ts**
+The `onCancel` prop comes from `useReportGeneration` hook's `cancelRun` function. When called from the custom domain, the CORS preflight fails silently, which may cause React Query or the Supabase client to throw errors that affect the conditional rendering.
 
-Update lines 5-9 to use the complete CORS headers:
+### Standard CORS Headers
+
+All edge functions should use identical CORS headers to ensure consistent behavior across all origins:
 
 ```typescript
 const corsHeaders = {
@@ -67,14 +103,10 @@ const corsHeaders = {
 
 ## Expected Outcome
 
-After this fix:
-1. The "Recover Final Step" button will work from the custom domain
-2. The function will merge `sections_html` from step 11 with `tables` and `sources` from step 12
-3. A new report will be created with the recovered content
-4. The run status will be updated to "completed"
-
-## What I Already Did
-
-- Deployed the `recover-finalize-report` function (it was missing from deployment)
-- Verified the function is now live and responding (401 = auth required, which is correct)
-
+After updating all 13 functions:
+1. Cancel button will appear and work correctly
+2. Resume/Retry actions will work
+3. Report generation will function properly
+4. PDF exports will work
+5. Payment checkout will work
+6. All admin operations will function correctly
