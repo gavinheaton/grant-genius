@@ -1,151 +1,283 @@
 
 
-# Fix: Single-Prompt Pipeline Finalization Failure
+# Hybrid Architecture: Data Gathering + Analysis + Synthesis Pipeline
 
-## Problem Summary
+## Problem Statement
 
-The AMT Bio pipeline (Bundle `6abbcd3f-3cf0-41ef-869b-2138abfbc788`) is failing at Step 1 (`finalize_report_html`) because:
+The current `one_prompt` pipeline for AMT Bio asks the AI to "search Google Scholar" and "find market data", but LLMs cannot actually access the web. This causes hallucinations where the AI fabricates sources, URLs, and data points.
 
-1. Step 0 (`one_prompt`) successfully generates a complete HTML report with `report_html` field
-2. Step 1 tries to run with template `{{step0}}` but receives `undefined` because the external worker isn't interpolating step outputs correctly
-3. The worker then fails with "No finalize step output found with 'report_html' field"
+## Solution: 3-Phase Hybrid Architecture
 
-## Root Cause
+Split every pipeline into formally distinct phases where real data collection happens before AI analysis.
 
-The external Cloud Run worker has a bug: it's not properly providing prior step outputs for variable interpolation in subsequent steps. The `{{step0}}` placeholder is not being replaced with the actual Step 0 output before sending to the AI.
+```text
+PHASE 1: DATA GATHERING (Firecrawl)
+├── Step 0: Scrape user's article URL
+├── Step 1: Web search for market data (Firecrawl /search)
+├── Step 2: Web search for competitors (Firecrawl /search)
+└── Step 3: Web search for industry reports (Firecrawl /search)
 
-## Solution: True Single-Step Pipeline
+PHASE 2: ANALYSIS (Gemini/GPT)
+├── Step 4: Synthesize market sizing from gathered data
+├── Step 5: Analyze competitive landscape
+├── Step 6: Economic impact estimation
+└── Step 7: Stakeholder mapping
 
-Since we cannot modify the external worker code from Lovable, the solution is to eliminate the dependency on step interpolation by making Step 0 the **only and final step**. This leverages the worker's existing terminal-step detection logic.
+PHASE 3: SYNTHESIS (Gemini)
+├── Step 8: Assemble sections as HTML
+├── Step 9: Build tables and sources
+└── Step 10: Finalize report_html
+```
 
-### Changes Required
+## Technical Implementation
 
-**1. Delete the `finalize_report_html` step from the bundle**
+### 1. New Step Type: "firecrawl_search"
 
+Add a new step execution mode that calls Firecrawl's `/v1/search` API instead of the AI.
+
+**Database Changes:**
+Add a column to `prompt_bundle_steps`:
 ```sql
-DELETE FROM prompt_bundle_steps 
-WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788'
-  AND step_name = 'finalize_report_html';
+ALTER TABLE prompt_bundle_steps 
+ADD COLUMN step_type TEXT DEFAULT 'ai_prompt'
+CHECK (step_type IN ('ai_prompt', 'firecrawl_search', 'firecrawl_scrape'));
 ```
 
-**2. Update the external worker (external system change)**
+**New Step Configuration for Search Steps:**
+```json
+{
+  "step_type": "firecrawl_search",
+  "search_query_template": "{{grantName}} market size Australia 2024",
+  "limit": 10,
+  "scrape_results": true
+}
+```
 
-The external worker needs to be updated to handle single-step pipelines where:
-- `total_steps = 1`
-- Step 0 is the terminal step (index 0 = total_steps - 1)
-- `report_html` should be extracted from Step 0's output
+### 2. Worker-Proxy Enhancement
 
-Currently, the worker's finalization logic expects a step specifically named `finalize_report_html`. This needs to be updated to:
+Update `worker-proxy/index.ts` to expose a new action for the external worker:
 
+```typescript
+// New action: execute_firecrawl_search
+case "execute_firecrawl_search":
+  return await handleFirecrawlSearch(supabase, params);
+
+async function handleFirecrawlSearch(supabase, params) {
+  const { query, limit, scrapeOptions } = params;
+  const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
+  
+  const response = await fetch("https://api.firecrawl.dev/v1/search", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query,
+      limit: limit || 10,
+      scrapeOptions: scrapeOptions || { formats: ["markdown"] }
+    }),
+  });
+  
+  const data = await response.json();
+  return jsonResponse({ 
+    success: true, 
+    results: data.data,
+    sources: data.data?.map((r, i) => ({
+      source_id: `SEARCH-${i+1}`,
+      url: r.url,
+      title: r.title,
+      content: r.markdown?.slice(0, 5000),
+      confidence: "high" // Real search result
+    }))
+  });
+}
+```
+
+### 3. Pipeline Generator Update
+
+Modify `process-grant-guidelines/index.ts` to generate hybrid pipelines:
+
+**Updated Pipeline Structure:**
 ```javascript
-// Pseudocode for worker fix
-const isTerminalStep = (currentStepIndex === totalSteps - 1);
-if (isTerminalStep) {
-  // Look for report_html in current step output
-  const reportHtml = stepOutput.report_html;
-  if (reportHtml) {
-    await saveReport(reportHtml);
-    await markRunCompleted();
+// Standard hybrid pipeline template
+const HYBRID_PIPELINE_TEMPLATE = [
+  // PHASE 1: Data Gathering (Firecrawl)
+  {
+    step_number: 0,
+    step_name: "scrape_article",
+    step_type: "firecrawl_scrape",
+    config: { url_variable: "publicArticleUrl" }
+  },
+  {
+    step_number: 1,
+    step_name: "search_market_data",
+    step_type: "firecrawl_search",
+    config: {
+      query_template: "{{research_domain}} market size Australia 2024 site:abs.gov.au OR site:ibisworld.com",
+      limit: 8
+    }
+  },
+  {
+    step_number: 2,
+    step_name: "search_competitors",
+    step_type: "firecrawl_search",
+    config: {
+      query_template: "{{research_domain}} companies startups Australia competitors",
+      limit: 8
+    }
+  },
+  {
+    step_number: 3,
+    step_name: "search_policy_funding",
+    step_type: "firecrawl_search",
+    config: {
+      query_template: "{{research_domain}} government funding policy Australia site:gov.au",
+      limit: 5
+    }
+  },
+  
+  // PHASE 2: Analysis (AI)
+  {
+    step_number: 4,
+    step_name: "synthesize_market_sizing",
+    step_type: "ai_prompt",
+    prompt_template: `You are analyzing REAL search results to estimate market size...
+    
+INPUT DATA (from web search - these are REAL sources):
+{{step1}}
+
+YOUR TASK:
+- Extract numeric data points from the search results
+- Calculate TAM/SAM/SOM using ONLY data found in sources
+- If data not found, state "Data not available in searched sources"
+- NEVER invent numbers
+
+OUTPUT JSON SCHEMA:
+{
+  "tam": { "value": "...", "source_id": "SEARCH-1" },
+  "sam": { "value": "...", "calculation": "..." },
+  "som": { "value": "...", "methodology": "..." },
+  "data_gaps": ["..."]
+}`
+  },
+  // ... more AI analysis steps
+  
+  // PHASE 3: Assembly (existing logic)
+  // ... assemble_sections_html, build_tables_sources_html, finalize_report_html
+];
+```
+
+### 4. External Worker Requirements
+
+The external Cloud Run worker needs to be updated to:
+
+1. **Detect step type** from the bundle configuration
+2. **For `firecrawl_search` steps:**
+   - Call `worker-proxy` with `action: "execute_firecrawl_search"`
+   - Store results as step output
+   - No AI call needed
+3. **For `ai_prompt` steps:**
+   - Interpolate prior step outputs (including search results)
+   - Call AI as usual
+
+**Worker Pseudocode:**
+```javascript
+for (const step of bundle.steps) {
+  if (step.step_type === 'firecrawl_search') {
+    const query = interpolate(step.config.query_template, context);
+    const results = await workerProxy('execute_firecrawl_search', { query });
+    await workerProxy('update_step', { outputs_json: results });
+  } else if (step.step_type === 'ai_prompt') {
+    // Existing AI execution logic
+    const prompt = interpolate(step.prompt_template, context);
+    const aiResult = await callGemini(prompt);
+    await workerProxy('update_step', { outputs_json: aiResult });
   }
 }
 ```
 
-**3. Alternative: Use the recover-finalize-report function**
+### 5. AMT Bio Migration
 
-If the external worker cannot be updated immediately, users can use the "Recover Report" button after Step 0 completes. The `recover-finalize-report` edge function already has multi-strategy logic to extract `report_html` from any completed step.
+For the immediate single-prompt pipeline (AMT Bio), update the prompt to:
+1. Remove all "search" instructions
+2. Use ONLY the scraped article content
+3. Mark all external claims as "REQUIRES VALIDATION"
 
-## Technical Details
-
-### Current State (Failing)
-
-```text
-Bundle: 6abbcd3f-3cf0-41ef-869b-2138abfbc788
-├── Step 0: one_prompt (outputs report_html) ✓ COMPLETES
-└── Step 1: finalize_report_html ({{step0}} not interpolated) ✗ FAILS
+**Immediate Fix (before full hybrid implementation):**
+```sql
+UPDATE prompt_bundle_steps 
+SET prompt_template = '...[updated prompt without search instructions]...'
+WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788';
 ```
 
-### Target State (Working)
+## Implementation Phases
 
-```text
-Bundle: 6abbcd3f-3cf0-41ef-869b-2138abfbc788
-└── Step 0: one_prompt (outputs report_html, IS TERMINAL) ✓
-```
+### Phase A: Immediate Fix (1-2 hours)
+1. Update AMT Bio `one_prompt` to remove search instructions
+2. Add explicit "Data sources: User-provided article only" disclaimer
+3. Mark all market data as "ESTIMATE - REQUIRES VALIDATION"
 
-### Worker Requirements for Single-Step Support
+### Phase B: Worker-Proxy Search Action (2-3 hours)
+1. Add `execute_firecrawl_search` action to worker-proxy
+2. Add `execute_firecrawl_scrape` action (for article scraping)
+3. Deploy and test via edge function
 
-The external worker must be updated to:
+### Phase C: Database Schema Update (30 min)
+1. Add `step_type` column to `prompt_bundle_steps`
+2. Add `step_config_json` column for search/scrape configuration
 
-1. Detect terminal step: `currentStep === totalSteps - 1`
-2. Extract `report_html` from that step's output
-3. Call `save_report` action via worker-proxy
-4. Mark run as completed
+### Phase D: Pipeline Generator Update (2-3 hours)
+1. Modify `process-grant-guidelines` to generate hybrid pipelines
+2. Add Firecrawl search steps before AI analysis steps
+3. Update step numbering and references
 
-### Verified Evidence from Logs
-
-```text
-04:43:25Z [DIAG] update_step: run=392b8b69..., step=0, status=completed
-04:43:25Z [DIAG] update_step outputs keys: report_html, metadata, unknowns
-04:43:25Z [DIAG] update_step outputs preview: {"report_html":"<!DOCTYPE html>..."}
-04:43:30Z [PHASE] Run transitioning to phase: assembly
-04:43:30Z [DIAG] update_step: run=392b8b69..., step=1, status=running
-04:43:30Z [DIAG] update_step outputs preview: undefined  ← BUG: {{step0}} not interpolated
-04:43:33Z [DIAG] update_step: run=392b8b69..., step=1, status=failed
-```
-
-## Implementation Steps
-
-### Immediate (Lovable)
-
-1. Delete the `finalize_report_html` step from bundle `6abbcd3f...`
-2. Document the external worker fix requirement
-
-### External System (Cloud Run Worker)
-
-The worker code needs to be updated with this logic:
-
-```javascript
-// After completing any step, check if it's the terminal step
-if (currentStepNumber === bundle.steps.length - 1) {
-  // This is the final step - look for report_html
-  const reportHtml = stepOutput.report_html;
-  if (reportHtml && reportHtml.length > 100) {
-    // Save the report
-    await workerProxy("save_report", {
-      report_run_id: runId,
-      content_json: { report_html: reportHtml },
-      citations_json: stepOutput.citations || []
-    });
-    // Mark run completed
-    await workerProxy("update_run", {
-      report_run_id: runId,
-      status: "completed",
-      phase: "complete",
-      completed_at: new Date().toISOString()
-    });
-    return; // Done
-  }
-}
-```
-
-### Fallback (User Action)
-
-Until the worker is fixed, users can:
-1. Wait for Step 0 to complete
-2. Click "Recover Report" button 
-3. The `recover-finalize-report` function will extract `report_html` from Step 0
+### Phase E: External Worker Update (External - 2-3 hours)
+1. Add step type detection logic
+2. Implement Firecrawl step execution
+3. Test full hybrid pipeline
 
 ## Files to Modify
 
-| Location | Change |
-|----------|--------|
-| Database: `prompt_bundle_steps` | Delete `finalize_report_html` step |
-| External: Cloud Run Worker | Update terminal step detection and report extraction logic |
+| File | Change |
+|------|--------|
+| `supabase/functions/worker-proxy/index.ts` | Add `execute_firecrawl_search` and `execute_firecrawl_scrape` actions |
+| `supabase/functions/process-grant-guidelines/index.ts` | Generate hybrid pipelines with search steps |
+| Database: `prompt_bundle_steps` | Add `step_type` and `step_config_json` columns |
+| External: Cloud Run Worker | Add step type detection and Firecrawl execution |
 
-## Testing Checklist
+## Firecrawl Usage Strategy
 
-- [ ] Delete the finalize step from bundle
-- [ ] Start a fresh report run (creates run with `total_steps = 1`)
-- [ ] Verify Step 0 completes with `report_html` output
-- [ ] If worker doesn't auto-save: click "Recover Report" button
-- [ ] Confirm report is saved and viewable
+**Search Queries per Report:**
+- Market data: 1 search (8-10 results)
+- Competitors: 1 search (8-10 results)
+- Policy/funding: 1 search (5 results)
+- Industry reports: 1 search (5 results)
+
+**Estimated Credits:** ~4 searches + 1 scrape per report
+
+**Search Query Patterns:**
+```
+Market: "{domain} market size Australia 2024 site:abs.gov.au OR site:ibisworld.com"
+Competitors: "{domain} companies startups Australia"
+Policy: "{domain} government funding Australia site:gov.au"
+Academic: "{domain} research Australia site:scholar.google.com OR site:pubmed.gov"
+```
+
+## Benefits
+
+1. **No Hallucinations:** AI only analyzes real search results
+2. **Verifiable Sources:** Every claim linked to actual URLs
+3. **Consistent Quality:** Same search patterns for every report
+4. **Audit Trail:** Search queries and results stored per step
+5. **Scalable:** Works for any grant type
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| Firecrawl rate limits | Implement retry with backoff; cache common searches |
+| Search returns irrelevant results | Refine query templates; add domain restrictions |
+| Increased pipeline duration | Parallel search execution where possible |
+| Cost increase | Monitor usage; add search result caching |
 
