@@ -80,17 +80,17 @@ export function GenerationProgress({
   const [hasAutoRetried, setHasAutoRetried] = useState(false);
 
   // Show auto-retry for 504/transient errors or other failures
-  const shouldShowAutoRetry = (status === "failed" || status === "stalled") && onRestart && !hasAutoRetried;
+  const shouldShowAutoRetry = (status === "failed" || status === "stalled") && !hasAutoRetried;
   const showNetworkErrorMessage = is504Error && (status === "failed" || status === "stalled");
 
-  // Reset countdown when status changes to failed/stalled
+  // Reset countdown when status changes to failed/stalled (also tracks run ID for repeated failures)
   useEffect(() => {
     if (status === "failed" || status === "stalled") {
       setCountdown(AUTO_RETRY_SECONDS);
       setIsPaused(false);
       setHasAutoRetried(false);
     }
-  }, [status]);
+  }, [status, activeRunId]);
 
   // Countdown timer
   useEffect(() => {
