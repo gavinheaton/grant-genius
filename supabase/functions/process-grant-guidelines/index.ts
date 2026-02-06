@@ -1164,30 +1164,38 @@ Return JSON:
     const stepsNeedingEnhancement: number[] = [];
     for (const step of pipelineData.steps) {
       const score = calculateQualityScore(step.prompt_template);
-      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}`);
-      if (score.level === 'poor') {
+      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}, length=${step.prompt_template.length}`);
+      // Enhance any step that isn't 'good' (score < 70) or is under 1500 chars
+      if (score.level !== 'good' || step.prompt_template.length < 1500) {
         stepsNeedingEnhancement.push(step.step_number);
       }
     }
 
     // Auto-enhance low-quality prompts
     if (stepsNeedingEnhancement.length > 0) {
-      console.log(`Auto-enhancing ${stepsNeedingEnhancement.length} low-quality prompts...`);
+      console.log(`Auto-enhancing ${stepsNeedingEnhancement.length} prompts that don't meet quality standards...`);
 
       const enhancementPrompt = `You are an expert at improving research prompts for grant applications.
 
-The following prompts need quality improvement. For each prompt, enhance it to include:
-1. A clear STEP header with purpose and INPUTS section
-2. A HARD RULES section with 5+ explicit constraints
-3. An OUTPUT JSON SCHEMA with exact field definitions
-4. URL validation requirements
-5. Unknown handling protocol
-6. Placeholder prohibition
+${PROMPT_QUALITY_TEMPLATE}
 
-CRITICAL:
-- Each enhanced prompt MUST be at least 1,500 characters
+${PROMPT_REFERENCE_EXAMPLE}
+
+The following prompts need quality improvement. For each prompt, enhance it to include ALL of these:
+1. A "STEP N — [Purpose]" header with INPUTS section
+2. A "HARD RULES:" section with 5+ explicit constraints including:
+   - "Do NOT invent facts or numbers"
+   - "NEVER use placeholder tokens like [Company] or {value}"
+   - Placeholder prohibition language
+3. An "UNKNOWN HANDLING:" section for missing data
+4. An "OUTPUT JSON SCHEMA:" with exact field definitions
+5. URL validation requirements where applicable
+
+CRITICAL REQUIREMENTS:
+- Each enhanced prompt MUST be at least 1,500 characters (this is mandatory)
 - Template variables {{...}} are ONLY for INPUTS or HARD RULES sections
 - NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions
+- Follow the exact structure from the REFERENCE EXAMPLE
 
 Steps to enhance:
 ${stepsNeedingEnhancement.map(stepNum => {
@@ -1201,7 +1209,7 @@ ${step.prompt_template}
 ---`;
 }).join('\n')}
 
-Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
+Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, ...]}`;
 
       try {
         const enhanceResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
