@@ -1,54 +1,67 @@
 
-# Fix Prompt Quality Issues and Regeneration Flow
+# Fix Cancel Button and Stalled Generation
 
-## Summary
+## Problem Summary
 
-Two issues were identified:
+Two critical edge functions are not deployed, causing:
 
-1. **Regeneration Error** - The `regenerate-step-prompt` edge function was not deployed ✅ RESOLVED
-2. **Low Quality Scores** - Generated prompts score 40-60/100 because they're missing quality markers ✅ FIXED
+1. **Cancel button broken** - `cancel-report-run` function returns 404
+2. **Generation stuck at step 0** - `enqueue-report` function returns 404, so the worker was never triggered
 
-## Issue 1: Regeneration (RESOLVED)
+The logs confirm:
+```
+ERROR enqueue-report failed: 404 - {"code":"NOT_FOUND","message":"Requested function was not found"}
+```
 
-The edge function has been deployed. You can now use the "Regenerate with AI" button for any step.
-
----
-
-## Issue 2: Low Prompt Quality from Pipeline Generation (FIXED)
-
-### Root Cause
-
-The `process-grant-guidelines` edge function was generating prompts that:
-- Were only 1,000-1,200 characters (minimum should be 1,500)
-- Missing "unknown handling" language that scores 10 points
-- Missing "placeholder prohibition" rules that score 10 points
-- Missing explicit `STEP N` headers that score 15 points
-
-### Solution Applied
-
-Updated the `process-grant-guidelines` edge function with:
-
-1. **Added quality templates** (`PROMPT_QUALITY_TEMPLATE` and `PROMPT_REFERENCE_EXAMPLE`) matching the regenerate function
-2. **Enhanced pipeline generation prompt** to explicitly require all quality markers
-3. **Lowered enhancement threshold** - now enhances any prompt that isn't 'good' (score < 70) OR is under 1,500 chars
-4. **Updated enhancement prompt** to use the same templates and reference examples
-
-### Changes Made
-
-**File: `supabase/functions/process-grant-guidelines/index.ts`**
-
-- Lines 205-300: Added `PROMPT_QUALITY_TEMPLATE` and `PROMPT_REFERENCE_EXAMPLE` constants
-- Lines 1016-1080: Updated `pipelinePrompt` to include quality template and explicit requirements
-- Lines 1163-1220: Updated auto-enhancement logic to:
-  - Enhance all prompts scoring < 70 OR under 1,500 chars
-  - Use the quality templates in enhancement prompt
-  - Better error handling for enhancement responses
+The run `bbb56486-6f26-4b97-81e4-d4827ea16f81` was created successfully with 14 steps but never progressed because the worker dispatch failed.
 
 ---
 
-## Testing After Fix
+## Solution
 
-1. Reset the grant version status: `pipeline_generation_status = 'none'`
-2. Re-trigger "Generate Pipeline"
-3. Verify all AI prompt steps score 70+ on quality
-4. Confirm prompts are 1,500+ characters with all quality markers
+### Step 1: Deploy Missing Edge Functions
+
+Deploy both missing functions:
+- `cancel-report-run` - enables users to cancel stuck runs
+- `enqueue-report` - enables report generation to dispatch to external workers
+
+### Step 2: Force-Fail the Stalled Run
+
+After deploying `cancel-report-run`, mark the stuck run as failed and refund the credit:
+
+```sql
+UPDATE report_runs 
+SET status = 'failed', completed_at = now() 
+WHERE id = 'bbb56486-6f26-4b97-81e4-d4827ea16f81';
+
+UPDATE report_run_steps 
+SET status = 'failed', error_message = 'Cancelled - backend deployment issue', completed_at = now()
+WHERE report_run_id = 'bbb56486-6f26-4b97-81e4-d4827ea16f81' 
+  AND status IN ('pending', 'running');
+```
+
+Also refund the credit if one was consumed.
+
+### Step 3: Verify All Critical Functions
+
+Ensure these core functions are deployed:
+- `generate-report` (dispatcher)
+- `enqueue-report` (worker trigger)
+- `cancel-report-run` (cancellation)
+- `resume-report-run` (checkpoint recovery)
+- `worker-proxy` (worker database interface)
+
+---
+
+## Files Changed
+
+No code changes required - only deployment of existing functions.
+
+---
+
+## Testing
+
+After deployment:
+1. Verify the cancel button works on stalled runs
+2. Test a fresh report generation to confirm the full pipeline works
+3. Confirm credits are refunded correctly on cancellation
