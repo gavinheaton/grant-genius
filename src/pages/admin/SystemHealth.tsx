@@ -6,7 +6,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Server, Key, Zap, Rocket } from "lucide-react";
 import { useBackendHealth, FUNCTION_CATEGORIES } from "@/hooks/useBackendHealth";
 import { FunctionCategorySection } from "@/components/admin/FunctionCategorySection";
-import { toast } from "@/hooks/use-toast";
 
 function StatusBadge({ status }: { status: "ok" | "error" | "not_deployed" | "unreachable" }) {
   const variants: Record<typeof status, { variant: "default" | "destructive" | "secondary"; icon: typeof CheckCircle }> = {
@@ -33,8 +32,8 @@ export default function SystemHealth() {
     result, 
     error, 
     deployingFunctions,
-    markDeploying,
-    clearDeploying,
+    deployFunction,
+    deployAllMissing,
     getMissingFunctions,
     getProbesByCategory,
   } = useBackendHealth();
@@ -49,56 +48,17 @@ export default function SystemHealth() {
   const missingFunctions = getMissingFunctions();
   const hasMissing = missingFunctions.length > 0;
 
-  const handleRequestDeploy = (functionName: string) => {
-    markDeploying(functionName);
-    toast({
-      title: "Deployment Requested",
-      description: (
-        <div className="space-y-2">
-          <p>To deploy <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{functionName}</code>:</p>
-          <ol className="list-decimal list-inside text-sm space-y-1">
-            <li>Make a small change to the function code</li>
-            <li>Or click "Publish" to republish the project</li>
-          </ol>
-          <p className="text-xs text-muted-foreground">Edge functions auto-deploy on publish.</p>
-        </div>
-      ),
-      duration: 8000,
-    });
-    
-    // Clear deploying state after a delay
-    setTimeout(() => {
-      clearDeploying(functionName);
-    }, 5000);
+  const handleRequestDeploy = async (functionName: string) => {
+    await deployFunction(functionName);
   };
 
-  const handleDeployAllMissing = () => {
+  const handleDeployAllMissing = async () => {
     setIsDeployingAll(true);
-    missingFunctions.forEach(f => markDeploying(f.name));
-    
-    toast({
-      title: `${missingFunctions.length} Functions Need Deployment`,
-      description: (
-        <div className="space-y-2">
-          <p>Missing functions:</p>
-          <ul className="list-disc list-inside text-sm">
-            {missingFunctions.map(f => (
-              <li key={f.name} className="font-mono text-xs">{f.name}</li>
-            ))}
-          </ul>
-          <p className="text-xs text-muted-foreground mt-2">
-            Click "Publish" in the top right to deploy all functions.
-          </p>
-        </div>
-      ),
-      duration: 10000,
-    });
-    
-    // Clear deploying state after a delay
-    setTimeout(() => {
-      missingFunctions.forEach(f => clearDeploying(f.name));
-      setIsDeployingAll(false);
-    }, 5000);
+    try {
+      await deployAllMissing();
+    } finally {
+      setTimeout(() => setIsDeployingAll(false), 5000);
+    }
   };
 
   return (
