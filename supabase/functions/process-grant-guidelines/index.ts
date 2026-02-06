@@ -1261,7 +1261,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       ...assemblySteps.map(s => ({ ...s, bundle_id: bundle.id }))
     ];
     
-    console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + ${assemblySteps.length} assembly = ${stepsToInsert.length} total`);
+    console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + 1 QA gates + ${assemblySteps.length} assembly = ${stepsToInsert.length} total`);
 
     // Validate finalize_report_html step
     console.log("Step 5.5: Validating assembly step consistency...");
@@ -1269,8 +1269,9 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
     const finalizeStep = assemblySteps.find((s: any) => s.step_name === "finalize_report_html");
     if (finalizeStep) {
       const prompt = finalizeStep.prompt_template;
-      const expectedHtmlStep = `{{step${maxAIStep + 1}}}`;
-      const expectedTablesStep = `{{step${maxAIStep + 2}}}`;
+      // Assembly steps come after QA gates, so references should be maxStepBeforeAssembly + 1/2
+      const expectedHtmlStep = `{{step${maxStepBeforeAssembly + 1}}}`;
+      const expectedTablesStep = `{{step${maxStepBeforeAssembly + 2}}}`;
       
       const validationErrors: string[] = [];
       
@@ -1286,7 +1287,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       
       if (validationErrors.length > 0) {
         console.error("Assembly validation failed:", validationErrors);
-        const correctTemplate = createHtmlAssemblySteps(maxAIStep)[2];
+        const correctTemplate = createHtmlAssemblySteps(maxStepBeforeAssembly)[2];
         const insertIdx = stepsToInsert.findIndex((s: any) => s.step_name === "finalize_report_html");
         if (insertIdx !== -1) {
           console.log("Auto-fixing finalize_report_html step...");
