@@ -150,6 +150,34 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
 
   const content = contentJson as Record<string, unknown>;
   
+  // Case 0: Step-based format (from Cloud Run worker) - finalize_report_html, assemble_sections_html as top keys
+  const stepKeys = ['finalize_report_html', 'assemble_sections_html', 'build_tables_sources_html'];
+  for (const key of stepKeys) {
+    if (content[key]) {
+      let stepData = content[key];
+      
+      // Parse if it's a JSON string
+      if (typeof stepData === 'string') {
+        try {
+          stepData = JSON.parse(stepData);
+        } catch {
+          continue;
+        }
+      }
+      
+      const stepObj = stepData as Record<string, unknown>;
+      if (stepObj.report_html && typeof stepObj.report_html === 'string') {
+        return {
+          html: stepObj.report_html,
+          tables: stepObj.tables as ExtractedHtmlReport["tables"],
+          sources: stepObj.all_sources as ExtractedHtmlReport["sources"],
+          dataGaps: stepObj.data_gaps as string[],
+          isLegacy: false,
+        };
+      }
+    }
+  }
+  
   // Case 1: New HTML format - content.assembledReport.report_html
   const assembledReport = content.assembledReport as Record<string, unknown> | undefined;
   

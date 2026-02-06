@@ -95,8 +95,8 @@ export function useReportGeneration(
   const [isLoadingReports, setIsLoadingReports] = useState(true);
   const [steps, setSteps] = useState<ReportRunStep[]>([]);
 
-  // Calculate completed steps from steps array
-  const completedSteps = steps.filter(s => s.status === 'completed').length;
+  // Calculate completed steps from steps array (include failed steps as they still represent progress)
+  const completedSteps = steps.filter(s => s.status === 'completed' || s.status === 'failed').length;
 
   // Fetch existing reports for this application
   const fetchReports = useCallback(async () => {
