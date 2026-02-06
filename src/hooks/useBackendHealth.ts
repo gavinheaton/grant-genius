@@ -238,6 +238,87 @@ export function useBackendHealth() {
     });
   }, []);
 
+  // Real deployment using the trigger-deploy edge function
+  const deployFunctions = useCallback(async (functionNames: string[]): Promise<boolean> => {
+    if (functionNames.length === 0) return false;
+    
+    // Mark all as deploying
+    functionNames.forEach(fn => {
+      setDeployingFunctions(prev => new Set(prev).add(fn));
+    });
+    
+    try {
+      const { data, error } = await supabase.functions.invoke("trigger-deploy", {
+        body: { functionNames },
+      });
+      
+      if (error) {
+        console.error("Deploy error:", error);
+        toast({
+          title: "Deployment Failed",
+          description: error.message || "Could not trigger deployment",
+          variant: "destructive",
+        });
+        return false;
+      }
+      
+      // Check if deployment API is not available (503 response)
+      if (data?.error === "Deployment API not available") {
+        toast({
+          title: "Manual Deployment Required",
+          description: data.message || "Click 'Publish' to deploy all functions.",
+          duration: 8000,
+        });
+        return false;
+      }
+      
+      if (data?.success) {
+        toast({
+          title: "Deployment Started",
+          description: `Deploying: ${functionNames.join(", ")}. Refreshing status in a few seconds...`,
+        });
+        
+        // Wait a bit then refresh health check
+        setTimeout(() => {
+          checkHealth();
+        }, 5000);
+        
+        return true;
+      }
+      
+      return false;
+    } catch (err) {
+      console.error("Deploy exception:", err);
+      toast({
+        title: "Deployment Error",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+      return false;
+    } finally {
+      // Clear deploying state after a delay
+      setTimeout(() => {
+        functionNames.forEach(fn => {
+          setDeployingFunctions(prev => {
+            const next = new Set(prev);
+            next.delete(fn);
+            return next;
+          });
+        });
+      }, 5000);
+    }
+  }, [checkHealth]);
+
+  const deployFunction = useCallback(async (functionName: string): Promise<boolean> => {
+    return deployFunctions([functionName]);
+  }, [deployFunctions]);
+
+  const deployAllMissing = useCallback(async (): Promise<boolean> => {
+    const missing = getMissingFunctions();
+    if (missing.length === 0) return false;
+    return deployFunctions(missing.map(f => f.name));
+  }, [deployFunctions, getMissingFunctions]);
+
   const getMissingFunctions = useCallback(() => {
     return result?.functionProbes.filter(p => p.status === "not_deployed") ?? [];
   }, [result]);
@@ -258,6 +339,9 @@ export function useBackendHealth() {
     result,
     error,
     deployingFunctions,
+    deployFunction,
+    deployFunctions,
+    deployAllMissing,
     markDeploying,
     clearDeploying,
     getMissingFunctions,
