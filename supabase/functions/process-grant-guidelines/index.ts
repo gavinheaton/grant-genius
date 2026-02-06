@@ -2053,39 +2053,50 @@ Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, .
     
     console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + 1 QA gates + ${assemblySteps.length} assembly = ${stepsToInsert.length} total`);
 
-    // Validate finalize_report_html step
-    console.log("Step 5.5: Validating assembly step consistency...");
+    // Validate finalize_report_html step for 4-step assembly architecture
+    // Assembly steps: +1 = assemble_sections, +2 = build_tables, +3 = clean_citations_apa, +4 = finalize
+    console.log("Step 5.5: Validating assembly step consistency (4-step architecture)...");
     
     const finalizeStep = assemblySteps.find((s: any) => s.step_name === "finalize_report_html");
+    const cleanCitationsStep = assemblySteps.find((s: any) => s.step_name === "clean_citations_apa");
+    
+    const validationErrors: string[] = [];
+    
+    // Validate clean_citations_apa step exists
+    if (!cleanCitationsStep) {
+      validationErrors.push("Missing clean_citations_apa step (required for APA citation transformation)");
+    }
+    
     if (finalizeStep) {
       const prompt = finalizeStep.prompt_template;
-      // Assembly steps come after QA gates, so references should be maxStepBeforeAssembly + 1/2
+      // Finalize should reference +1 (for data_gaps from assemble) and +3 (for cleaned HTML from clean_citations_apa)
       const expectedHtmlStep = `{{step${maxStepBeforeAssembly + 1}}}`;
-      const expectedTablesStep = `{{step${maxStepBeforeAssembly + 2}}}`;
-      
-      const validationErrors: string[] = [];
+      const expectedCleanedStep = `{{step${maxStepBeforeAssembly + 3}}}`;
       
       if (!prompt.includes(expectedHtmlStep)) {
-        validationErrors.push(`Missing reference to ${expectedHtmlStep}`);
+        validationErrors.push(`Missing reference to ${expectedHtmlStep} (assemble_sections_html)`);
       }
-      if (!prompt.includes(expectedTablesStep)) {
-        validationErrors.push(`Missing reference to ${expectedTablesStep}`);
+      if (!prompt.includes(expectedCleanedStep)) {
+        validationErrors.push(`Missing reference to ${expectedCleanedStep} (clean_citations_apa output)`);
       }
       if (!prompt.includes('"report_html"')) {
         validationErrors.push("Missing 'report_html' field in OUTPUT SCHEMA");
       }
-      
-      if (validationErrors.length > 0) {
-        console.error("Assembly validation failed:", validationErrors);
-        const correctTemplate = createHtmlAssemblySteps(maxStepBeforeAssembly)[2];
-        const insertIdx = stepsToInsert.findIndex((s: any) => s.step_name === "finalize_report_html");
-        if (insertIdx !== -1) {
-          console.log("Auto-fixing finalize_report_html step...");
-          stepsToInsert[insertIdx].prompt_template = correctTemplate.prompt_template;
-        }
-      } else {
-        console.log("Assembly step validation passed ✓");
+    } else {
+      validationErrors.push("Missing finalize_report_html step");
+    }
+    
+    if (validationErrors.length > 0) {
+      console.error("Assembly validation failed:", validationErrors);
+      // finalize_report_html is now at index 3 (4-step assembly)
+      const correctTemplate = createHtmlAssemblySteps(maxStepBeforeAssembly)[3];
+      const insertIdx = stepsToInsert.findIndex((s: any) => s.step_name === "finalize_report_html");
+      if (insertIdx !== -1 && correctTemplate) {
+        console.log("Auto-fixing finalize_report_html step...");
+        stepsToInsert[insertIdx].prompt_template = correctTemplate.prompt_template;
       }
+    } else {
+      console.log("Assembly step validation passed ✓ (4-step architecture with APA citations)");
     }
 
     const { error: stepsError } = await supabaseAdmin
