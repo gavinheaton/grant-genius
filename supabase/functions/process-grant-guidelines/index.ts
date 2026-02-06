@@ -1177,7 +1177,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: step.step_config_json,
       model_override: null,
       is_heavy: false,
-      phase: step.phase
+      is_assembly_step: false
     }));
     
     console.log(`Created ${firecrawlSteps.length} Firecrawl data-gathering steps`);
@@ -1194,7 +1194,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: step.model_tier === "pro",
-      phase: "research"
+      is_assembly_step: false
     }));
     
     const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
@@ -1211,7 +1211,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[qaGatesTemplate.model_tier] || null,
       is_heavy: false,
-      phase: qaGatesTemplate.phase
+      is_assembly_step: false
     };
     
     // Max step is now after QA gates
@@ -1228,7 +1228,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: false,
-      phase: step.phase
+      is_assembly_step: true
     }));
 
     // Create the prompt bundle
