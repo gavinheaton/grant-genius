@@ -373,6 +373,9 @@ export default function AdminDashboard() {
               />
             </CardContent>
           </Card>
+
+          {/* Backend Health Widget */}
+          <QuickHealthWidget />
         </div>
       </div>
     </div>
