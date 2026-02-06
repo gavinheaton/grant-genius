@@ -1,112 +1,250 @@
 
-# Fix: Standardize CORS Headers Across All Edge Functions
 
-## Problem Summary
+# Super Admin AI Assistant
 
-Two issues were reported:
-1. **Errors persist** - Various edge functions are failing from the custom domain (`grantgenius.disruptorsco.com`)
-2. **Cancel button disappeared** - The Cancel Generation button is not appearing
+## Overview
 
-## Root Cause
+Build an AI-powered Admin Assistant accessible only to Super Admins that can:
+1. **Execute SQL queries** against the database (read-only or with write capabilities)
+2. **Analyze and troubleshoot** failed report runs
+3. **Provide system diagnostics** and recommend actions
+4. **Explain deployment status** and guide on republishing
 
-The **cancel-report-run** edge function (along with 12 other functions) has incomplete CORS headers:
+This won't embed the Lovable editor itself (not technically possible), but creates a purpose-built AI assistant that handles the specific admin tasks you'd typically ask Lovable to do.
 
-```typescript
-// Current (incomplete) - Lines 4-8 in cancel-report-run/index.ts
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
+## Architecture
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                    Admin AI Assistant Page                       │
+│  /admin/assistant (Super Admin only)                             │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  Chat Interface                                              ││
+│  │  ┌─────────────────────────────────────────────────────────┐││
+│  │  │ [AI] How can I help you manage Grant Genius today?     │││
+│  │  ├─────────────────────────────────────────────────────────┤││
+│  │  │ [User] Show me all failed runs from today              │││
+│  │  ├─────────────────────────────────────────────────────────┤││
+│  │  │ [AI] I found 3 failed runs today:                      │││
+│  │  │      • Run abc123 - Step 5 timeout (user@email.com)    │││
+│  │  │      • Run def456 - AI rate limited (other@email.com)  │││
+│  │  │      ...                                                │││
+│  │  │      Would you like me to analyze the errors?          │││
+│  │  └─────────────────────────────────────────────────────────┘││
+│  │  ┌─────────────────────────────────────────────────────────┐││
+│  │  │  [Input: Type your question or command...]      [Send] │││
+│  │  └─────────────────────────────────────────────────────────┘││
+│  └─────────────────────────────────────────────────────────────┘│
+│                                                                  │
+│  Quick Actions Panel:                                            │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐             │
+│  │ Query DB     │ │ Analyze Runs │ │ System Status│             │
+│  └──────────────┘ └──────────────┘ └──────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Missing headers that the Supabase JS client sends:
-- `x-supabase-client-platform-version`
-- `x-supabase-client-runtime`
-- `x-supabase-client-runtime-version`
+## Capabilities
 
-When the browser preflight check fails, the function invocation silently fails, making it appear as if the Cancel button doesn't exist (the UI likely hides it when the `cancelRun` function fails).
+### 1. SQL Query Execution
+The assistant can run SQL queries against the database:
 
-## Functions Requiring Updates
+**User**: "Show me all users who signed up this week"
+**AI**: Executes query, formats and displays results as a table
 
-| Function | Status | Impact |
-|----------|--------|--------|
-| cancel-report-run | ❌ Outdated | Cancel button broken |
-| resume-report-run | ❌ Outdated | Resume Report broken |
-| clear-and-restart-run | ❌ Outdated | Clear & Restart broken |
-| enqueue-report | ❌ Outdated | Report generation broken |
-| create-checkout | ❌ Outdated | Purchases broken |
-| generate-pdf | ❌ Outdated | PDF exports broken |
-| worker-proxy | ❌ Outdated | Worker communication broken |
-| regenerate-step-prompt | ❌ Outdated | Admin prompt editing broken |
-| process-grant-guidelines | ❌ Outdated | Guidelines processing broken |
-| invite-admin | ❌ Outdated | Admin invites broken |
-| analyze-grant-guidelines | ❌ Outdated | Grant analysis broken |
-| send-report-email | ❌ Outdated | Email notifications broken |
-| enqueue-cloud-run | ❌ Outdated | Cloud Run dispatch broken |
+**User**: "How many reports completed successfully yesterday?"
+**AI**: Runs aggregation query, returns count with context
 
-## Solution
+### 2. Report Run Diagnostics
+**User**: "Why did run abc123 fail?"
+**AI**: Fetches run details, step outputs, error messages, and provides analysis
 
-Update the `corsHeaders` object in all 13 functions to match the working standard:
+**User**: "Resume the stalled runs"
+**AI**: Lists stalled runs and offers to invoke resume-report-run function
 
-```typescript
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
+### 3. System Health Analysis
+**User**: "Are there any edge functions not deployed?"
+**AI**: Calls system-health endpoint, analyzes response, lists issues
+
+**User**: "What's the success rate this week?"
+**AI**: Queries report_runs, calculates metrics, provides insights
+
+### 4. Guided Actions
+**User**: "Deploy the missing functions"
+**AI**: Explains that functions deploy on Publish, provides clear instructions
+
+## Technical Implementation
+
+### New Files to Create
+
+| File | Purpose |
+|------|---------|
+| `src/pages/admin/AdminAssistant.tsx` | Main page with chat UI |
+| `src/components/admin/AdminChatInterface.tsx` | Chat message display and input |
+| `src/components/admin/AdminChatMessage.tsx` | Individual message component (supports markdown, tables) |
+| `src/hooks/useAdminAssistant.ts` | Hook for AI interactions and streaming |
+| `supabase/functions/admin-assistant/index.ts` | Edge function with tool-calling AI |
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/App.tsx` | Add route for `/admin/assistant` |
+| `src/components/admin/AdminSidebar.tsx` | Add "AI Assistant" nav item (Super Admin only) |
+| `supabase/config.toml` | Register new edge function |
+
+### Edge Function Design
+
+The `admin-assistant` edge function will use Lovable AI with **tool calling** for structured operations:
+
+**Available Tools for the AI:**
+1. `execute_sql` - Run read-only SQL queries
+2. `get_run_details` - Fetch detailed info about a report run
+3. `list_stalled_runs` - Get currently stalled runs
+4. `invoke_function` - Call other edge functions (resume, cancel, etc.)
+5. `check_system_health` - Get function deployment status
+
+**Security:**
+- Super Admin role verification required
+- SQL queries are read-only by default (SELECT only)
+- Dangerous operations require confirmation
+- All actions logged to audit_logs table
+
+### UI Components
+
+**Chat Interface Features:**
+- Streaming responses (token-by-token rendering)
+- Markdown rendering for AI responses
+- Code blocks with syntax highlighting for SQL
+- Data tables for query results
+- Quick action buttons for common tasks
+- Message history within session
+
+## Files and Changes
+
+### 1. New Edge Function
+**File**: `supabase/functions/admin-assistant/index.ts`
+
+- Verify super_admin role
+- System prompt with Grant Genius context
+- Tool definitions for SQL, run analysis, function invocation
+- Streaming response back to client
+- Audit logging for all actions
+
+### 2. Admin Assistant Page
+**File**: `src/pages/admin/AdminAssistant.tsx`
+
+- Full-height chat interface
+- Message history state
+- Quick action buttons
+- Loading/streaming states
+
+### 3. Chat Components
+**File**: `src/components/admin/AdminChatInterface.tsx`
+
+- ScrollArea for messages
+- Input with send button
+- Streaming text display
+
+**File**: `src/components/admin/AdminChatMessage.tsx`
+
+- ReactMarkdown for AI responses
+- Table rendering for query results
+- Code block formatting
+
+### 4. Hook for AI Interactions
+**File**: `src/hooks/useAdminAssistant.ts`
+
+- SSE streaming implementation
+- Message state management
+- Tool result handling
+
+### 5. Routing and Navigation
+**File**: `src/App.tsx`
+- Add route: `/admin/assistant`
+
+**File**: `src/components/admin/AdminSidebar.tsx`
+- Add "AI Assistant" item to System section (Super Admin only)
+
+## Sample Interactions
+
+### Query Example
+```
+User: Show me the top 5 users by report count
+
+AI: I'll query the database for that information.
+
+[Executing SQL...]
+
+| Email              | Reports | Success Rate |
+|--------------------|---------|--------------|
+| alice@example.com  | 15      | 93%          |
+| bob@example.com    | 12      | 83%          |
+| carol@example.com  | 8       | 100%         |
+| dave@example.com   | 6       | 67%          |
+| eve@example.com    | 5       | 80%          |
+
+Alice is your most active user with 15 reports and a 93% success rate!
 ```
 
-## Files to Modify
+### Diagnostics Example
+```
+User: Why is run xyz failing?
 
-1. `supabase/functions/cancel-report-run/index.ts` - Lines 4-8
-2. `supabase/functions/resume-report-run/index.ts` - Lines 4-8
-3. `supabase/functions/clear-and-restart-run/index.ts` - Lines 4-8
-4. `supabase/functions/enqueue-report/index.ts` - Lines 3-7
-5. `supabase/functions/create-checkout/index.ts` - Lines 5-9
-6. `supabase/functions/generate-pdf/index.ts` - Lines 3-7
-7. `supabase/functions/worker-proxy/index.ts` - Lines 5-9
-8. `supabase/functions/regenerate-step-prompt/index.ts` - Lines 4-8
-9. `supabase/functions/process-grant-guidelines/index.ts` - Lines 4-8
-10. `supabase/functions/invite-admin/index.ts` - Lines 4-8
-11. `supabase/functions/analyze-grant-guidelines/index.ts` - Lines 4-8
-12. `supabase/functions/send-report-email/index.ts` - Lines 4-8
-13. `supabase/functions/enqueue-cloud-run/index.ts` - Lines 4-8
+AI: Let me analyze run xyz...
 
-## Technical Details
+**Run Details:**
+- Application: "Renewable Energy Commercialization"
+- User: researcher@university.edu
+- Status: Failed at Step 7 (market_analysis)
 
-### Why the Cancel Button Disappeared
+**Error:**
+> Rate limit exceeded. Please try again later.
 
-Looking at the UI component (`GenerationProgress.tsx`), the Cancel button is conditionally rendered:
+**Analysis:**
+This run failed due to AI rate limiting, likely from too many concurrent 
+requests. The user's previous step (competitor_research) completed 
+successfully, so all data up to step 6 is preserved.
 
-```tsx
-{onCancel && (
-  <Button onClick={onCancel}>Cancel Generation</Button>
-)}
+**Recommended Actions:**
+1. Wait 5 minutes, then resume the run
+2. Or I can invoke the resume function now - shall I proceed?
 ```
 
-The `onCancel` prop comes from `useReportGeneration` hook's `cancelRun` function. When called from the custom domain, the CORS preflight fails silently, which may cause React Query or the Supabase client to throw errors that affect the conditional rendering.
+### Deployment Guidance
+```
+User: The cancel-report-run function isn't working
 
-### Standard CORS Headers
+AI: Let me check the deployment status...
 
-All edge functions should use identical CORS headers to ensure consistent behavior across all origins:
+[Checking system health...]
 
-```typescript
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
+**Status:** The `cancel-report-run` function is deployed and responding.
+
+However, I see the function was recently updated (CORS headers changed).
+If you made code changes in Lovable but haven't published yet, the 
+deployed version won't have those changes.
+
+**To deploy the latest version:**
+1. Click the **Publish** button in the top-right corner of Lovable
+2. Wait ~30-60 seconds for deployment
+3. Test the function again
+
+Would you like me to check the function's response headers?
 ```
 
-## Expected Outcome
+## Security Considerations
 
-After updating all 13 functions:
-1. Cancel button will appear and work correctly
-2. Resume/Retry actions will work
-3. Report generation will function properly
-4. PDF exports will work
-5. Payment checkout will work
-6. All admin operations will function correctly
+1. **Super Admin Only**: The assistant is only accessible to super_admin role users
+2. **Read-Only SQL Default**: SQL queries are SELECT-only unless explicitly enabled
+3. **Audit Trail**: All AI interactions and tool executions are logged
+4. **Rate Limiting**: Prevent abuse with request limits
+5. **No Secret Exposure**: Never expose API keys or sensitive config values
+
+## Dependencies
+
+- Uses existing Lovable AI gateway (already configured)
+- Uses existing authentication (useAdminAuth hook)
+- Uses existing UI components (Card, Button, ScrollArea, etc.)
+- react-markdown for message rendering (already available)
+
