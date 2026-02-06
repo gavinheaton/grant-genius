@@ -1000,11 +1000,15 @@ Return ONLY valid JSON matching the schema.`;
       })
       .eq("id", grant_version_id);
 
-    console.log("Step 3: Generating archetype-specific research pipeline...");
+    console.log("Step 3: Generating rubric + required inputs driven research pipeline...");
 
     // ========== AI CALL #2: Generate Research Pipeline ==========
     const grantName = (grantVersion as any).grant?.name || "Grant";
     const rubricSections = suggestions.rubric?.sections || [];
+    
+    // Format rubric and required inputs as JSON for authoritative inputs
+    const formattedRequiredInputs = JSON.stringify(suggestions.required_inputs || [], null, 2);
+    const formattedRubricJson = JSON.stringify(suggestions.rubric || { sections: [] }, null, 2);
     
     const formattedRubric = rubricSections.map((s: any) => 
       `## ${s.title} ${s.weight ? `(${s.weight}% weight)` : ''}\n${s.description || ''}\nCriteria: ${(s.criteria || []).join('; ')}`
@@ -1014,66 +1018,134 @@ Return ONLY valid JSON matching the schema.`;
       `- ${m.role_name}: ${m.role_goal}`
     ).join('\n');
 
-    const pipelinePrompt = `You are an expert at designing high-quality research pipelines for ${archetype} grant applications.
+    const pipelinePrompt = `You are an expert at designing high-quality, audit-ready research pipelines for ${archetype} grant applications.
 
 Context:
-- Grant: ${grantName}
-- Archetype: ${archetype}
-- Summary: ${suggestions.grant_summary || 'Grant application'}
+  Grant: ${grantName}
+  Archetype: ${archetype} (helper only)
+  Summary: ${suggestions.grant_summary || 'Grant application'}
 
-Rubric/Assessment Criteria:
-${formattedRubric}
+Authoritative Inputs:
+  Required Inputs (JSON): ${formattedRequiredInputs}
+  Rubric/Assessment Criteria (JSON): ${formattedRubricJson}
+  Grant Guidelines: ${guidelines_text.substring(0, 15000)}
 
 REQUIRED MODULES FOR THIS ARCHETYPE:
 ${modulesDescription}
 
 ${WRITER_STANCE_PREAMBLE}
 
+KEY CHANGE: PIPELINE MUST BE RUBRIC + REQUIRED INPUTS DRIVEN (NOT ARCHETYPE DRIVEN)
+
+Before generating steps, you MUST internally derive:
+A) Rubric Coverage Plan
+   - For each rubric section: key, title, weight
+   - For each criterion: what evidence is required to score well
+
+B) Required Inputs Plan
+   - Identify which required inputs exist vs are missing (these become unknowns/questions)
+   - Identify compliance constraints from guidelines if present (page limits, forbidden claims, mandatory attachments)
+
+C) Depth Control by Weight
+   - weight >= 35% → allocate 3–5 steps of evidence gathering to that rubric area
+   - weight 20–34% → allocate 2–3 steps
+   - weight < 20% → allocate 1–2 steps
+
+You do NOT output this plan; you use it to design the steps.
+
+REQUIRED PIPELINE STRUCTURE (hard requirements):
+You MUST include these steps in every pipeline:
+
+Step 0: build_source_pack (ALWAYS first)
+  - Curates authoritative sources.
+
+Step 1: rubric_coverage_map
+  - Converts rubric into an assessor-facing evidence checklist and scoring intent.
+
+Step 2: inputs_and_compliance_gap_check
+  - Uses REQUIRED_INPUTS_JSON + guidelines to produce:
+    - required_present / required_missing
+    - questions_for_applicant
+    - compliance constraints discovered
+
+Then include research steps aligned to the rubric/modules.
+
+Final required research steps:
+  - report_assembly (structured narrative blocks + table anchors; still JSON)
+  - finalize_citations (consolidated sources + validation that every cited source_id exists; still JSON)
+
+DO NOT include HTML assembly steps — those are added automatically.
+
+MANDATORY PROMPT STRUCTURE (every research step MUST include ALL of these):
+
+1. CONTEXT HEADER
+   Must start with: STEP N — [Purpose]
+   Must include INPUTS: listing variables used, e.g. {{summary}}, {{step0}}
+
+2. HARD RULES SECTION
+   Include 8+ explicit constraints, including:
+   - Do NOT invent facts or numbers
+   - Only include sources you can validate as real
+   - If specific data unavailable, use proxy calculations with shown methodology
+   - NEVER use placeholder tokens like [Company] or {value}
+   - Prefer Australian authoritative sources (.gov.au, .edu.au) when relevant
+   - Output valid JSON only
+   - Use "Unknown (no validated source found)" only when genuinely unsupported
+   - All numeric claims must have source_id
+
+3. OUTPUT SCHEMA
+   Define exact JSON structure with:
+   - Every field name with its type
+   - Constraints (required, max_length, etc.)
+   - Example values
+   IMPORTANT: Do not include template variables inside schema field descriptions.
+
+4. URL VALIDATION RULES (when sources required)
+   - Every source MUST have a valid URL or explicit "URL not available"
+   - Prefer government, academic, regulator, or peak-body sources
+   - If URL cannot be verified, mark confidence low
+
+5. UNKNOWN HANDLING PROTOCOL
+   - If data unavailable, provide conservative proxy estimate with calculation shown
+   - Include 'unknowns' array listing what couldn't be found and what would resolve it
+   - Use "Not publicly disclosed" where appropriate
+
+MINIMUM PROMPT LENGTH: Each research step prompt MUST be at least 1,500 characters.
+
+APPROVED VARIABLES:
+Only these variables may appear in prompt_template INPUTS/HARD RULES:
+{{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}},
+{{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
+{{requiredInputs}}, {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
+
 ${PROMPT_QUALITY_TEMPLATE}
 
 ${PROMPT_REFERENCE_EXAMPLE}
 
-Design a research pipeline that addresses the rubric criteria. 
-
-=== CRITICAL PROMPT QUALITY REQUIREMENTS ===
-Each prompt_template you generate MUST:
-1. Be at least 1,500 characters long
-2. Start with "STEP N — [Purpose]" header and INPUTS section
-3. Include a "HARD RULES:" section with 5+ explicit constraints including:
-   - "Do NOT invent facts or numbers"
-   - "NEVER use placeholder tokens like [Company] or {value}"
-   - Placeholder prohibition rule
-4. Include an "UNKNOWN HANDLING:" section specifying how to handle missing data
-5. Include an "OUTPUT JSON SCHEMA:" section with exact field definitions
-6. Include URL validation requirements where applicable
-
-=== RESEARCH FOCUS ===
-Generate steps that produce CITABLE EVIDENCE, not application writing. Each step should gather external data.
-
-REQUIRED PIPELINE STRUCTURE:
-- Step 0: build_source_pack (ALWAYS first - curates authoritative sources)
-- Steps 1-N: Research steps aligned with modules and rubric sections
-- Final steps: report_assembly and finalize_citations
-
-DO NOT include HTML assembly steps - these are added automatically.
-
-For each step:
-- step_number: Sequential integer starting at 0
-- step_name: snake_case identifier
-- step_description: What research this step produces
-- prompt_template: Full prompt with all quality sections (1,500+ chars minimum)
-  APPROVED VARIABLES: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}, 
-  {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
-  {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
-- model_tier: "lite" | "balanced" | "pro"
+Output integrity rules:
+- step_number sequential from 0 with no gaps
+- step_name snake_case unique
+- include at least 8 total steps
+- include Step 1 rubric_coverage_map and Step 2 inputs_and_compliance_gap_check
+- include final report_assembly and finalize_citations steps
 
 Return JSON:
 {
   "pipeline_name": "string",
   "pipeline_description": "string",
   "system_prompt": "string",
-  "steps": [...]
-}`;
+  "steps": [
+    {
+      "step_number": 0,
+      "step_name": "build_source_pack",
+      "step_description": "string",
+      "prompt_template": "string (1,500+ chars)",
+      "model_tier": "lite" | "balanced" | "pro"
+    }
+  ]
+}
+
+Now generate the pipeline steps using the rubric weights and required inputs as the primary driver.`;
 
     const pipelineResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
