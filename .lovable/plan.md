@@ -1,250 +1,259 @@
 
 
-# Super Admin AI Assistant
+# Replit Worker Fix: Finalize Step Logic
 
-## Overview
+## The Problem
 
-Build an AI-powered Admin Assistant accessible only to Super Admins that can:
-1. **Execute SQL queries** against the database (read-only or with write capabilities)
-2. **Analyze and troubleshoot** failed report runs
-3. **Provide system diagnostics** and recommend actions
-4. **Explain deployment status** and guide on republishing
+The external worker currently fails at the `finalize_report_html` step with:
+> "Finalize FAILED: No step output found with 'report_html' field"
 
-This won't embed the Lovable editor itself (not technically possible), but creates a purpose-built AI assistant that handles the specific admin tasks you'd typically ask Lovable to do.
+This happens because the worker checks for `report_html` in **previous steps** before running the finalize AI prompt. But `report_html` doesn't exist yet - it's supposed to be **created** by the finalize step.
 
-## Architecture
+## Copy This Prompt to Replit
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    Admin AI Assistant Page                       │
-│  /admin/assistant (Super Admin only)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │  Chat Interface                                              ││
-│  │  ┌─────────────────────────────────────────────────────────┐││
-│  │  │ [AI] How can I help you manage Grant Genius today?     │││
-│  │  ├─────────────────────────────────────────────────────────┤││
-│  │  │ [User] Show me all failed runs from today              │││
-│  │  ├─────────────────────────────────────────────────────────┤││
-│  │  │ [AI] I found 3 failed runs today:                      │││
-│  │  │      • Run abc123 - Step 5 timeout (user@email.com)    │││
-│  │  │      • Run def456 - AI rate limited (other@email.com)  │││
-│  │  │      ...                                                │││
-│  │  │      Would you like me to analyze the errors?          │││
-│  │  └─────────────────────────────────────────────────────────┘││
-│  │  ┌─────────────────────────────────────────────────────────┐││
-│  │  │  [Input: Type your question or command...]      [Send] │││
-│  │  └─────────────────────────────────────────────────────────┘││
-│  └─────────────────────────────────────────────────────────────┘│
-│                                                                  │
-│  Quick Actions Panel:                                            │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐             │
-│  │ Query DB     │ │ Analyze Runs │ │ System Status│             │
-│  └──────────────┘ └──────────────┘ └──────────────┘             │
-└─────────────────────────────────────────────────────────────────┘
+I need you to fix a bug in the report generation worker's finalize step logic.
+
+## Current Behavior (BROKEN)
+
+When processing the terminal assembly step (named "finalize_report_html"), the worker:
+1. Looks for a "report_html" field in previous step outputs
+2. If not found, immediately fails with "No step output found with 'report_html' field"
+3. Never executes the AI prompt for the finalize step
+
+## Required Behavior (CORRECT)
+
+For the step named "finalize_report_html" (the terminal assembly step):
+
+1. **FIRST**: Execute the AI prompt for this step
+   - The prompt is designed to merge data from previous steps:
+     - Step N-2 ("assemble_sections_html"): contains `sections_html` field
+     - Step N-1 ("build_tables_sources_html"): contains `tables` and `all_sources` fields
+   - The AI should output a JSON object with `report_html` field
+
+2. **SECOND**: Check if the AI response contains `report_html`
+   - If yes: use it and call save_report with the content
+   - If no or empty: proceed to fallback
+
+3. **THIRD (FALLBACK ONLY)**: If AI fails or returns empty:
+   - Get `sections_html` from step_outputs["stepN-2"] (the assemble_sections_html step)
+   - Get `tables` and `all_sources` from step_outputs["stepN-1"] (the build_tables_sources_html step)
+   - Perform deterministic merge:
+     - Replace anchors like `<!-- TABLE:competitors -->` with corresponding table HTML
+     - Append references section from all_sources
+   - Save the merged result as report_html
+
+## Worker-Proxy API Contract
+
+The worker communicates with Supabase via POST requests to the worker-proxy edge function.
+
+### Authentication
+All requests require:
+```
+Authorization: Bearer ${WORKER_SECRET}
+Content-Type: application/json
 ```
 
-## Capabilities
-
-### 1. SQL Query Execution
-The assistant can run SQL queries against the database:
-
-**User**: "Show me all users who signed up this week"
-**AI**: Executes query, formats and displays results as a table
-
-**User**: "How many reports completed successfully yesterday?"
-**AI**: Runs aggregation query, returns count with context
-
-### 2. Report Run Diagnostics
-**User**: "Why did run abc123 fail?"
-**AI**: Fetches run details, step outputs, error messages, and provides analysis
-
-**User**: "Resume the stalled runs"
-**AI**: Lists stalled runs and offers to invoke resume-report-run function
-
-### 3. System Health Analysis
-**User**: "Are there any edge functions not deployed?"
-**AI**: Calls system-health endpoint, analyzes response, lists issues
-
-**User**: "What's the success rate this week?"
-**AI**: Queries report_runs, calculates metrics, provides insights
-
-### 4. Guided Actions
-**User**: "Deploy the missing functions"
-**AI**: Explains that functions deploy on Publish, provides clear instructions
-
-## Technical Implementation
-
-### New Files to Create
-
-| File | Purpose |
-|------|---------|
-| `src/pages/admin/AdminAssistant.tsx` | Main page with chat UI |
-| `src/components/admin/AdminChatInterface.tsx` | Chat message display and input |
-| `src/components/admin/AdminChatMessage.tsx` | Individual message component (supports markdown, tables) |
-| `src/hooks/useAdminAssistant.ts` | Hook for AI interactions and streaming |
-| `supabase/functions/admin-assistant/index.ts` | Edge function with tool-calling AI |
-
-### Files to Modify
-
-| File | Change |
-|------|--------|
-| `src/App.tsx` | Add route for `/admin/assistant` |
-| `src/components/admin/AdminSidebar.tsx` | Add "AI Assistant" nav item (Super Admin only) |
-| `supabase/config.toml` | Register new edge function |
-
-### Edge Function Design
-
-The `admin-assistant` edge function will use Lovable AI with **tool calling** for structured operations:
-
-**Available Tools for the AI:**
-1. `execute_sql` - Run read-only SQL queries
-2. `get_run_details` - Fetch detailed info about a report run
-3. `list_stalled_runs` - Get currently stalled runs
-4. `invoke_function` - Call other edge functions (resume, cancel, etc.)
-5. `check_system_health` - Get function deployment status
-
-**Security:**
-- Super Admin role verification required
-- SQL queries are read-only by default (SELECT only)
-- Dangerous operations require confirmation
-- All actions logged to audit_logs table
-
-### UI Components
-
-**Chat Interface Features:**
-- Streaming responses (token-by-token rendering)
-- Markdown rendering for AI responses
-- Code blocks with syntax highlighting for SQL
-- Data tables for query results
-- Quick action buttons for common tasks
-- Message history within session
-
-## Files and Changes
-
-### 1. New Edge Function
-**File**: `supabase/functions/admin-assistant/index.ts`
-
-- Verify super_admin role
-- System prompt with Grant Genius context
-- Tool definitions for SQL, run analysis, function invocation
-- Streaming response back to client
-- Audit logging for all actions
-
-### 2. Admin Assistant Page
-**File**: `src/pages/admin/AdminAssistant.tsx`
-
-- Full-height chat interface
-- Message history state
-- Quick action buttons
-- Loading/streaming states
-
-### 3. Chat Components
-**File**: `src/components/admin/AdminChatInterface.tsx`
-
-- ScrollArea for messages
-- Input with send button
-- Streaming text display
-
-**File**: `src/components/admin/AdminChatMessage.tsx`
-
-- ReactMarkdown for AI responses
-- Table rendering for query results
-- Code block formatting
-
-### 4. Hook for AI Interactions
-**File**: `src/hooks/useAdminAssistant.ts`
-
-- SSE streaming implementation
-- Message state management
-- Tool result handling
-
-### 5. Routing and Navigation
-**File**: `src/App.tsx`
-- Add route: `/admin/assistant`
-
-**File**: `src/components/admin/AdminSidebar.tsx`
-- Add "AI Assistant" item to System section (Super Admin only)
-
-## Sample Interactions
-
-### Query Example
-```
-User: Show me the top 5 users by report count
-
-AI: I'll query the database for that information.
-
-[Executing SQL...]
-
-| Email              | Reports | Success Rate |
-|--------------------|---------|--------------|
-| alice@example.com  | 15      | 93%          |
-| bob@example.com    | 12      | 83%          |
-| carol@example.com  | 8       | 100%         |
-| dave@example.com   | 6       | 67%          |
-| eve@example.com    | 5       | 80%          |
-
-Alice is your most active user with 15 reports and a 93% success rate!
+### get_run_context
+Get all data needed to execute the pipeline:
+```json
+{
+  "action": "get_run_context",
+  "report_run_id": "uuid-here"
+}
 ```
 
-### Diagnostics Example
-```
-User: Why is run xyz failing?
+Response includes:
+- `run`: { id, status, current_step, total_steps, phase, application: {...} }
+- `prompt_bundle`: { id, system_prompt, steps: [...], is_grant_specific }
+- `grant_context`: { name, guidelines_excerpt, rubric, summary } or null
+- `existing_steps`: Array of { step_number, step_name, status, outputs_json, error_message }
+- `step_outputs`: Normalized map like { "step0": {...}, "step1": {...}, ... } for completed steps
 
-AI: Let me analyze run xyz...
-
-**Run Details:**
-- Application: "Renewable Energy Commercialization"
-- User: researcher@university.edu
-- Status: Failed at Step 7 (market_analysis)
-
-**Error:**
-> Rate limit exceeded. Please try again later.
-
-**Analysis:**
-This run failed due to AI rate limiting, likely from too many concurrent 
-requests. The user's previous step (competitor_research) completed 
-successfully, so all data up to step 6 is preserved.
-
-**Recommended Actions:**
-1. Wait 5 minutes, then resume the run
-2. Or I can invoke the resume function now - shall I proceed?
+### update_step
+Update a step's status/outputs:
+```json
+{
+  "action": "update_step",
+  "report_run_id": "uuid",
+  "step_number": 13,
+  "status": "completed",
+  "outputs_json": { "report_html": "<html>..." },
+  "completed_at": "2024-01-01T00:00:00Z"
+}
 ```
 
-### Deployment Guidance
-```
-User: The cancel-report-run function isn't working
-
-AI: Let me check the deployment status...
-
-[Checking system health...]
-
-**Status:** The `cancel-report-run` function is deployed and responding.
-
-However, I see the function was recently updated (CORS headers changed).
-If you made code changes in Lovable but haven't published yet, the 
-deployed version won't have those changes.
-
-**To deploy the latest version:**
-1. Click the **Publish** button in the top-right corner of Lovable
-2. Wait ~30-60 seconds for deployment
-3. Test the function again
-
-Would you like me to check the function's response headers?
+### save_report
+Create the final report record:
+```json
+{
+  "action": "save_report",
+  "report_run_id": "uuid",
+  "content_json": {
+    "assembledReport": {
+      "title": "Research Report",
+      "report_html": "<html>full report here</html>",
+      "tables": { "competitors": "<table>...</table>" },
+      "all_sources": [{ "title": "Source 1", "url": "https://..." }],
+      "data_gaps": ["Market size for AU not found"]
+    }
+  },
+  "citations_json": [{ "title": "...", "url": "..." }]
+}
 ```
 
-## Security Considerations
+### update_run
+Update run status:
+```json
+{
+  "action": "update_run",
+  "report_run_id": "uuid",
+  "status": "completed",
+  "phase": "complete",
+  "completed_at": "2024-01-01T00:00:00Z"
+}
+```
 
-1. **Super Admin Only**: The assistant is only accessible to super_admin role users
-2. **Read-Only SQL Default**: SQL queries are SELECT-only unless explicitly enabled
-3. **Audit Trail**: All AI interactions and tool executions are logged
-4. **Rate Limiting**: Prevent abuse with request limits
-5. **No Secret Exposure**: Never expose API keys or sensitive config values
+### log_message
+Send real-time logs:
+```json
+{
+  "action": "log_message",
+  "report_run_id": "uuid",
+  "level": "info",
+  "message": "Processing finalize step...",
+  "details": { "any": "json" }
+}
+```
 
-## Dependencies
+## Step Data Structure
 
-- Uses existing Lovable AI gateway (already configured)
-- Uses existing authentication (useAdminAuth hook)
-- Uses existing UI components (Card, Button, ScrollArea, etc.)
-- react-markdown for message rendering (already available)
+Each step in `prompt_bundle.steps` has:
+```typescript
+{
+  step_number: number,          // 0-indexed
+  step_name: string,            // e.g., "finalize_report_html"
+  step_description: string,
+  prompt_template: string,      // May contain {{stepN}} variables
+  model: string,                // Replit-compatible model name
+  step_type: "ai_prompt" | "firecrawl_scrape" | "firecrawl_search",
+  is_assembly_step: boolean,    // True for final assembly steps
+  is_heavy: boolean,
+  timeout_seconds: number | null,
+}
+```
+
+## Variable Substitution
+
+The prompt_template may contain these variables:
+- `{{summary}}`, `{{publicArticleUrl}}`, `{{trl}}`, `{{ipStatus}}` - from application.inputs_json
+- `{{grantName}}`, `{{grantGuidelines}}`, `{{grantRubric}}`, `{{grantSummary}}` - from grant_context
+- `{{stepN}}` - outputs from step N (e.g., {{step11}} for assemble_sections_html output)
+- `{{sources}}` - from step0 if it's a firecrawl step
+
+## Pseudocode for Finalize Step
+
+```python
+def process_finalize_step(step, step_outputs, prompt_bundle, run_context):
+    # 1. Try AI execution first
+    prompt = substitute_variables(step.prompt_template, step_outputs, run_context)
+    
+    try:
+        ai_response = call_gemini(prompt, step.model)
+        parsed = parse_json(ai_response)
+        
+        if parsed.get("report_html") and len(parsed["report_html"]) > 500:
+            # AI succeeded
+            save_step_output(step.step_number, parsed)
+            save_report(build_content_json(parsed))
+            return
+    except Exception as e:
+        log_message("warn", f"AI finalize failed: {e}, attempting fallback")
+    
+    # 2. Fallback: deterministic merge
+    sections_step = find_step_by_name(step_outputs, "assemble_sections_html")
+    tables_step = find_step_by_name(step_outputs, "build_tables_sources_html")
+    
+    if not sections_step or not sections_step.get("sections_html"):
+        raise Error("Cannot recover: no sections_html found")
+    
+    report_html = sections_step["sections_html"]
+    tables = tables_step.get("tables", {}) if tables_step else {}
+    all_sources = tables_step.get("all_sources", []) if tables_step else []
+    
+    # Replace table anchors
+    for table_id, table_html in tables.items():
+        anchor = f"<!-- TABLE:{table_id} -->"
+        if anchor in report_html:
+            report_html = report_html.replace(anchor, table_html)
+    
+    # Append references
+    if all_sources:
+        report_html += build_references_section(all_sources)
+    
+    # 3. Save
+    final_output = {
+        "report_html": report_html,
+        "tables": tables,
+        "all_sources": all_sources,
+        "fallback_used": True
+    }
+    save_step_output(step.step_number, final_output)
+    save_report(build_content_json(final_output))
+```
+
+## Key Fix Location
+
+Look for code that does something like:
+```python
+# BROKEN: Checking BEFORE running the prompt
+if step_name == "finalize_report_html":
+    for key, output in step_outputs.items():
+        if "report_html" in output:
+            # This check happens BEFORE running the AI!
+            ...
+    raise Error("No step output found with report_html")  # <-- This is the bug
+```
+
+Change it to:
+```python
+# CORRECT: Run the prompt FIRST
+if step_name == "finalize_report_html":
+    # 1. Execute the AI prompt first
+    ai_output = run_ai_prompt(step.prompt_template, ...)
+    
+    # 2. Check if AI produced report_html
+    if ai_output.get("report_html"):
+        save_and_complete(ai_output)
+    else:
+        # 3. Only NOW do the fallback
+        fallback_merge(step_outputs)
+```
+
+## Environment Variables
+
+The worker should have:
+- `WORKER_PROXY_URL`: The URL to the worker-proxy edge function
+- `WORKER_SECRET`: Shared secret for authentication
+- `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: For AI calls
+
+## Expected Outcome
+
+After this fix:
+1. Step 13 (finalize_report_html) will execute its AI prompt
+2. The AI will receive {{step11}} (sections_html) and {{step12}} (tables/sources)
+3. The AI will merge them and output report_html
+4. If AI fails, fallback merge will happen
+5. Report will be saved successfully
+```
+
+## Summary
+
+The core issue is that the worker is **checking for output before generating it**. The fix is to:
+
+1. Run the AI prompt for the finalize step first
+2. Only check for `report_html` in the AI response (not in previous steps)
+3. Use fallback merge only if AI fails
+
+This matches the intent documented in memory: "The external Cloud Run worker is mandated to execute the AI prompt for the terminal assembly step first to synthesize the report narrative. It utilizes a deterministic, non-AI merge only as a fallback."
 
