@@ -478,6 +478,435 @@ function createDataGatheringSteps(researchDomain: string, archetype: GrantArchet
 }
 
 // ============================================================================
+// GRANT WRITER CORE STEP DEFAULTS
+// ============================================================================
+
+function createDefaultCoreStep(stepName: string, stepNumber: number, description: string) {
+  const stepTemplates: Record<string, string> = {
+    build_source_pack: `STEP 0 — Build Source Pack (Australia-first, domain-agnostic)
+
+${WRITER_STANCE_PREAMBLE}
+
+You are a grant-commercialisation analyst. Your task is to curate a Source Pack of 12–25 high-quality sources relevant to the research domain described by the user.
+
+INPUTS:
+- {{summary}}: The user's 100-word research summary
+- {{grantGuidelines}}: Assessment criteria for this grant
+- {{publicArticleUrl}}: Optional article URL provided by the user
+
+HARD RULES:
+1. Do NOT invent facts or numbers.
+2. Only include sources you can validate as real and relevant.
+3. Prefer Australian authoritative sources first when applicable.
+4. If you cannot find a source type, record it as an Unknown in the unknowns array.
+5. NEVER use placeholder text like "[Source Title]" or "{URL}" - use actual content or 'Not available'.
+6. All source_ids must be sequential (S0-1, S0-2, etc.)
+7. Every source must have a valid URL or explicit "URL not available"
+
+SOURCE PACK REQUIREMENTS:
+Return 12–25 sources total (max 25). Include, where relevant:
+A) Australia-first authoritative sources: ABS, data.gov.au, AIHW, Productivity Commission, NHMRC, CSIRO
+B) Sector/standards/peak bodies relevant to the research domain
+C) Academic publications, market reports, industry statistics
+D) Policy documents and regulatory guidance
+
+UNKNOWN HANDLING:
+- If a source type cannot be found, add to unknowns array with what would resolve it
+- Mark confidence as "low" for sources that cannot be verified
+
+OUTPUT JSON SCHEMA:
+{
+  "sources": [
+    {
+      "source_id": "S0-1",
+      "title": "Cancer in Australia 2023 Report",
+      "publisher": "Australian Institute of Health and Welfare",
+      "url": "https://www.aihw.gov.au/reports/cancer/cancer-in-australia-2023",
+      "date_accessed": "2025-02-01",
+      "relevance": "Provides national cancer incidence and survival statistics",
+      "confidence": "high"
+    }
+  ],
+  "unknowns": [
+    "No accessible market sizing reports specific to this niche technology"
+  ]
+}`,
+
+    rubric_mapping_matrix: `STEP 1 — Rubric Mapping Matrix
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{grantRubric}}: The grant assessment criteria/rubric JSON
+- {{grantGuidelines}}: Full grant guidelines text
+- {{step0}}: Source pack from previous step
+
+PURPOSE:
+Produce a table mapping each rubric criterion → required evidence types → where it will be addressed in the report.
+
+HARD RULES:
+1. Do NOT invent facts or numbers
+2. Do NOT add criteria that are not in the rubric
+3. Each criterion must have specific, measurable evidence requirements
+4. Map evidence requirements to source types (academic, government, industry, etc.)
+5. Identify which criteria have highest weights and need deepest evidence
+6. NEVER use placeholder tokens like [Company] or {value}
+7. All assessment language must be objective and assessor-focused
+8. Preserve exact criterion wording from rubric
+
+UNKNOWN HANDLING:
+- If weight not specified, estimate based on rubric section length and emphasis
+- If criteria are vague, infer specific measurable requirements
+- Include unknowns array for evidence that cannot be determined from rubric
+
+OUTPUT JSON SCHEMA:
+{
+  "rubric_sections": [
+    {
+      "key": "innovation",
+      "title": "Innovation and Technical Merit",
+      "weight": 30,
+      "criteria": ["Novelty of approach", "Technical feasibility"],
+      "evidence_required": [
+        {"type": "Prior art search", "sources": ["Patents", "Academic papers"], "priority": "high"},
+        {"type": "TRL assessment", "sources": ["Technical documentation"], "priority": "high"}
+      ],
+      "report_location": "Section 2: Research Context and Innovation",
+      "scoring_intent": "Assessors looking for differentiated approach with validated feasibility"
+    }
+  ],
+  "total_criteria_count": 12,
+  "high_weight_sections": ["innovation", "impact"],
+  "evidence_gaps": ["Competitor patent analysis not available"]
+}`,
+
+    required_inputs_coverage_map: `STEP 2 — Required Inputs Coverage Map
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{requiredInputs}}: Required application inputs JSON
+- {{grantGuidelines}}: Full grant guidelines text
+- {{summary}}: User's research summary
+- {{step1}}: Rubric mapping matrix from previous step
+
+PURPOSE:
+Produce a checklist ensuring every required_inputs.key is addressed and where it appears in the report.
+
+HARD RULES:
+1. Do NOT invent or assume applicant data
+2. Only flag as missing what is genuinely not provided
+3. Every required input key must be mapped to a report section
+4. NEVER use placeholder tokens like [Company] or {value}
+5. Questions for applicant must be specific and actionable
+6. Include source_section from required inputs for traceability
+7. All input keys must be explicitly addressed—none can be skipped
+8. Mark optional vs required inputs clearly
+
+UNKNOWN HANDLING:
+- If input status unclear, mark as "needs_clarification"
+- Include unknowns array for inputs that cannot be validated
+
+OUTPUT JSON SCHEMA:
+{
+  "input_coverage": [
+    {
+      "key": "summary",
+      "label": "Project Summary",
+      "status": "provided",
+      "report_section": "Executive Summary",
+      "source_section": "Application Form Section 1"
+    },
+    {
+      "key": "budget_breakdown",
+      "label": "Budget Breakdown",
+      "status": "missing",
+      "report_section": "Budget and Value for Money",
+      "question_for_applicant": "Please provide itemized budget with justification"
+    }
+  ],
+  "coverage_summary": {
+    "total_required": 10,
+    "provided": 7,
+    "missing": 3,
+    "coverage_percentage": 70
+  },
+  "unknowns": ["Budget template format not specified in guidelines"]
+}`,
+
+    assumptions_register: `STEP 3 — Assumptions Register
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{step0}}: Source pack
+- {{step1}}: Rubric mapping matrix
+- {{step2}}: Required inputs coverage map
+- {{summary}}: User's research summary
+
+PURPOSE:
+Produce a structured list of assumptions + confidence + sensitivity notes for the grant application.
+
+HARD RULES:
+1. Every assumption must be labeled: (High confidence) / (Medium confidence) / (Low confidence)
+2. Do NOT present assumptions as facts
+3. Show sensitivity: what happens if assumption is wrong?
+4. Link assumptions to source_ids where possible
+5. NEVER use placeholder tokens like [Company] or {value}
+6. Assumptions must be specific, not generic
+7. Include both technical and commercial assumptions
+8. Flag assumptions that are critical to the application's success
+
+UNKNOWN HANDLING:
+- If assumption cannot be validated, mark as Low confidence with validation path
+- Include unknowns array for data needed to convert assumption to fact
+
+OUTPUT JSON SCHEMA:
+{
+  "assumptions": [
+    {
+      "id": "A1",
+      "category": "market",
+      "statement": "Australian market represents 2% of global TAM",
+      "confidence": "medium",
+      "source_id": "S0-3",
+      "sensitivity": "If AU market share is 1%, SOM reduces by 50%",
+      "validation_path": "Validate with ABS industry data"
+    }
+  ],
+  "critical_assumptions": ["A1", "A3"],
+  "unknowns": ["No validated data on competitor pricing in AU market"]
+}`,
+
+    additionality_and_benefit_case: `STEP 4 — Additionality and Benefit Case
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{step0}}: Source pack
+- {{step1}}: Rubric mapping matrix  
+- {{step3}}: Assumptions register
+- {{grantRubric}}: Assessment criteria
+
+PURPOSE:
+Produce the counterfactual, need for funding, and jurisdiction benefit logic aligned to rubric weighting.
+
+HARD RULES:
+1. Always address additionality: what happens WITHOUT funding vs WITH funding
+2. Jurisdiction benefits must be specific to Australia: jobs, exports, productivity, sovereign capability, regional impact, health outcomes, emissions reduction
+3. All numeric claims must have source_id
+4. NEVER use placeholder tokens like [Company] or {value}
+5. Counterfactual must be realistic, not exaggerated
+6. Benefits must be quantified where possible, with methodology shown
+7. Link benefits to rubric criteria weights
+8. Conservative estimates preferred over optimistic projections
+
+UNKNOWN HANDLING:
+- If benefit cannot be quantified, provide qualitative assessment with confidence level
+- Use proxy estimates with methodology shown for missing data
+- Include unknowns array for benefits that need validation
+
+OUTPUT JSON SCHEMA:
+{
+  "counterfactual": {
+    "without_funding": "Project delayed 2-3 years; may not proceed due to capital constraints",
+    "with_funding": "Accelerated development enabling market entry within 18 months",
+    "additionality_clear": true
+  },
+  "jurisdiction_benefits": [
+    {
+      "benefit_type": "jobs",
+      "estimate": "15-25 direct FTEs by Year 3",
+      "methodology": "Based on similar commercialisation projects (source: S0-5)",
+      "source_id": "S0-5",
+      "confidence": "medium"
+    }
+  ],
+  "rubric_alignment": {
+    "impact": {"weight": 35, "benefits_addressed": ["jobs", "exports", "productivity"]},
+    "innovation": {"weight": 30, "benefits_addressed": ["sovereign_capability"]}
+  },
+  "unknowns": ["Regional job distribution not determined"]
+}`,
+
+    delivery_plan_and_milestones: `STEP 5 — Delivery Plan and Milestones
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{step0}}: Source pack
+- {{step4}}: Additionality and benefit case
+- {{trl}}: Current TRL level
+- {{grantGuidelines}}: Grant guidelines
+
+PURPOSE:
+Produce milestones, timeline, dependencies, and (if relevant) TRL progression and validation approach.
+
+HARD RULES:
+1. Milestones must be specific, measurable, and achievable
+2. Include dependencies between milestones
+3. NEVER use placeholder tokens like [Company] or {value}
+4. Timeline must align with grant funding period
+5. TRL progression must be realistic (typically 1-2 levels per milestone)
+6. Include validation/go-no-go gates at key decision points
+7. Risk contingencies must be included for critical path items
+8. Resource requirements linked to milestones
+
+UNKNOWN HANDLING:
+- If specific dates unclear, use relative timeframes (Month 1-6, etc.)
+- Include unknowns array for dependencies that cannot be confirmed
+
+OUTPUT JSON SCHEMA:
+{
+  "milestones": [
+    {
+      "id": "M1",
+      "title": "Prototype Development Complete",
+      "description": "Functional prototype validated in lab conditions",
+      "timeframe": "Month 1-6",
+      "trl_start": 4,
+      "trl_end": 5,
+      "deliverables": ["Technical report", "Prototype demonstration"],
+      "go_no_go_criteria": ["Performance meets specifications", "No critical defects"],
+      "dependencies": []
+    }
+  ],
+  "critical_path": ["M1", "M3", "M5"],
+  "validation_approach": "Stage-gate process with independent review at M2 and M4",
+  "unknowns": ["Equipment lead times not confirmed"]
+}`,
+
+    risk_register_and_governance: `STEP 6 — Risk Register and Governance
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{step5}}: Delivery plan and milestones
+- {{step3}}: Assumptions register
+- {{grantGuidelines}}: Grant guidelines
+
+PURPOSE:
+Produce key risks, mitigations, owners, governance approach, compliance constraints.
+
+HARD RULES:
+1. Risks must be specific and actionable
+2. Include likelihood and impact ratings
+3. NEVER use placeholder tokens like [Company] or {value}
+4. Every risk must have a mitigation strategy
+5. Compliance constraints must be verbatim or accurately paraphrased from guidelines
+6. Governance structure must show clear accountability
+7. Include both technical and commercial risks
+8. Link risks to assumptions where relevant
+
+UNKNOWN HANDLING:
+- If risk owner unclear, mark as TBD with suggested role
+- Include unknowns array for compliance rules that need clarification
+
+OUTPUT JSON SCHEMA:
+{
+  "risks": [
+    {
+      "id": "R1",
+      "category": "technical",
+      "description": "Prototype performance below specifications",
+      "likelihood": "medium",
+      "impact": "high",
+      "mitigation": "Parallel development of backup technical approach",
+      "owner": "Technical Lead",
+      "linked_assumption": "A2"
+    }
+  ],
+  "governance": {
+    "steering_committee": "Quarterly review with industry and academic partners",
+    "reporting": "Monthly progress reports to funding body",
+    "escalation_path": "Project Manager → Steering Committee → Institution"
+  },
+  "compliance_constraints": ["Quarterly financial reporting required", "Ethics approval for human trials"],
+  "unknowns": ["IP commercialisation policy not confirmed"]
+}`,
+
+    budget_logic_and_value_for_money: `STEP 7 — Budget Logic and Value for Money
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- {{step5}}: Delivery plan and milestones
+- {{step4}}: Additionality and benefit case
+- {{grantGuidelines}}: Grant guidelines
+
+PURPOSE:
+Produce budget narrative logic: cost categories, co-contribution logic, value-for-money rationale (no invented numbers unless sourced).
+
+HARD RULES:
+1. Do NOT invent specific dollar amounts unless from validated sources
+2. Budget categories must align with grant guidelines
+3. NEVER use placeholder tokens like [Company] or {value}
+4. Co-contribution must show cash vs in-kind breakdown
+5. Value-for-money must link costs to outcomes/benefits
+6. Include cost per outcome metrics where possible
+7. Justify major cost items with market benchmarks or quotes
+8. Show how budget aligns with milestone delivery
+
+UNKNOWN HANDLING:
+- If specific costs unknown, provide typical ranges from similar projects
+- Include unknowns array for costs that need quotes/validation
+
+OUTPUT JSON SCHEMA:
+{
+  "budget_categories": [
+    {
+      "category": "personnel",
+      "description": "Research staff and project management",
+      "percentage_of_total": 45,
+      "justification": "Standard ratio for R&D projects (source: ARC guidelines)"
+    }
+  ],
+  "co_contribution": {
+    "grant_request_percentage": 50,
+    "cash_contribution_percentage": 30,
+    "in_kind_contribution_percentage": 20,
+    "sources": ["Industry partner", "University in-kind"]
+  },
+  "value_for_money": {
+    "cost_per_job_created": "Estimated $50-80k per FTE based on similar programs",
+    "leverage_ratio": "1:1 grant to co-investment",
+    "benchmarks": "Comparable to successful Accelerating Commercialisation projects"
+  },
+  "unknowns": ["Equipment quotes pending", "Contractor rates not finalised"]
+}`
+  };
+
+  return {
+    step_number: stepNumber,
+    step_name: stepName,
+    step_description: description,
+    prompt_template: stepTemplates[stepName] || `STEP ${stepNumber} — ${stepName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS:
+- Prior step outputs as needed
+
+PURPOSE:
+${description}
+
+HARD RULES:
+1. Do NOT invent facts or numbers
+2. NEVER use placeholder tokens like [Company] or {value}
+3. All numeric claims must have source_id
+4. Use "Unknown (no validated source found)" when data unavailable
+5. Output valid JSON only
+
+OUTPUT JSON SCHEMA:
+{
+  "result": {},
+  "unknowns": []
+}`,
+    model_tier: "balanced"
+  };
+}
+
+// ============================================================================
 // QA GATES STEP
 // ============================================================================
 
