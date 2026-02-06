@@ -1,65 +1,34 @@
-# Update Pipeline Generation Prompt (Stage 3) - COMPLETED ✅
+
+# Update Prompt Quality Length Threshold
 
 ## Summary
 
-Replaced the archetype-driven pipeline generation prompt with a rubric + required inputs-driven approach. The generated pipeline now directly addresses the grant's evaluation criteria with step allocation proportional to rubric weights.
+Change the minimum prompt length threshold for full quality score from 1000 characters to 1500 characters across all 4 files that contain the `adequateLength` scoring logic.
 
-## Changes Implemented
+## Files to Update
 
-### 1. Updated WRITER_STANCE_PREAMBLE (Lines 47-72)
-- Added jurisdiction benefit examples: "jobs, exports, sovereign capability, productivity, equity, emissions"
-- Updated confidence labeling format in TONE RULES
-- Added "and confidence labeled" to proxy estimate requirements
+| File | Line | Change |
+|------|------|--------|
+| `src/lib/bundleGeneratorSpec.ts` | 1299 | Update threshold from 1000 to 1500 |
+| `src/hooks/usePromptQuality.ts` | 176 | Update threshold from 1000 to 1500 |
+| `supabase/functions/process-grant-guidelines/index.ts` | 222 | Update threshold from 1000 to 1500 |
+| `supabase/functions/regenerate-step-prompt/index.ts` | 24 | Update threshold from 1000 to 1500 |
 
-### 2. Replaced pipelinePrompt (Lines 1003-1076)
-The new prompt includes:
-- **Authoritative Inputs**: `formattedRequiredInputs` and `formattedRubricJson` passed as JSON
-- **Rubric Coverage Plan**: AI must internally derive key, title, weight for each section
-- **Required Inputs Plan**: Identify present vs missing inputs, compliance constraints
-- **Depth Control by Weight**:
-  - weight >= 35% → 3-5 steps
-  - weight 20-34% → 2-3 steps
-  - weight < 20% → 1-2 steps
-- **Mandatory Steps**:
-  - Step 0: build_source_pack
-  - Step 1: rubric_coverage_map
-  - Step 2: inputs_and_compliance_gap_check
-  - Final: report_assembly + finalize_citations
-- **New Variable**: `{{requiredInputs}}` added to approved variables list
+## Code Change
 
-### 3. Post-Generation Validation (Lines 1154+)
-Added validation that:
-- Inserts default `rubric_coverage_map` if missing
-- Inserts default `inputs_and_compliance_gap_check` if missing
-- Re-numbers steps sequentially after insertions
-- Warns if fewer than 8 steps generated
-
-## Data Flow (New)
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ Grant DNA Pack  │ ──▶ │ Rubric Coverage │ ──▶ │ Weight-based    │
-│ (rubric, inputs)│     │ Analysis        │     │ Step Allocation │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                       │
-                        Archetype used as helper ◀─────┘
-                        (for fallback modules only)
-                                                       │
-                                                       ▼
-                                               ┌─────────────────┐
-                                               │ Generate Steps  │
-                                               │ from Rubric     │
-                                               └─────────────────┘
+**Before:**
+```typescript
+adequateLength: prompt.length >= 1000 ? 5 : Math.round((prompt.length / 1000) * 5 * 10) / 10,
 ```
 
-## Testing
+**After:**
+```typescript
+adequateLength: prompt.length >= 1500 ? 5 : Math.round((prompt.length / 1500) * 5 * 10) / 10,
+```
 
-To test the new pipeline generation:
-1. Go to Admin > Grants > Create or Edit a grant version
-2. Upload new grant guidelines PDF
-3. Watch the pipeline generation process
-4. Verify the generated pipeline includes:
-   - Step 1: rubric_coverage_map
-   - Step 2: inputs_and_compliance_gap_check
-   - At least 8 total steps
-   - Research steps weighted by rubric importance
+## Impact
+
+- Prompts must now be at least 1,500 characters to receive the full 5 points for length
+- Shorter prompts will receive proportionally less (e.g., a 750-character prompt scores 2.5 points)
+- This aligns with the memory documentation stating "1,500+ character minimum" as the quality standard
+- All quality scoring will be consistent across frontend and backend
