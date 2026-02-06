@@ -313,15 +313,15 @@ export function useBackendHealth() {
     return deployFunctions([functionName]);
   }, [deployFunctions]);
 
-  const deployAllMissing = useCallback(async (): Promise<boolean> => {
-    const missing = getMissingFunctions();
-    if (missing.length === 0) return false;
-    return deployFunctions(missing.map(f => f.name));
-  }, [deployFunctions, getMissingFunctions]);
-
   const getMissingFunctions = useCallback(() => {
     return result?.functionProbes.filter(p => p.status === "not_deployed") ?? [];
   }, [result]);
+
+  const deployAllMissing = useCallback(async (): Promise<boolean> => {
+    const missing = result?.functionProbes.filter(p => p.status === "not_deployed") ?? [];
+    if (missing.length === 0) return false;
+    return deployFunctions(missing.map(f => f.name));
+  }, [deployFunctions, result]);
 
   const getProbesByCategory = useCallback((categoryId: FunctionCategory) => {
     return result?.functionProbes.filter(p => p.category === categoryId) ?? [];
