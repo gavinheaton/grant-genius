@@ -26,6 +26,7 @@ import DocxTemplates from "./pages/admin/DocxTemplates";
 import PromptBundles from "./pages/admin/PromptBundles";
 import PromptBundleEdit from "./pages/admin/PromptBundleEdit";
 import SystemHealth from "./pages/admin/SystemHealth";
+import AdminAssistant from "./pages/admin/AdminAssistant";
 
 const queryClient = new QueryClient();
 
