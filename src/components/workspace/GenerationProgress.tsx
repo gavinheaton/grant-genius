@@ -118,8 +118,10 @@ export function GenerationProgress({
     onRestart?.();
   }, [onRestart]);
 
-  // Calculate progress based on completed steps
-  const progressPercent = totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0;
+  // Calculate progress based on completed steps (force 100% when run is completed)
+  const progressPercent = status === "completed" 
+    ? 100 
+    : (totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0);
   
   // Get current step name from steps array
   const currentStepData = steps.find(s => s.step_number === currentStep);
