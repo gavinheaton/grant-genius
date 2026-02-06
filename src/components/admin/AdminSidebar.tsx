@@ -11,6 +11,7 @@ import {
   Bot,
   FileType,
   Activity,
+  Sparkles,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
