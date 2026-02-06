@@ -1194,7 +1194,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: step.model_tier === "pro",
-      phase: "research"
+      is_assembly_step: false
     }));
     
     const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
