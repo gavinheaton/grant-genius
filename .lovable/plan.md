@@ -1,149 +1,89 @@
 
-# Fix Auto-Retry Timer for Report Generation Failures
+# Replace Stage 3 Pipeline Generation Prompt
 
 ## Summary
 
-The "Retrying in 30 seconds" countdown timer has stopped working on report generation failures. The issue is a timing/state synchronization problem between the parent component (`ApplicationWorkspace`) and the child component (`GenerationProgress`).
+Replace the current pipeline generation prompt (Stage 3) in `supabase/functions/process-grant-guidelines/index.ts` with the new "Grant Writer Core + Archetype Modules" specification. This introduces mandatory grant-writer artefacts that map directly to rubric + required inputs, ensuring assessor-ready output quality.
 
-## Root Cause Analysis
+## Key Changes in New Specification
 
-The countdown timer displays when `shouldShowAutoRetry` is `true`:
+### New Mandatory "Grant Writer Core" Steps
+Every pipeline will include these steps (in order after Step 0):
 
-```typescript
-const shouldShowAutoRetry = (status === "failed" || status === "stalled") && onRestart && !hasAutoRetried;
-```
+| Step | Name | Purpose |
+|------|------|---------|
+| 0 | `build_source_pack` | Always first - curate evidence sources |
+| 1 | `rubric_mapping_matrix` | Map rubric criteria → evidence types → report location |
+| 2 | `required_inputs_coverage_map` | Checklist ensuring all required inputs are addressed |
+| 3 | `assumptions_register` | Structured assumptions + confidence + sensitivity |
+| 4 | `additionality_and_benefit_case` | Counterfactual + funding need + jurisdiction benefit |
+| 5 | `delivery_plan_and_milestones` | Timeline, dependencies, TRL progression |
+| 6 | `risk_register_and_governance` | Risks, mitigations, compliance constraints |
+| 7 | `budget_logic_and_value_for_money` | Cost categories, co-contribution, VFM rationale |
 
-The problem is that `onRestart` is conditionally passed from `ApplicationWorkspace`:
+### Archetype-Specific Modules (after core)
+Selected based on grant type:
+- `market_need_quantification`
+- `competitor_and_alternatives`
+- `tam_sam_som_analysis`
+- `regulatory_and_pathway` (health/clinical/defence)
+- `partner_stakeholder_mapping`
+- `impact_model` (economic, social, climate)
+- `workforce_and_capability`
+- `infrastructure_and_procurement`
 
-```typescript
-onRestart={
-  (activeRun.status === "failed" || activeRun.status === "stalled") 
-    ? () => retryFromFailedStep(activeRun.id) 
-    : undefined
-}
-```
+### Final Steps (mandatory)
+| Step | Name | Purpose |
+|------|------|---------|
+| N-1 | `report_assembly` | Assessor-ready markdown following rubric + inputs |
+| N | `finalize_citations` | APA reference list + citation validation |
 
-This creates a race condition where:
-1. Realtime subscription updates `activeRun.status` to `"failed"` 
-2. React schedules a re-render
-3. During the next render, `onRestart` becomes defined
-4. However, if any intermediate render has `onRestart = undefined`, the countdown effect exits early
+### Quality Gates
+- Every rubric section must be addressed by at least one step
+- Every required input key must be mapped in `required_inputs_coverage_map`
+- `report_assembly` must write like a grant writer, referencing rubric sections by title
+- `finalize_citations` must output clean APA refs with no placeholders
 
-Additionally, the current logic has a component mount/unmount issue - when the component re-mounts after a run cycle, `hasAutoRetried` resets to `false` but the countdown may not properly restart.
+## Technical Implementation
 
-## Solution
+### File: `supabase/functions/process-grant-guidelines/index.ts`
 
-### Option A: Decouple `onRestart` from the visibility condition (Recommended)
+**Location**: Lines 1021-1148 (the `pipelinePrompt` variable)
 
-Make `onRestart` always passed as a function, and only use `status` to determine visibility:
+**Replace with**: The new prompt specification you provided, with proper variable interpolation
 
-**ApplicationWorkspace.tsx** - Always pass `onRestart`:
-```typescript
-onRestart={() => retryFromFailedStep(activeRun.id)}
-```
+The new prompt will:
+1. Use `${grantName}` for GRANT_NAME
+2. Use `${archetype}` for ARCHETYPE
+3. Use `${suggestions.grant_summary}` for GRANT_SUMMARY
+4. Use `${formattedRequiredInputs}` for REQUIRED_INPUTS_JSON
+5. Use `${formattedRubricJson}` for RUBRIC_JSON
+6. Use `${guidelines_text.substring(0, 15000)}` for GRANT_GUIDELINES_TEXT
+7. Use `${modulesDescription}` for SELECTED_MODULES
 
-**GenerationProgress.tsx** - Use status alone for visibility:
-```typescript
-const shouldShowAutoRetry = (status === "failed" || status === "stalled") && !hasAutoRetried;
-```
+### Prompt Template Updates
 
-### Option B: Add a stable run ID dependency for countdown reset
+The new prompt includes:
+- **OBJECTIVE**: Clear 3-part goal (evidence, artefacts, professional report)
+- **WRITER STANCE CONTRACT**: Already integrated inline
+- **MANDATORY PIPELINE DESIGN**: 7 core steps + archetype modules + 2 final steps
+- **MANDATORY PROMPT TEMPLATE STRUCTURE**: STEP header, INPUTS, HARD RULES (5+), UNKNOWN HANDLING, OUTPUT JSON SCHEMA
+- **QUALITY GATES**: 4 explicit validation requirements
 
-Track when a **new** failure occurs using the `activeRunId` prop to reset the countdown state more reliably.
+### Integration with Existing Architecture
 
-**GenerationProgress.tsx** - Update the reset effect:
-```typescript
-// Reset countdown when a new failure occurs (tracked by run ID + status)
-useEffect(() => {
-  if (status === "failed" || status === "stalled") {
-    setCountdown(AUTO_RETRY_SECONDS);
-    setIsPaused(false);
-    setHasAutoRetried(false);
-  }
-}, [status, activeRunId]); // Add activeRunId to dependencies
-```
+- The HTML assembly steps (`assemble_sections_html`, `build_tables_sources_html`, `finalize_report_html`) are still added automatically downstream via `createHtmlAssemblySteps()` - the new prompt correctly states "Do NOT include HTML assembly steps"
+- The `WRITER_STANCE_PREAMBLE` constant at line 47-72 can remain, but is now also included inline in the new prompt for self-containment
+- The module library selection (`selectModulesForArchetype`) continues to provide `SELECTED_MODULES`
 
-## Implementation Details
+## Secondary Update (Optional)
 
-### File: `src/pages/ApplicationWorkspace.tsx`
+Consider updating `src/lib/bundleGeneratorSpec.ts` to document the new Grant Writer Core structure in the exported types, though this is reference documentation only and not functionally required.
 
-**Line 370-373** - Change conditional `onRestart` to always pass the function:
+## Verification
 
-Before:
-```typescript
-onRestart={
-  (activeRun.status === "failed" || activeRun.status === "stalled") 
-    ? () => retryFromFailedStep(activeRun.id) 
-    : undefined
-}
-```
-
-After:
-```typescript
-onRestart={() => retryFromFailedStep(activeRun.id)}
-```
-
-### File: `src/components/workspace/GenerationProgress.tsx`
-
-**Line 83** - Remove `onRestart` from the visibility condition:
-
-Before:
-```typescript
-const shouldShowAutoRetry = (status === "failed" || status === "stalled") && onRestart && !hasAutoRetried;
-```
-
-After:
-```typescript
-const shouldShowAutoRetry = (status === "failed" || status === "stalled") && !hasAutoRetried;
-```
-
-**Line 86-93** - Add `activeRunId` to dependencies for more reliable reset:
-
-Before:
-```typescript
-useEffect(() => {
-  if (status === "failed" || status === "stalled") {
-    setCountdown(AUTO_RETRY_SECONDS);
-    setIsPaused(false);
-    setHasAutoRetried(false);
-  }
-}, [status]);
-```
-
-After:
-```typescript
-useEffect(() => {
-  if (status === "failed" || status === "stalled") {
-    setCountdown(AUTO_RETRY_SECONDS);
-    setIsPaused(false);
-    setHasAutoRetried(false);
-  }
-}, [status, activeRunId]);
-```
-
-**Lines 222-223** - Remove redundant `onRestart` check (already guaranteed by props):
-
-Before:
-```typescript
-{onRestart && shouldShowAutoRetry && (
-```
-
-After:
-```typescript
-{shouldShowAutoRetry && (
-```
-
-## Why This Fixes the Issue
-
-1. **Always passing `onRestart`** eliminates the race condition where the prop could be undefined for a render cycle
-2. **Adding `activeRunId` to the reset effect** ensures that when the same run fails multiple times (after retries), the countdown properly resets
-3. **Removing redundant checks** simplifies the logic and prevents potential mismatches
-
-## Testing
-
-After implementation, verify:
-1. When a report fails, the "Retrying in 30 seconds" countdown appears
-2. The countdown decrements every second
-3. At 0, the retry is triggered automatically
-4. Pause/Resume buttons work correctly
-5. If the retry fails again, the countdown resets and shows again
+After deployment:
+1. Upload a new grant guidelines PDF
+2. Confirm the generated pipeline includes all 7 Grant Writer Core steps
+3. Verify the final steps are `report_assembly` and `finalize_citations`
+4. Check prompt quality scores meet the 70+ threshold
