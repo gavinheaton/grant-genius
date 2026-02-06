@@ -1,285 +1,303 @@
 
 
-# Hybrid Architecture: Data Gathering + Analysis + Synthesis Pipeline
+# GrantBundle Architect: Universal Pipeline Generator Specification
 
-## Problem Statement
+## Overview
 
-The current `one_prompt` pipeline for AMT Bio asks the AI to "search Google Scholar" and "find market data", but LLMs cannot actually access the web. This causes hallucinations where the AI fabricates sources, URLs, and data points.
+This plan defines a reusable **Bundle Generator Specification** that enables Grant Genius to automatically generate prompt bundles for any grant type—commercialisation, R&D, infrastructure, social impact, climate, defence, arts, and more.
 
-## Solution: 3-Phase Hybrid Architecture
+The specification will be implemented as a JSON configuration that drives the existing `process-grant-guidelines` edge function, making it truly grant-agnostic.
 
-Split every pipeline into formally distinct phases where real data collection happens before AI analysis.
+---
+
+## What We're Building
+
+A structured specification with these components:
+
+| Component | Purpose |
+|-----------|---------|
+| **Grant DNA Pack Schema** | Captures the essential characteristics of any grant |
+| **Writer Stance Contract** | Enforces professional grant-writer tone across all outputs |
+| **Module Library** | Reusable research modules (market sizing, impact, competitors, etc.) |
+| **Step Role Library** | Standardised step templates with quality-enforced prompts |
+| **Grant Archetype Classifier** | Routes grants to appropriate module configurations |
+| **Bundle Construction Algorithm** | Rules for assembling steps into pipelines |
+| **Default Pipeline Template** | Base structure all pipelines extend |
+
+---
+
+## Phase-by-Phase Implementation
+
+### Phase 1: Grant DNA Pack Schema
+
+**Purpose**: Extract structured metadata from any grant's guidelines before research begins.
 
 ```text
-PHASE 1: DATA GATHERING (Firecrawl)
-├── Step 0: Scrape user's article URL
-├── Step 1: Web search for market data (Firecrawl /search)
-├── Step 2: Web search for competitors (Firecrawl /search)
-└── Step 3: Web search for industry reports (Firecrawl /search)
-
-PHASE 2: ANALYSIS (Gemini/GPT)
-├── Step 4: Synthesize market sizing from gathered data
-├── Step 5: Analyze competitive landscape
-├── Step 6: Economic impact estimation
-└── Step 7: Stakeholder mapping
-
-PHASE 3: SYNTHESIS (Gemini)
-├── Step 8: Assemble sections as HTML
-├── Step 9: Build tables and sources
-└── Step 10: Finalize report_html
+grant_dna_pack_schema:
+├── program_profile
+│   ├── name, jurisdiction (AU State/Federal/International)
+│   ├── applicant_type (SME, Researcher, University, Consortium)
+│   ├── funding_type (Grant, Loan, Matched, Co-investment)
+│   └── assessor_type (Panel, Expert, Peer-reviewed)
+├── evaluation_criteria_map
+│   ├── criterion → weight (if known)
+│   ├── pass_threshold (what "good enough" looks like)
+│   └── assessor_questions (what they're really asking)
+├── compliance_rules
+│   ├── mandatory_sections (attachments, page limits)
+│   ├── forbidden_claims (no guaranteed outcomes, etc.)
+│   └── formatting_constraints
+├── claim_evidence_policy
+│   ├── claim_categories (market, impact, technical)
+│   ├── minimum_evidence_standard per category
+│   └── allowed_source_classes (ABS, peer-reviewed, gov.au)
+├── narrative_strategy
+│   ├── story_spine (problem → solution → impact)
+│   ├── additionality (why funding is needed)
+│   └── jurisdiction_benefit (Australian jobs, exports, etc.)
+└── missing_info (what couldn't be extracted)
 ```
 
-## Technical Implementation
+**Implementation**: Enhance the first AI call in `process-grant-guidelines` to extract this full DNA Pack before pipeline generation.
 
-### 1. New Step Type: "firecrawl_search"
+---
 
-Add a new step execution mode that calls Firecrawl's `/v1/search` API instead of the AI.
+### Phase 2: Writer Stance Contract (WSC)
 
-**Database Changes:**
-Add a column to `prompt_bundle_steps`:
-```sql
-ALTER TABLE prompt_bundle_steps 
-ADD COLUMN step_type TEXT DEFAULT 'ai_prompt'
-CHECK (step_type IN ('ai_prompt', 'firecrawl_search', 'firecrawl_scrape'));
+**Purpose**: Ensure all AI outputs maintain professional grant-writer tone for assessors.
+
+```text
+writer_stance_contract:
+├── persona: "Professional grant writer with 10+ years Australian funding experience"
+├── audience: "Expert grant assessors evaluating against published criteria"
+├── tone_rules:
+│   ├── "No hype—use qualified language"
+│   ├── "Assumptions labeled with confidence: (H/M/L)"
+│   ├── "If unsupported, output: 'Unknown (no validated source found)'"
+│   └── "Always address additionality and jurisdiction benefit"
+├── evidence_rules:
+│   ├── "All numeric claims require source_id"
+│   ├── "Preserve source IDs exactly—never renumber"
+│   └── "No placeholders like 'Source1' or '[insert]'"
+└── output_constraints:
+    ├── "JSON-only output, no code fences"
+    └── "First char must be {, last char must be }"
 ```
 
-**New Step Configuration for Search Steps:**
-```json
-{
-  "step_type": "firecrawl_search",
-  "search_query_template": "{{grantName}} market size Australia 2024",
-  "limit": 10,
-  "scrape_results": true
-}
+**Implementation**: Inject this contract as a preamble into every AI step prompt.
+
+---
+
+### Phase 3: Grant Archetype Classifier
+
+**Purpose**: Automatically categorise grants to select appropriate research modules.
+
+| Archetype | Trigger Keywords | Required Modules |
+|-----------|------------------|------------------|
+| **Commercialisation/Innovation** | commercialise, market, IP, startup | market_sizing, competitors, ip_strategy, pathway |
+| **R&D/Research** | research, scientific, discovery, PhD | technical_feasibility, literature_review, methodology |
+| **Infrastructure/Capability** | equipment, facility, capacity | capability_gap, procurement, utilisation |
+| **Social Impact/Community** | community, social, welfare, inclusion | needs_assessment, beneficiary_mapping, outcomes |
+| **Export/Trade** | export, international, market entry | export_readiness, market_selection, channel |
+| **Climate/Environment** | emissions, sustainability, net-zero | emissions_baseline, abatement, adaptation |
+| **Health/Clinical Translation** | clinical, health, TGA, FDA | regulatory_pathway, clinical_evidence, health_economics |
+| **Defence/Sovereign Capability** | defence, sovereign, security | supply_chain, capability_gap, sovereign_benefit |
+| **Arts/Culture** | arts, cultural, creative | cultural_impact, audience_development, creative_merit |
+| **Education/Workforce** | training, skills, workforce | skills_gap, curriculum_alignment, employment_outcomes |
+
+**Implementation**: Add classification logic to `process-grant-guidelines` that analyses the Grant DNA Pack and selects appropriate modules.
+
+---
+
+### Phase 4: Module Library
+
+**Purpose**: Reusable research modules that can be composed into pipelines.
+
+```text
+module_library:
+├── market_sizing
+│   ├── when: archetype in [Commercialisation, Export, Health]
+│   ├── outputs: tam_au, sam_au, som, methodology, sources
+│   └── depends_on: [evidence_source_pack]
+├── competitor_analysis
+│   ├── when: archetype in [Commercialisation, R&D, Health]
+│   ├── outputs: competitors[], differentiation, threat_level
+│   └── depends_on: [evidence_source_pack]
+├── economic_impact
+│   ├── when: ANY archetype (universal)
+│   ├── outputs: jobs_direct, jobs_indirect, gdp_contribution, exports
+│   └── depends_on: [market_sizing OR capability_gap]
+├── ip_regulatory_strategy
+│   ├── when: archetype in [Commercialisation, Health, Defence]
+│   ├── outputs: ip_landscape, freedom_to_operate, regulatory_pathway
+│   └── depends_on: [evidence_source_pack]
+├── technical_feasibility
+│   ├── when: archetype in [R&D, Infrastructure, Defence]
+│   ├── outputs: trl_assessment, risks[], mitigation_strategies
+│   └── depends_on: [evidence_source_pack]
+├── stakeholder_mapping
+│   ├── when: ANY archetype (universal)
+│   ├── outputs: partners[], collaborators[], end_users[]
+│   └── depends_on: [market_sizing OR needs_assessment]
+├── nrf_alignment (National Reconstruction Fund)
+│   ├── when: grant mentions NRF, priority areas, sovereign capability
+│   ├── outputs: priority_alignment, capability_contribution, local_content
+│   └── depends_on: [market_sizing, economic_impact]
+└── [additional modules for each archetype...]
 ```
 
-### 2. Worker-Proxy Enhancement
+**Implementation**: Define each module as a JSON template in a new `module_templates` configuration within the pipeline generator.
 
-Update `worker-proxy/index.ts` to expose a new action for the external worker:
+---
 
-```typescript
-// New action: execute_firecrawl_search
-case "execute_firecrawl_search":
-  return await handleFirecrawlSearch(supabase, params);
+### Phase 5: Step Role Library
 
-async function handleFirecrawlSearch(supabase, params) {
-  const { query, limit, scrapeOptions } = params;
-  const FIRECRAWL_API_KEY = Deno.env.get("FIRECRAWL_API_KEY");
-  
-  const response = await fetch("https://api.firecrawl.dev/v1/search", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${FIRECRAWL_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query,
-      limit: limit || 10,
-      scrapeOptions: scrapeOptions || { formats: ["markdown"] }
-    }),
-  });
-  
-  const data = await response.json();
-  return jsonResponse({ 
-    success: true, 
-    results: data.data,
-    sources: data.data?.map((r, i) => ({
-      source_id: `SEARCH-${i+1}`,
-      url: r.url,
-      title: r.title,
-      content: r.markdown?.slice(0, 5000),
-      confidence: "high" // Real search result
-    }))
-  });
-}
+**Purpose**: Standardised step definitions with quality-enforced prompts.
+
+Each step role includes:
+- **role_name**: Identifier (e.g., `build_source_pack`)
+- **role_goal**: What this step achieves
+- **inputs**: Required variables (e.g., `{{summary}}`, `{{step0}}`)
+- **outputs_schema**: Exact JSON structure expected
+- **hard_rules**: Non-negotiable constraints (5+ rules)
+- **prompt_template**: Full 1,500+ character prompt
+
+**Example: Universal Source Pack Builder**
+
+```text
+role_name: build_source_pack
+phase: intake
+role_goal: Curate 12-25 high-quality sources relevant to any research domain
+
+inputs: [{{summary}}, {{grantGuidelines}}, {{archetype}}]
+
+outputs_schema:
+  sources: [{ source_id, title, publisher, url, date_accessed, relevance, confidence }]
+  unknowns: [string]
+  source_categories_found: { authoritative_gov, academic, industry, market_reports }
+
+hard_rules:
+  - "Prefer Australian authoritative sources first (ABS, AIHW, data.gov.au)"
+  - "Every source MUST have valid URL or explicit 'URL not available'"
+  - "Do NOT invent sources—only include what you can validate"
+  - "Mark confidence: high (verified), medium (known publisher), low (unverified)"
+  - "Include unknowns array listing source types you couldn't find"
 ```
 
-### 3. Pipeline Generator Update
+**Implementation**: Store these in the specification JSON and inject into prompts during pipeline generation.
 
-Modify `process-grant-guidelines/index.ts` to generate hybrid pipelines:
+---
 
-**Updated Pipeline Structure:**
-```javascript
-// Standard hybrid pipeline template
-const HYBRID_PIPELINE_TEMPLATE = [
-  // PHASE 1: Data Gathering (Firecrawl)
-  {
-    step_number: 0,
-    step_name: "scrape_article",
-    step_type: "firecrawl_scrape",
-    config: { url_variable: "publicArticleUrl" }
-  },
-  {
-    step_number: 1,
-    step_name: "search_market_data",
-    step_type: "firecrawl_search",
-    config: {
-      query_template: "{{research_domain}} market size Australia 2024 site:abs.gov.au OR site:ibisworld.com",
-      limit: 8
-    }
-  },
-  {
-    step_number: 2,
-    step_name: "search_competitors",
-    step_type: "firecrawl_search",
-    config: {
-      query_template: "{{research_domain}} companies startups Australia competitors",
-      limit: 8
-    }
-  },
-  {
-    step_number: 3,
-    step_name: "search_policy_funding",
-    step_type: "firecrawl_search",
-    config: {
-      query_template: "{{research_domain}} government funding policy Australia site:gov.au",
-      limit: 5
-    }
-  },
-  
-  // PHASE 2: Analysis (AI)
-  {
-    step_number: 4,
-    step_name: "synthesize_market_sizing",
-    step_type: "ai_prompt",
-    prompt_template: `You are analyzing REAL search results to estimate market size...
-    
-INPUT DATA (from web search - these are REAL sources):
-{{step1}}
+### Phase 6: QA Gates
 
-YOUR TASK:
-- Extract numeric data points from the search results
-- Calculate TAM/SAM/SOM using ONLY data found in sources
-- If data not found, state "Data not available in searched sources"
-- NEVER invent numbers
+**Purpose**: Three mandatory quality gates before final render.
 
-OUTPUT JSON SCHEMA:
-{
-  "tam": { "value": "...", "source_id": "SEARCH-1" },
-  "sam": { "value": "...", "calculation": "..." },
-  "som": { "value": "...", "methodology": "..." },
-  "data_gaps": ["..."]
-}`
-  },
-  // ... more AI analysis steps
-  
-  // PHASE 3: Assembly (existing logic)
-  // ... assemble_sections_html, build_tables_sources_html, finalize_report_html
-];
+| Gate | Checks |
+|------|--------|
+| **Citation Integrity** | All source_ids exist, no malformed JSON, no code fences |
+| **Criteria Coverage** | Each rubric criterion addressed or listed as gap |
+| **Assessor Readiness** | Narrative spine coherent, risks addressed, impact quantified, additionality clear |
+
+**Implementation**: Add a QA step to every pipeline that validates these before the final `finalize_report_html` step.
+
+---
+
+### Phase 7: Bundle Construction Algorithm
+
+**Rules for assembling steps into pipelines:**
+
+```text
+bundle_construction_algorithm:
+├── grant_archetype_classifier (determine archetype from DNA Pack)
+├── module_selection_rules:
+│   ├── "Include all modules where archetype matches when_to_include"
+│   ├── "Always include: evidence_source_pack, economic_impact, stakeholder_mapping"
+│   └── "If unknown archetype, use Commercialisation as default"
+├── step_ordering_rules:
+│   ├── "Firecrawl steps ALWAYS before AI analysis"
+│   ├── "Source pack ALWAYS step 0 (or after Firecrawl gather)"
+│   ├── "Dependencies resolved: if B depends_on A, A.step_number < B.step_number"
+│   └── "Assembly steps ALWAYS last 3 steps"
+└── schema_stability_rules:
+    ├── "All steps output JSON with consistent field naming"
+    ├── "source_id format preserved across all steps"
+    └── "report_html MUST be in final step outputs"
 ```
 
-### 4. External Worker Requirements
+---
 
-The external Cloud Run worker needs to be updated to:
+### Phase 8: Default Pipeline Template
 
-1. **Detect step type** from the bundle configuration
-2. **For `firecrawl_search` steps:**
-   - Call `worker-proxy` with `action: "execute_firecrawl_search"`
-   - Store results as step output
-   - No AI call needed
-3. **For `ai_prompt` steps:**
-   - Interpolate prior step outputs (including search results)
-   - Call AI as usual
+**Standard structure all pipelines follow:**
 
-**Worker Pseudocode:**
-```javascript
-for (const step of bundle.steps) {
-  if (step.step_type === 'firecrawl_search') {
-    const query = interpolate(step.config.query_template, context);
-    const results = await workerProxy('execute_firecrawl_search', { query });
-    await workerProxy('update_step', { outputs_json: results });
-  } else if (step.step_type === 'ai_prompt') {
-    // Existing AI execution logic
-    const prompt = interpolate(step.prompt_template, context);
-    const aiResult = await callGemini(prompt);
-    await workerProxy('update_step', { outputs_json: aiResult });
-  }
-}
+```text
+PHASES: intake → research → argument_build → assembly → qa → render
+
+Default Steps:
+├── [0-3] Firecrawl Data Gathering (if hybrid enabled)
+├── [4] parse_grant_requirements (outputs: grant_dna_pack)
+├── [5] build_writer_stance_contract (outputs: wsc)
+├── [6] outline_constructor (outputs: section_outline)
+├── [7] evidence_source_pack (outputs: sources[], unknowns[])
+├── [8] claim_evidence_ledger (outputs: claims with source_ids)
+├── [9-N] Archetype-specific modules (market, competitors, impact, etc.)
+├── [N+1] assemble_sections_html (outputs: sections_html)
+├── [N+2] build_tables_sources_html (outputs: tables, all_sources)
+├── [N+3] qa_gates (validates all three gates)
+└── [N+4] finalize_report_html (outputs: report_html)
 ```
 
-### 5. AMT Bio Migration
-
-For the immediate single-prompt pipeline (AMT Bio), update the prompt to:
-1. Remove all "search" instructions
-2. Use ONLY the scraped article content
-3. Mark all external claims as "REQUIRES VALIDATION"
-
-**Immediate Fix (before full hybrid implementation):**
-```sql
-UPDATE prompt_bundle_steps 
-SET prompt_template = '...[updated prompt without search instructions]...'
-WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788';
-```
-
-## Implementation Phases
-
-### Phase A: Immediate Fix (1-2 hours) — PENDING
-1. Update AMT Bio `one_prompt` to remove search instructions
-2. Add explicit "Data sources: User-provided article only" disclaimer
-3. Mark all market data as "ESTIMATE - REQUIRES VALIDATION"
-
-### Phase B: Worker-Proxy Search Action (2-3 hours) — ✅ COMPLETE
-1. ✅ Add `execute_firecrawl_search` action to worker-proxy
-2. ✅ Add `execute_firecrawl_scrape` action (for article scraping)
-3. ✅ Deploy and test via edge function
-
-### Phase C: Database Schema Update (30 min) — ✅ COMPLETE
-1. ✅ Add `step_type` column to `prompt_bundle_steps`
-2. ✅ Add `step_config_json` column for search/scrape configuration
-
-### Phase D: Pipeline Generator Update (2-3 hours) — ✅ COMPLETE
-1. ✅ Modify `process-grant-guidelines` to generate hybrid pipelines
-2. ✅ Add Firecrawl data-gathering steps (Steps 0-3) before AI analysis steps
-3. ✅ Update step numbering and references (AI steps now start at Step 4)
-4. ✅ Add StepTypeEditor UI component for configuring Firecrawl steps
-5. ✅ Add visual badges (Globe/Bot icons) to distinguish step types in pipeline editor
-
-### Phase E: External Worker Update (External - 2-3 hours) — PENDING
-1. Add step type detection logic
-2. Implement Firecrawl step execution via worker-proxy
-3. Test full hybrid pipeline
+---
 
 ## Files to Modify
 
-| File | Change |
-|------|--------|
-| `supabase/functions/worker-proxy/index.ts` | Add `execute_firecrawl_search` and `execute_firecrawl_scrape` actions |
-| `supabase/functions/process-grant-guidelines/index.ts` | Generate hybrid pipelines with search steps |
-| Database: `prompt_bundle_steps` | Add `step_type` and `step_config_json` columns |
-| External: Cloud Run Worker | Add step type detection and Firecrawl execution |
+| File | Changes |
+|------|---------|
+| `supabase/functions/process-grant-guidelines/index.ts` | Integrate specification JSON, add archetype classifier, enhance DNA Pack extraction |
+| `src/hooks/usePromptBundles.ts` | Add types for new schema fields |
+| `src/components/admin/StepTypeEditor.tsx` | Add module selection UI for admins |
+| New: `src/lib/bundleGeneratorSpec.ts` | Central specification JSON definition |
+| New: `src/components/admin/GrantArchetypeSelector.tsx` | UI for viewing/overriding archetype classification |
 
-## Firecrawl Usage Strategy
+---
 
-**Search Queries per Report:**
-- Market data: 1 search (8-10 results)
-- Competitors: 1 search (8-10 results)
-- Policy/funding: 1 search (5 results)
-- Industry reports: 1 search (5 results)
+## Technical Details
 
-**Estimated Credits:** ~4 searches + 1 scrape per report
+### Integration with External Worker
 
-**Search Query Patterns:**
-```
-Market: "{domain} market size Australia 2024 site:abs.gov.au OR site:ibisworld.com"
-Competitors: "{domain} companies startups Australia"
-Policy: "{domain} government funding Australia site:gov.au"
-Academic: "{domain} research Australia site:scholar.google.com OR site:pubmed.gov"
-```
+The specification maintains compatibility with the Replit worker:
 
-## Benefits
+- **No hardcoded step names**: Worker uses `step_number` and `step_type`
+- **Step outputs as `step0..stepN`**: Standard access pattern preserved
+- **`step_config_json`**: Contains module-specific configuration
+- **`is_assembly_step`**: Flag for final render steps
 
-1. **No Hallucinations:** AI only analyzes real search results
-2. **Verifiable Sources:** Every claim linked to actual URLs
-3. **Consistent Quality:** Same search patterns for every report
-4. **Audit Trail:** Search queries and results stored per step
-5. **Scalable:** Works for any grant type
+### Quality Enforcement
 
-## Risks and Mitigations
+Every generated prompt will be validated against the quality scoring function (already implemented) before insertion:
 
-| Risk | Mitigation |
-|------|------------|
-| Firecrawl rate limits | Implement retry with backoff; cache common searches |
-| Search returns irrelevant results | Refine query templates; add domain restrictions |
-| Increased pipeline duration | Parallel search execution where possible |
-| Cost increase | Monitor usage; add search result caching |
+- Minimum 1,500 characters
+- HARD RULES section present
+- OUTPUT SCHEMA defined
+- No template variables in schema descriptions
+
+---
+
+## Expected Outcomes
+
+1. **Universal Coverage**: Any grant archetype handled with appropriate research modules
+2. **Consistent Quality**: Writer Stance Contract enforces professional tone
+3. **Evidence Auditability**: Claim-Evidence Ledger tracks all citations
+4. **Assessor Focus**: QA Gates ensure report addresses rubric criteria
+5. **Maintainability**: Module library enables updates without pipeline rewrites
+
+---
+
+## Next Steps
+
+1. **Approve this plan** to begin implementation
+2. I will create the specification JSON structure
+3. Enhance `process-grant-guidelines` with archetype classification
+4. Add the Grant DNA Pack extraction logic
+5. Implement QA Gates step template
 
