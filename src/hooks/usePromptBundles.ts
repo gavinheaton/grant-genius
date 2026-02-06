@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import type { Json } from "@/integrations/supabase/types";
 
 export interface PromptBundle {
   id: string;
@@ -11,6 +12,8 @@ export interface PromptBundle {
   created_at: string;
   updated_at: string;
 }
+
+export type StepType = 'ai_prompt' | 'firecrawl_search' | 'firecrawl_scrape';
 
 export interface PromptBundleStep {
   id: string;
@@ -23,9 +26,25 @@ export interface PromptBundleStep {
   timeout_seconds: number | null;
   is_heavy: boolean;
   max_expected_seconds: number | null;
+  step_type: StepType;
+  step_config_json: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
+
+// Separate type for database updates (compatible with Supabase Json type)
+export type PromptBundleStepUpdate = {
+  step_number?: number;
+  step_name?: string;
+  step_description?: string;
+  prompt_template?: string;
+  model_override?: string | null;
+  timeout_seconds?: number | null;
+  is_heavy?: boolean;
+  max_expected_seconds?: number | null;
+  step_type?: StepType;
+  step_config_json?: Json;
+};
 
 export interface PromptBundleWithSteps extends PromptBundle {
   steps: PromptBundleStep[];
@@ -63,7 +82,7 @@ export function usePromptBundle(id: string | undefined) {
 
       const { data: steps, error: stepsError } = await supabase
         .from("prompt_bundle_steps")
-        .select("*, is_heavy, max_expected_seconds")
+        .select("*, is_heavy, max_expected_seconds, step_type, step_config_json")
         .eq("bundle_id", id)
         .order("step_number", { ascending: true });
 
@@ -188,7 +207,7 @@ export function useUpdatePromptStep() {
       id,
       bundleId,
       ...data
-    }: Partial<PromptBundleStep> & { id: string; bundleId: string }) => {
+    }: PromptBundleStepUpdate & { id: string; bundleId: string }) => {
       const { error } = await supabase
         .from("prompt_bundle_steps")
         .update(data)

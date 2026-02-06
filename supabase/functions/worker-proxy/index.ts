@@ -17,6 +17,8 @@ const VALID_ACTIONS = [
   "refund_credit",
   "get_prompt_bundle",
   "log_message",
+  "execute_firecrawl_search",
+  "execute_firecrawl_scrape",
 ] as const;
 
 type Action = typeof VALID_ACTIONS[number];
@@ -158,6 +160,10 @@ serve(async (req) => {
         return await handleGetPromptBundle(supabase);
       case "log_message":
         return await handleLogMessage(supabase, params);
+      case "execute_firecrawl_search":
+        return await handleFirecrawlSearch(params);
+      case "execute_firecrawl_scrape":
+        return await handleFirecrawlScrape(params);
       default:
         return errorResponse("Unknown action");
     }
@@ -240,7 +246,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
           .select(`
             id,
             system_prompt,
-          steps:prompt_bundle_steps (
+        steps:prompt_bundle_steps (
             step_number,
             step_name,
             step_description,
@@ -249,7 +255,9 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
             timeout_seconds,
             is_heavy,
             max_expected_seconds,
-            is_assembly_step
+            is_assembly_step,
+            step_type,
+            step_config_json
           )
           `)
           .eq("id", grantVersion.prompt_bundle_id)
@@ -322,7 +330,9 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
           timeout_seconds,
           is_heavy,
           max_expected_seconds,
-          is_assembly_step
+          is_assembly_step,
+          step_type,
+          step_config_json
         )
       `)
       .eq("is_active", true)
@@ -670,7 +680,9 @@ async function handleGetPromptBundle(supabase: any) {
         model_override,
         timeout_seconds,
         is_heavy,
-        max_expected_seconds
+        max_expected_seconds,
+        step_type,
+        step_config_json
       )
     `)
     .eq("is_active", true)
@@ -746,4 +758,145 @@ async function handleLogMessage(supabase: any, params: Record<string, unknown>) 
   }
 
   return jsonResponse({ success: true });
+}
+
+// ============================================
+// FIRECRAWL HANDLERS
+// ============================================
+
+async function handleFirecrawlSearch(params: Record<string, unknown>) {
+  const { query, limit, scrape_options, site_filters } = params;
+
+  if (!query || typeof query !== "string") {
+    return errorResponse("query is required and must be a string");
+  }
+
+  const apiKey = Deno.env.get("FIRECRAWL_API_KEY");
+  if (!apiKey) {
+    console.error("FIRECRAWL_API_KEY not configured");
+    return errorResponse("Firecrawl connector not configured", 500);
+  }
+
+  // Build query with optional site filters
+  let searchQuery = query;
+  if (site_filters && Array.isArray(site_filters) && site_filters.length > 0) {
+    const siteClause = site_filters.map((s: string) => `site:${s}`).join(" OR ");
+    searchQuery = `${query} ${siteClause}`;
+  }
+
+  console.log(`[FIRECRAWL] Search query: ${searchQuery}, limit: ${limit || 10}`);
+
+  try {
+    const response = await fetch("https://api.firecrawl.dev/v1/search", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        limit: typeof limit === "number" ? limit : 10,
+        scrapeOptions: scrape_options || { formats: ["markdown"] },
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Firecrawl search error:", data);
+      return errorResponse(data.error || `Firecrawl search failed: ${response.status}`, response.status);
+    }
+
+    // Format results with source IDs for AI consumption
+    const results = data.data || [];
+    const sources = results.map((r: any, i: number) => ({
+      source_id: `SEARCH-${i + 1}`,
+      url: r.url,
+      title: r.title || r.metadata?.title || "Untitled",
+      description: r.description || r.metadata?.description || "",
+      content: r.markdown?.substring(0, 8000) || r.content?.substring(0, 8000) || "",
+      confidence: "high", // Real search result
+    }));
+
+    console.log(`[FIRECRAWL] Search returned ${sources.length} results`);
+
+    return jsonResponse({
+      success: true,
+      query: searchQuery,
+      results_count: sources.length,
+      sources,
+    });
+  } catch (error) {
+    console.error("Firecrawl search exception:", error);
+    return errorResponse(error instanceof Error ? error.message : "Firecrawl search failed", 500);
+  }
+}
+
+async function handleFirecrawlScrape(params: Record<string, unknown>) {
+  const { url, formats } = params;
+
+  if (!url || typeof url !== "string") {
+    return errorResponse("url is required and must be a string");
+  }
+
+  const apiKey = Deno.env.get("FIRECRAWL_API_KEY");
+  if (!apiKey) {
+    console.error("FIRECRAWL_API_KEY not configured");
+    return errorResponse("Firecrawl connector not configured", 500);
+  }
+
+  // Format URL
+  let formattedUrl = url.trim();
+  if (!formattedUrl.startsWith("http://") && !formattedUrl.startsWith("https://")) {
+    formattedUrl = `https://${formattedUrl}`;
+  }
+
+  console.log(`[FIRECRAWL] Scraping URL: ${formattedUrl}`);
+
+  try {
+    const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: formattedUrl,
+        formats: formats || ["markdown"],
+        onlyMainContent: true,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Firecrawl scrape error:", data);
+      return errorResponse(data.error || `Firecrawl scrape failed: ${response.status}`, response.status);
+    }
+
+    // Extract content from response
+    const scraped = data.data || data;
+    const content = scraped.markdown || scraped.content || "";
+    const metadata = scraped.metadata || {};
+
+    console.log(`[FIRECRAWL] Scraped ${content.length} chars from ${formattedUrl}`);
+
+    return jsonResponse({
+      success: true,
+      url: formattedUrl,
+      title: metadata.title || "Untitled",
+      description: metadata.description || "",
+      content: content.substring(0, 50000), // Cap at 50k chars
+      metadata,
+      source: {
+        source_id: "ARTICLE-1",
+        url: formattedUrl,
+        title: metadata.title || "User-provided article",
+        confidence: "high",
+      },
+    });
+  } catch (error) {
+    console.error("Firecrawl scrape exception:", error);
+    return errorResponse(error instanceof Error ? error.message : "Firecrawl scrape failed", 500);
+  }
 }
