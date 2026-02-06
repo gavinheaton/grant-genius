@@ -1,10 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Server, Key, Zap } from "lucide-react";
-import { useBackendHealth, type FunctionProbeResult } from "@/hooks/useBackendHealth";
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle, Server, Key, Zap, Rocket } from "lucide-react";
+import { useBackendHealth, FUNCTION_CATEGORIES } from "@/hooks/useBackendHealth";
+import { FunctionCategorySection } from "@/components/admin/FunctionCategorySection";
+import { toast } from "@/hooks/use-toast";
 
 function StatusBadge({ status }: { status: "ok" | "error" | "not_deployed" | "unreachable" }) {
   const variants: Record<typeof status, { variant: "default" | "destructive" | "secondary"; icon: typeof CheckCircle }> = {
@@ -24,35 +26,80 @@ function StatusBadge({ status }: { status: "ok" | "error" | "not_deployed" | "un
   );
 }
 
-function FunctionProbeCard({ probe }: { probe: FunctionProbeResult }) {
-  return (
-    <div className="flex items-center justify-between p-3 border rounded-lg">
-      <div className="flex items-center gap-3">
-        <Zap className="h-4 w-4 text-muted-foreground" />
-        <div>
-          <p className="font-medium text-sm">{probe.name}</p>
-          {probe.latencyMs !== null && (
-            <p className="text-xs text-muted-foreground">{probe.latencyMs}ms</p>
-          )}
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        {probe.statusCode !== null && (
-          <span className="text-xs text-muted-foreground">HTTP {probe.statusCode}</span>
-        )}
-        <StatusBadge status={probe.status} />
-      </div>
-    </div>
-  );
-}
-
 export default function SystemHealth() {
-  const { checkHealth, isChecking, result, error } = useBackendHealth();
+  const { 
+    checkHealth, 
+    isChecking, 
+    result, 
+    error, 
+    deployingFunctions,
+    markDeploying,
+    clearDeploying,
+    getMissingFunctions,
+    getProbesByCategory,
+  } = useBackendHealth();
+  
+  const [isDeployingAll, setIsDeployingAll] = useState(false);
 
   // Auto-check on mount
   useEffect(() => {
     checkHealth();
   }, [checkHealth]);
+
+  const missingFunctions = getMissingFunctions();
+  const hasMissing = missingFunctions.length > 0;
+
+  const handleRequestDeploy = (functionName: string) => {
+    markDeploying(functionName);
+    toast({
+      title: "Deployment Requested",
+      description: (
+        <div className="space-y-2">
+          <p>To deploy <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">{functionName}</code>:</p>
+          <ol className="list-decimal list-inside text-sm space-y-1">
+            <li>Make a small change to the function code</li>
+            <li>Or click "Publish" to republish the project</li>
+          </ol>
+          <p className="text-xs text-muted-foreground">Edge functions auto-deploy on publish.</p>
+        </div>
+      ),
+      duration: 8000,
+    });
+    
+    // Clear deploying state after a delay
+    setTimeout(() => {
+      clearDeploying(functionName);
+    }, 5000);
+  };
+
+  const handleDeployAllMissing = () => {
+    setIsDeployingAll(true);
+    missingFunctions.forEach(f => markDeploying(f.name));
+    
+    toast({
+      title: `${missingFunctions.length} Functions Need Deployment`,
+      description: (
+        <div className="space-y-2">
+          <p>Missing functions:</p>
+          <ul className="list-disc list-inside text-sm">
+            {missingFunctions.map(f => (
+              <li key={f.name} className="font-mono text-xs">{f.name}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground mt-2">
+            Click "Publish" in the top right to deploy all functions.
+          </p>
+        </div>
+      ),
+      duration: 10000,
+    });
+    
+    // Clear deploying state after a delay
+    setTimeout(() => {
+      missingFunctions.forEach(f => clearDeploying(f.name));
+      setIsDeployingAll(false);
+    }, 5000);
+  };
 
   return (
     <div className="space-y-6">
@@ -145,7 +192,7 @@ export default function SystemHealth() {
                     <div key={name} className="flex items-center justify-between p-2 border rounded">
                       <span className="font-mono text-xs">{name}</span>
                       {present ? (
-                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <CheckCircle className="h-4 w-4 text-primary" />
                       ) : (
                         <XCircle className="h-4 w-4 text-destructive" />
                       )}
@@ -158,16 +205,33 @@ export default function SystemHealth() {
         </Card>
       )}
 
-      {/* Function Probes */}
+      {/* Function Probes with Categories */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Zap className="h-5 w-5" />
-            Function Deployment Status
-          </CardTitle>
-          <CardDescription>
-            Critical backend functions probed via OPTIONS request
-          </CardDescription>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5" />
+                Edge Functions
+              </CardTitle>
+              <CardDescription>
+                {result?.summary 
+                  ? `${result.summary.healthy}/${result.summary.total} functions healthy` 
+                  : "Probing backend functions..."}
+              </CardDescription>
+            </div>
+            {hasMissing && (
+              <Button 
+                variant="destructive" 
+                size="sm"
+                onClick={handleDeployAllMissing}
+                disabled={isDeployingAll}
+              >
+                <Rocket className="h-4 w-4 mr-2" />
+                Deploy All Missing ({missingFunctions.length})
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           {isChecking && !result ? (
@@ -178,16 +242,23 @@ export default function SystemHealth() {
             </div>
           ) : result?.functionProbes ? (
             <div className="space-y-2">
-              {result.functionProbes.map((probe) => (
-                <FunctionProbeCard key={probe.name} probe={probe} />
+              {FUNCTION_CATEGORIES.map((category) => (
+                <FunctionCategorySection
+                  key={category.id}
+                  category={category}
+                  probes={getProbesByCategory(category.id)}
+                  deployingFunctions={deployingFunctions}
+                  onRequestDeploy={handleRequestDeploy}
+                />
               ))}
-              {result.functionProbes.some(p => p.status === "not_deployed") && (
+              
+              {hasMissing && (
                 <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
                   <p className="text-sm text-destructive font-medium">
-                    ⚠️ Some functions are not deployed. This will cause 404 errors when users try to generate reports.
+                    ⚠️ {missingFunctions.length} function{missingFunctions.length > 1 ? "s are" : " is"} not deployed.
                   </p>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Functions should auto-deploy when code is published. If this persists, try re-publishing the project.
+                    Edge functions auto-deploy when you publish the project. Click "Publish" in the top-right corner to deploy all functions.
                   </p>
                 </div>
               )}
