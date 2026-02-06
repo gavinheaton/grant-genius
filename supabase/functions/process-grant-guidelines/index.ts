@@ -1018,97 +1018,130 @@ Return ONLY valid JSON matching the schema.`;
       `- ${m.role_name}: ${m.role_goal}`
     ).join('\n');
 
-    const pipelinePrompt = `You are an expert at designing high-quality, audit-ready research pipelines for ${archetype} grant applications.
+    const pipelinePrompt = `You are an expert at designing high-quality, assessor-ready grant research + grant-writing pipelines for Australian grant applications.
 
-Context:
-  Grant: ${grantName}
-  Archetype: ${archetype} (helper only)
-  Summary: ${suggestions.grant_summary || 'Grant application'}
+You will be given:
 
-Authoritative Inputs:
-  Required Inputs (JSON): ${formattedRequiredInputs}
-  Rubric/Assessment Criteria (JSON): ${formattedRubricJson}
-  Grant Guidelines: ${guidelines_text.substring(0, 15000)}
+Grant Name: ${grantName}
 
-REQUIRED MODULES FOR THIS ARCHETYPE:
+Archetype: ${archetype}
+
+Grant Summary: ${suggestions.grant_summary || 'Grant application'}
+
+Required Inputs JSON: ${formattedRequiredInputs}
+
+Rubric JSON: ${formattedRubricJson}
+
+Grant Guidelines (raw text): ${guidelines_text.substring(0, 15000)}
+
+Selected Archetype Modules:
 ${modulesDescription}
 
-${WRITER_STANCE_PREAMBLE}
+OBJECTIVE
 
-KEY CHANGE: PIPELINE MUST BE RUBRIC + REQUIRED INPUTS DRIVEN (NOT ARCHETYPE DRIVEN)
+Generate a pipeline that produces:
 
-Before generating steps, you MUST internally derive:
-A) Rubric Coverage Plan
-   - For each rubric section: key, title, weight
-   - For each criterion: what evidence is required to score well
+1. Auditable external evidence (sources + calculations), AND
+2. Grant-writer artefacts that map directly to rubric + required inputs, AND
+3. A final assembled report that reads like a professional grant submission support document (not a research memo).
 
-B) Required Inputs Plan
-   - Identify which required inputs exist vs are missing (these become unknowns/questions)
-   - Identify compliance constraints from guidelines if present (page limits, forbidden claims, mandatory attachments)
+This pipeline must generalise to ANY grant archetype by including a mandatory "Grant Writer Core" plus archetype-specific modules.
 
-C) Depth Control by Weight
-   - weight >= 35% → allocate 3–5 steps of evidence gathering to that rubric area
-   - weight 20–34% → allocate 2–3 steps
-   - weight < 20% → allocate 1–2 steps
+WRITER STANCE CONTRACT
 
-You do NOT output this plan; you use it to design the steps.
+You are a professional grant writer (10+ years Australian government funding experience) and a commercialisation analyst. Your audience is expert assessors scoring against published criteria.
 
-REQUIRED PIPELINE STRUCTURE (hard requirements):
-You MUST include these steps in every pipeline:
+TONE RULES:
+1. No hype or unsubstantiated superlatives—use qualified, evidence-based language.
+2. Every assumption must be labelled: (High confidence) / (Medium confidence) / (Low confidence).
+3. If a claim is not supported by an allowed source_id, output exactly: "Unknown (no validated source found)".
+4. Always address additionality and counterfactual: what happens without funding vs with funding.
+5. Always articulate jurisdiction benefit relevant to the grant: Australian jobs, exports, productivity, sovereign capability, regional impact, health outcomes, emissions reduction, etc.
 
-Step 0: build_source_pack (ALWAYS first)
-  - Curates authoritative sources.
+EVIDENCE RULES:
+1. All numeric claims must have a source_id.
+2. Preserve source IDs exactly as provided in Step 0 source pack—never renumber or invent IDs.
+3. Never use placeholders like "Source1", "[insert]", "{TBD}", "article", or bracketed tokens in final narrative outputs.
+4. Every source_id used must exist in the consolidated sources list.
+5. If specific data is unavailable, provide conservative proxy estimates and show the method and sensitivity.
 
-Step 1: rubric_coverage_map
-  - Converts rubric into an assessor-facing evidence checklist and scoring intent.
+OUTPUT RULES:
+1. Return ONLY valid JSON (no code fences, no prose outside JSON).
+2. First character must be { and last character must be }.
+3. Do not include \`\`\` anywhere.
 
-Step 2: inputs_and_compliance_gap_check
-  - Uses REQUIRED_INPUTS_JSON + guidelines to produce:
-    - required_present / required_missing
-    - questions_for_applicant
-    - compliance constraints discovered
+MANDATORY PIPELINE DESIGN (applies to ALL grants)
 
-Then include research steps aligned to the rubric/modules.
+You MUST include the following "GRANT WRITER CORE" steps in every pipeline, in this order (after Step 0):
 
-Final required research steps:
-  - report_assembly (structured narrative blocks + table anchors; still JSON)
-  - finalize_citations (consolidated sources + validation that every cited source_id exists; still JSON)
+Step 0: build_source_pack (always first)
+  - Curate 12-25 high-quality evidence sources relevant to the research domain.
 
-DO NOT include HTML assembly steps — those are added automatically.
+Core Steps (must always exist, names must match exactly):
 
-MANDATORY PROMPT STRUCTURE (every research step MUST include ALL of these):
+Step 1: rubric_mapping_matrix
+  - Produces a table mapping each rubric criterion → required evidence types → where it will be addressed in the report.
 
-1. CONTEXT HEADER
-   Must start with: STEP N — [Purpose]
-   Must include INPUTS: listing variables used, e.g. {{summary}}, {{step0}}
+Step 2: required_inputs_coverage_map
+  - Produces a checklist ensuring every required_inputs.key is addressed and where it appears.
 
-2. HARD RULES SECTION
-   Include 8+ explicit constraints, including:
-   - Do NOT invent facts or numbers
-   - Only include sources you can validate as real
-   - If specific data unavailable, use proxy calculations with shown methodology
-   - NEVER use placeholder tokens like [Company] or {value}
-   - Prefer Australian authoritative sources (.gov.au, .edu.au) when relevant
-   - Output valid JSON only
-   - Use "Unknown (no validated source found)" only when genuinely unsupported
-   - All numeric claims must have source_id
+Step 3: assumptions_register
+  - Produces a structured list of assumptions + confidence + sensitivity notes.
 
-3. OUTPUT SCHEMA
-   Define exact JSON structure with:
-   - Every field name with its type
-   - Constraints (required, max_length, etc.)
-   - Example values
-   IMPORTANT: Do not include template variables inside schema field descriptions.
+Step 4: additionality_and_benefit_case
+  - Produces the counterfactual, need for funding, and jurisdiction benefit logic aligned to rubric weighting.
 
-4. URL VALIDATION RULES (when sources required)
-   - Every source MUST have a valid URL or explicit "URL not available"
-   - Prefer government, academic, regulator, or peak-body sources
-   - If URL cannot be verified, mark confidence low
+Step 5: delivery_plan_and_milestones
+  - Produces milestones, timeline, dependencies, and (if relevant) TRL progression and validation approach.
 
-5. UNKNOWN HANDLING PROTOCOL
-   - If data unavailable, provide conservative proxy estimate with calculation shown
-   - Include 'unknowns' array listing what couldn't be found and what would resolve it
-   - Use "Not publicly disclosed" where appropriate
+Step 6: risk_register_and_governance
+  - Produces key risks, mitigations, owners, governance approach, compliance constraints.
+
+Step 7: budget_logic_and_value_for_money
+  - Produces budget narrative logic: cost categories, co-contribution logic, value-for-money rationale (no invented numbers unless sourced).
+
+After the core steps, include archetype-specific research modules chosen from the selected modules above, such as:
+- market_need_quantification
+- competitor_and_alternatives
+- tam_sam_som_analysis
+- regulatory_and_pathway (for health/clinical/defence)
+- partner_stakeholder_mapping
+- impact_model (economic, social, climate)
+- workforce_and_capability
+- infrastructure_and_procurement
+
+Final Steps (must exist):
+
+N-1: report_assembly
+  - Assembles an assessor-ready markdown report that explicitly follows rubric + required inputs coverage.
+  - Must instruct the model to write like a grant writer and to explicitly reference rubric sections by title.
+
+N: finalize_citations
+  - Produces APA reference list + validates every in-text citation maps to a reference entry.
+  - Must ensure no placeholder citation tokens remain in the assembled report.
+
+IMPORTANT: Do NOT include HTML assembly steps in this pipeline—those are added automatically downstream.
+
+MANDATORY PROMPT TEMPLATE STRUCTURE (for EVERY step prompt_template)
+
+Each step's prompt_template MUST:
+
+1. Start with: "STEP N — [Purpose]"
+
+2. Include an INPUTS section listing required variables (e.g., {{summary}}, {{grantRubric}}, {{requiredInputs}}, {{step0}}, etc.)
+
+3. Include HARD RULES (5+ explicit constraints):
+   - Do NOT invent facts or numbers.
+   - NEVER use placeholder tokens or bracketed placeholders.
+   - Only cite validated sources; otherwise use "Unknown (no validated source found)".
+   - Show methods for calculations and proxy estimates.
+   - Prefer Australian authoritative sources where applicable.
+   - All numeric claims must have source_id.
+   - Output valid JSON only.
+
+4. Include UNKNOWN HANDLING protocol (unknowns array + what's needed to validate).
+
+5. Include OUTPUT JSON SCHEMA with exact fields, types, and constraints.
 
 MINIMUM PROMPT LENGTH: Each research step prompt MUST be at least 1,500 characters.
 
@@ -1118,15 +1151,17 @@ Only these variables may appear in prompt_template INPUTS/HARD RULES:
 {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
 {{requiredInputs}}, {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
 
-${PROMPT_QUALITY_TEMPLATE}
-
-${PROMPT_REFERENCE_EXAMPLE}
+QUALITY GATES (must satisfy):
+1. Every rubric section and criterion must be addressed by at least one step (explicitly).
+2. Every required input key must be mapped to a report section in required_inputs_coverage_map.
+3. report_assembly must instruct the model to write like a grant writer and to explicitly reference rubric sections (by title) and required input sections (by source_section).
+4. finalize_citations must output clean APA references and must ensure no placeholder citation tokens remain in the assembled report.
 
 Output integrity rules:
 - step_number sequential from 0 with no gaps
 - step_name snake_case unique
-- include at least 8 total steps
-- include Step 1 rubric_coverage_map and Step 2 inputs_and_compliance_gap_check
+- include at least 10 total steps (8 core + archetype modules + 2 final)
+- include all 8 Grant Writer Core steps (build_source_pack, rubric_mapping_matrix, required_inputs_coverage_map, assumptions_register, additionality_and_benefit_case, delivery_plan_and_milestones, risk_register_and_governance, budget_logic_and_value_for_money)
 - include final report_assembly and finalize_citations steps
 
 Return JSON:
@@ -1145,7 +1180,7 @@ Return JSON:
   ]
 }
 
-Now generate the pipeline steps using the rubric weights and required inputs as the primary driver.`;
+Now generate the pipeline steps using the Grant Writer Core structure, adding archetype-specific modules where relevant.`;
 
     const pipelineResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
       method: "POST",
