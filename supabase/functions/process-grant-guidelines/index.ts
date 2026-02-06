@@ -389,6 +389,88 @@ function createDataGatheringSteps(researchDomain: string, archetype: GrantArchet
 }
 
 // ============================================================================
+// QA GATES STEP
+// ============================================================================
+
+function createQAGatesStep(maxResearchStep: number, rubricSections: { key: string; title: string }[]) {
+  const stepRefs = Array.from({ length: maxResearchStep + 1 }, (_, i) => `{{step${i}}}`).join(", ");
+  const criteriaList = rubricSections.map(s => `- ${s.key}: ${s.title}`).join("\n");
+
+  return {
+    step_name: "qa_gates_validation",
+    step_description: "Validate report quality across citation integrity, criteria coverage, and assessor readiness",
+    model_tier: "balanced",
+    phase: "qa",
+    prompt_template: `STEP ${maxResearchStep + 1} — QA Gates Validation
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS (from previous steps):
+- All prior step outputs: ${stepRefs}
+
+PURPOSE:
+Perform three mandatory quality gates before final report assembly. This step does NOT modify content—it validates and flags issues.
+
+=== GATE 1: CITATION INTEGRITY ===
+Check ALL source_ids referenced in prior steps:
+□ Every source_id (e.g., S0-1, S0-2) exists in a sources array
+□ No malformed source_ids (no "Source1", "[insert]", "{TBD}")
+□ No orphan citations (referenced but never defined)
+□ No duplicate source_ids with conflicting data
+□ URLs are valid format or explicitly marked "URL not available"
+
+=== GATE 2: CRITERIA COVERAGE ===
+Check coverage against the grant's evaluation criteria:
+${criteriaList || "- No specific criteria provided (use general assessment)"}
+
+For each criterion:
+□ Is it explicitly addressed in the research outputs?
+□ If not addressed, flag as a gap
+□ If partially addressed, note what's missing
+
+=== GATE 3: ASSESSOR READINESS ===
+Evaluate from an assessor's perspective:
+□ NARRATIVE SPINE: Is there a clear problem → solution → impact flow?
+□ ADDITIONALITY: Is "why funding is needed" clearly stated?
+□ JURISDICTION BENEFIT: Are Australian benefits (jobs, exports, sovereignty) quantified?
+□ RISKS: Are key risks identified with mitigation strategies?
+□ EVIDENCE QUALITY: Are claims supported by credible sources?
+□ UNKNOWN HANDLING: Are unknowns explicitly marked (not hidden or invented)?
+
+HARD RULES:
+1. Do NOT fix issues—only identify and report them
+2. Be specific: cite exact source_ids, step numbers, and field names
+3. Mark issues as "blocking" (must fix) or "advisory" (should fix)
+4. Calculate overall quality_score (0-100) based on percentage of checks passed
+
+OUTPUT JSON SCHEMA:
+{
+  "citation_integrity": {
+    "gate_name": "Citation Integrity",
+    "passed": true,
+    "issues": ["Missing source S0-5 referenced in step3.market_sizing"],
+    "recommendations": ["Add source S0-5 to sources array or remove citation"]
+  },
+  "criteria_coverage": {
+    "gate_name": "Criteria Coverage", 
+    "passed": true,
+    "issues": ["Criterion 'technical_feasibility' not addressed"],
+    "recommendations": ["Add technical feasibility assessment based on TRL data"]
+  },
+  "assessor_readiness": {
+    "gate_name": "Assessor Readiness",
+    "passed": true,
+    "issues": ["Additionality statement missing from economic impact"],
+    "recommendations": ["Add explicit statement on what would NOT happen without funding"]
+  },
+  "overall_pass": true,
+  "blocking_issues": ["List of issues that MUST be fixed before report can be finalized"],
+  "quality_score": 85
+}`
+  };
+}
+
+// ============================================================================
 // HTML ASSEMBLY STEPS
 // ============================================================================
 
