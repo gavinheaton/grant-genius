@@ -1197,12 +1197,31 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       phase: "research"
     }));
     
-    const maxAIStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
+    const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
 
-    // Generate HTML assembly steps
-    const htmlAssemblySteps = createHtmlAssemblySteps(maxAIStep);
+    // Generate QA Gates step
+    console.log("Step 5.1: Adding QA Gates validation step...");
+    const rubricSections = suggestions.rubric?.sections || [];
+    const qaGatesTemplate = createQAGatesStep(maxResearchStep, rubricSections);
+    const qaGatesStep = {
+      step_number: maxResearchStep + 1,
+      step_name: qaGatesTemplate.step_name,
+      step_description: qaGatesTemplate.step_description,
+      prompt_template: qaGatesTemplate.prompt_template,
+      step_type: 'ai_prompt' as const,
+      step_config_json: {},
+      model_override: tierToModel[qaGatesTemplate.model_tier] || null,
+      is_heavy: false,
+      phase: qaGatesTemplate.phase
+    };
+    
+    // Max step is now after QA gates
+    const maxStepBeforeAssembly = maxResearchStep + 1; // QA gates step
+
+    // Generate HTML assembly steps (after QA gates)
+    const htmlAssemblySteps = createHtmlAssemblySteps(maxStepBeforeAssembly);
     const assemblySteps = htmlAssemblySteps.map((step, idx) => ({
-      step_number: maxAIStep + 1 + idx,
+      step_number: maxStepBeforeAssembly + 1 + idx,
       step_name: step.step_name,
       step_description: step.step_description,
       prompt_template: step.prompt_template,
@@ -1234,10 +1253,11 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       throw new Error("Failed to create prompt bundle");
     }
 
-    // Combine all steps
+    // Combine all steps: Firecrawl → AI Research → QA Gates → Assembly
     const stepsToInsert = [
       ...firecrawlSteps.map(s => ({ ...s, bundle_id: bundle.id })),
       ...aiAnalysisSteps.map(s => ({ ...s, bundle_id: bundle.id })),
+      { ...qaGatesStep, bundle_id: bundle.id },
       ...assemblySteps.map(s => ({ ...s, bundle_id: bundle.id }))
     ];
     
