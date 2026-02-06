@@ -57,6 +57,10 @@ const systemItems = [
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
 ];
 
+const superAdminItems = [
+  { title: "AI Assistant", url: "/admin/assistant", icon: Sparkles },
+];
+
 export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
