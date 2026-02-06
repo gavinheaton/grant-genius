@@ -1177,7 +1177,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_config_json: step.step_config_json,
       model_override: null,
       is_heavy: false,
-      phase: step.phase
+      is_assembly_step: false
     }));
     
     console.log(`Created ${firecrawlSteps.length} Firecrawl data-gathering steps`);
