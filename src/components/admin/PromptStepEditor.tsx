@@ -12,8 +12,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PromptBundleStep, useRegenerateStepPrompt } from "@/hooks/usePromptBundles";
+import { PromptBundleStep, useRegenerateStepPrompt, StepType } from "@/hooks/usePromptBundles";
 import { RegeneratePromptDialog } from "./RegeneratePromptDialog";
+import { StepTypeEditor } from "./StepTypeEditor";
 
 // Processing window options in seconds
 const TIMEOUT_OPTIONS = [
@@ -47,6 +48,8 @@ interface PromptStepEditorProps {
       timeout_seconds?: number | null;
       is_heavy?: boolean;
       max_expected_seconds?: number | null;
+      step_type?: StepType;
+      step_config_json?: Record<string, unknown>;
     }
   ) => Promise<void>;
 }
@@ -67,6 +70,10 @@ export function PromptStepEditor({
   const [isHeavy, setIsHeavy] = useState(step.is_heavy ?? false);
   const [maxExpectedSeconds, setMaxExpectedSeconds] = useState<string>(
     step.max_expected_seconds ? String(step.max_expected_seconds) : ""
+  );
+  const [stepType, setStepType] = useState<StepType>(step.step_type || "ai_prompt");
+  const [stepConfig, setStepConfig] = useState<Record<string, unknown>>(
+    (step.step_config_json as Record<string, unknown>) || {}
   );
   const [hasChanges, setHasChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -110,8 +117,16 @@ export function PromptStepEditor({
     setTimeoutSeconds(step.timeout_seconds ? String(step.timeout_seconds) : "default");
     setIsHeavy(step.is_heavy ?? false);
     setMaxExpectedSeconds(step.max_expected_seconds ? String(step.max_expected_seconds) : "");
+    setStepType(step.step_type || "ai_prompt");
+    setStepConfig((step.step_config_json as Record<string, unknown>) || {});
     setHasChanges(false);
   }, [step]);
+
+  const handleStepTypeChange = (newType: StepType, newConfig: Record<string, unknown>) => {
+    setStepType(newType);
+    setStepConfig(newConfig);
+    setHasChanges(true);
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -122,6 +137,8 @@ export function PromptStepEditor({
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
         is_heavy: isHeavy,
         max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
+        step_type: stepType,
+        step_config_json: stepConfig,
       });
       setHasChanges(false);
     } finally {
@@ -191,113 +208,131 @@ export function PromptStepEditor({
   const effectiveModel = modelOverride || defaultModel;
   const defaultTimeout = getDefaultTimeout(step.step_number);
 
+  // Determine if this is a Firecrawl step (hide AI-specific options)
+  const isFirecrawlStep = stepType !== "ai_prompt";
+
   return (
     <div className="space-y-4 pt-4">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label>Processing Window</Label>
-          <span className="text-xs text-muted-foreground">
-            Default: {defaultTimeout}s
-          </span>
-        </div>
-        <Select
-          value={timeoutSeconds}
-          onValueChange={(value) => {
-            setTimeoutSeconds(value);
-            setHasChanges(true);
-          }}
-          disabled={!canEdit}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {TIMEOUT_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.value === "default" 
-                  ? `Default (${defaultTimeout}s)` 
-                  : option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-muted-foreground">
-          Controls how long the AI request can run before timing out.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label>Model</Label>
-          <span className="text-xs text-muted-foreground">
-            Default: {models.find((m) => m.value === defaultModel)?.label || defaultModel}
-          </span>
-        </div>
-        <Select
-          value={effectiveModel}
-          onValueChange={(value) => {
-            setModelOverride(value === defaultModel ? "" : value);
-            setHasChanges(true);
-          }}
-          disabled={!canEdit}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {models.map((model) => (
-              <SelectItem key={model.value} value={model.value}>
-                {model.label}
-                {model.value === defaultModel && " (Default)"}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Heavy Step Toggle */}
-      <div className="flex items-center justify-between rounded-lg border p-4">
-        <div className="space-y-0.5">
-          <Label htmlFor={`heavy-${step.id}`} className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-            Heavy Step
-          </Label>
-          <p className="text-xs text-muted-foreground">
-            Mark this step as too heavy for Edge execution (typically &gt;45s)
-          </p>
-        </div>
-        <Switch
-          id={`heavy-${step.id}`}
-          checked={isHeavy}
-          onCheckedChange={(checked) => {
-            setIsHeavy(checked);
-            setHasChanges(true);
-          }}
-          disabled={!canEdit}
+      {/* Step Type Editor - Super Admin only */}
+      {isSuperAdmin && (
+        <StepTypeEditor
+          stepType={stepType}
+          stepConfig={stepConfig}
+          canEdit={canEdit}
+          onChange={handleStepTypeChange}
         />
-      </div>
+      )}
 
-      {/* Max Expected Seconds */}
-      <div className="space-y-2">
-        <Label htmlFor={`max-seconds-${step.id}`}>Max Expected Seconds (optional)</Label>
-        <Input
-          id={`max-seconds-${step.id}`}
-          type="number"
-          min="1"
-          max="300"
-          value={maxExpectedSeconds}
-          onChange={(e) => {
-            setMaxExpectedSeconds(e.target.value);
-            setHasChanges(true);
-          }}
-          disabled={!canEdit}
-          placeholder="e.g., 45"
-          className="w-32"
-        />
-        <p className="text-xs text-muted-foreground">
-          Expected runtime for monitoring and alerts. Leave empty if unknown.
-        </p>
-      </div>
+      {/* AI-specific options - only show for ai_prompt steps */}
+      {!isFirecrawlStep && (
+        <>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Processing Window</Label>
+              <span className="text-xs text-muted-foreground">
+                Default: {defaultTimeout}s
+              </span>
+            </div>
+            <Select
+              value={timeoutSeconds}
+              onValueChange={(value) => {
+                setTimeoutSeconds(value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TIMEOUT_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.value === "default" 
+                      ? `Default (${defaultTimeout}s)` 
+                      : option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Controls how long the AI request can run before timing out.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Model</Label>
+              <span className="text-xs text-muted-foreground">
+                Default: {models.find((m) => m.value === defaultModel)?.label || defaultModel}
+              </span>
+            </div>
+            <Select
+              value={effectiveModel}
+              onValueChange={(value) => {
+                setModelOverride(value === defaultModel ? "" : value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {models.map((model) => (
+                  <SelectItem key={model.value} value={model.value}>
+                    {model.label}
+                    {model.value === defaultModel && " (Default)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Heavy Step Toggle */}
+          <div className="flex items-center justify-between rounded-lg border p-4">
+            <div className="space-y-0.5">
+              <Label htmlFor={`heavy-${step.id}`} className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                Heavy Step
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Mark this step as too heavy for Edge execution (typically &gt;45s)
+              </p>
+            </div>
+            <Switch
+              id={`heavy-${step.id}`}
+              checked={isHeavy}
+              onCheckedChange={(checked) => {
+                setIsHeavy(checked);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+            />
+          </div>
+
+          {/* Max Expected Seconds */}
+          <div className="space-y-2">
+            <Label htmlFor={`max-seconds-${step.id}`}>Max Expected Seconds (optional)</Label>
+            <Input
+              id={`max-seconds-${step.id}`}
+              type="number"
+              min="1"
+              max="300"
+              value={maxExpectedSeconds}
+              onChange={(e) => {
+                setMaxExpectedSeconds(e.target.value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+              placeholder="e.g., 45"
+              className="w-32"
+            />
+            <p className="text-xs text-muted-foreground">
+              Expected runtime for monitoring and alerts. Leave empty if unknown.
+            </p>
+          </div>
+        </>
+      )}
 
       <div className="space-y-2">
         <Label>Prompt Template</Label>

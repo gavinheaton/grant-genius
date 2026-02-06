@@ -227,14 +227,15 @@ WHERE bundle_id = '6abbcd3f-3cf0-41ef-869b-2138abfbc788';
 1. ✅ Add `step_type` column to `prompt_bundle_steps`
 2. ✅ Add `step_config_json` column for search/scrape configuration
 
-### Phase D: Pipeline Generator Update (2-3 hours) — PENDING
-1. Modify `process-grant-guidelines` to generate hybrid pipelines
-2. Add Firecrawl search steps before AI analysis steps
-3. Update step numbering and references
+### Phase D: Pipeline Generator Update (2-3 hours) — ✅ COMPLETE
+1. ✅ Modify `process-grant-guidelines` to generate hybrid pipelines
+2. ✅ Add Firecrawl data-gathering steps (Steps 0-3) before AI analysis steps
+3. ✅ Update step numbering and references (AI steps now start at Step 4)
+4. ✅ Add StepTypeEditor UI component for configuring Firecrawl steps
 
 ### Phase E: External Worker Update (External - 2-3 hours) — PENDING
 1. Add step type detection logic
-2. Implement Firecrawl step execution
+2. Implement Firecrawl step execution via worker-proxy
 3. Test full hybrid pipeline
 
 ## Files to Modify

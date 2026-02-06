@@ -687,6 +687,65 @@ Return a JSON array with the enhanced prompts:
       pro: "google/gemini-3-pro-preview"
     };
 
+    // ========== PHASE 1: Data Gathering Steps (Firecrawl) ==========
+    // These inject real web search results before AI analysis
+    const createDataGatheringSteps = (grantDomain: string) => {
+      return [
+        {
+          step_number: 0,
+          step_name: "scrape_article",
+          step_description: "Scrape the user's research article URL to extract content",
+          step_type: "firecrawl_scrape",
+          step_config_json: {
+            url_variable: "publicArticleUrl",
+            formats: ["markdown"],
+            onlyMainContent: true
+          },
+          prompt_template: "FIRECRAWL_SCRAPE: This step scrapes the user-provided article URL ({{publicArticleUrl}}) and extracts markdown content for subsequent analysis.",
+          model_tier: null
+        },
+        {
+          step_number: 1,
+          step_name: "search_market_data",
+          step_description: "Search for market sizing and industry data relevant to the research domain",
+          step_type: "firecrawl_search",
+          step_config_json: {
+            query_template: `${grantDomain} market size Australia 2024 site:abs.gov.au OR site:ibisworld.com OR site:statista.com`,
+            limit: 8,
+            scrape_results: true
+          },
+          prompt_template: "FIRECRAWL_SEARCH: This step searches for market sizing data using query based on the research domain. Results are stored with source IDs for citation.",
+          model_tier: null
+        },
+        {
+          step_number: 2,
+          step_name: "search_competitors",
+          step_description: "Search for competitors and companies in the research domain",
+          step_type: "firecrawl_search",
+          step_config_json: {
+            query_template: `${grantDomain} companies startups Australia competitors`,
+            limit: 8,
+            scrape_results: true
+          },
+          prompt_template: "FIRECRAWL_SEARCH: This step searches for competitors in the research domain. Results include company names, URLs, and scraped content.",
+          model_tier: null
+        },
+        {
+          step_number: 3,
+          step_name: "search_policy_funding",
+          step_description: "Search for government policy and funding information",
+          step_type: "firecrawl_search",
+          step_config_json: {
+            query_template: `${grantDomain} government funding policy Australia site:gov.au`,
+            limit: 5,
+            scrape_results: false
+          },
+          prompt_template: "FIRECRAWL_SEARCH: This step searches for policy and funding information from government sources.",
+          model_tier: null
+        }
+      ];
+    };
+
     // ========== HTML Assembly Steps (auto-appended to all pipelines) ==========
     // These are hardcoded to ensure consistent report formatting across all grants
     const createHtmlAssemblySteps = (maxAIStep: number) => {
@@ -847,19 +906,49 @@ OUTPUT JSON SCHEMA:
       throw new Error("Failed to create prompt bundle");
     }
 
-    // Get the highest step number from AI-generated steps
-    const maxAIStep = Math.max(...pipelineData.steps.map((s: any) => s.step_number));
+    // ========== HYBRID PIPELINE ARCHITECTURE ==========
+    // Phase 1: Data Gathering (Firecrawl) - Steps 0-3
+    // Phase 2: AI Analysis - Steps 4-N (shifted from AI-generated steps)
+    // Phase 3: HTML Assembly - Steps N+1 to N+3
     
-    // Prepare AI-generated research steps
-    const researchSteps = pipelineData.steps.map((step: any) => ({
+    // Extract research domain from grant summary for search queries
+    const researchDomain = suggestions.grant_summary?.split(/[,.]/)[0] || grantName;
+    
+    // Create Phase 1: Firecrawl data-gathering steps
+    const dataGatheringSteps = createDataGatheringSteps(researchDomain);
+    const firecrawlSteps = dataGatheringSteps.map((step: any) => ({
       bundle_id: bundle.id,
       step_number: step.step_number,
       step_name: step.step_name,
       step_description: step.step_description,
       prompt_template: step.prompt_template,
+      step_type: step.step_type,
+      step_config_json: step.step_config_json,
+      model_override: null,
+      is_heavy: false,
+    }));
+    
+    console.log(`Created ${firecrawlSteps.length} Firecrawl data-gathering steps`);
+    
+    // The number of Firecrawl steps shifts AI analysis steps
+    const firecrawlOffset = dataGatheringSteps.length; // Typically 4
+    
+    // Shift AI-generated research steps to account for Firecrawl steps
+    // Original step 0 becomes step 4, step 1 becomes step 5, etc.
+    const aiAnalysisSteps = pipelineData.steps.map((step: any) => ({
+      bundle_id: bundle.id,
+      step_number: step.step_number + firecrawlOffset, // Shift by offset
+      step_name: step.step_name,
+      step_description: step.step_description,
+      prompt_template: step.prompt_template,
+      step_type: 'ai_prompt' as const,
+      step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: step.model_tier === "pro",
     }));
+    
+    // Get the highest step number after shifting
+    const maxAIStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
 
     // Generate and append standardized HTML assembly steps
     const htmlAssemblySteps = createHtmlAssemblySteps(maxAIStep);
@@ -869,14 +958,16 @@ OUTPUT JSON SCHEMA:
       step_name: step.step_name,
       step_description: step.step_description,
       prompt_template: step.prompt_template,
+      step_type: 'ai_prompt' as const,
+      step_config_json: {},
       model_override: tierToModel[step.model_tier] || null,
       is_heavy: false,
     }));
 
-    // Combine research steps + assembly steps
-    const stepsToInsert = [...researchSteps, ...assemblySteps];
+    // Combine all phases: Firecrawl + AI Analysis + Assembly
+    const stepsToInsert = [...firecrawlSteps, ...aiAnalysisSteps, ...assemblySteps];
     
-    console.log(`Inserting ${researchSteps.length} research steps + ${assemblySteps.length} HTML assembly steps = ${stepsToInsert.length} total`);
+    console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + ${assemblySteps.length} HTML assembly = ${stepsToInsert.length} total`);
 
     // ========== ASSEMBLY STEP VALIDATION ==========
     // Ensure finalize_report_html has correct step references and output field
@@ -945,7 +1036,7 @@ OUTPUT JSON SCHEMA:
       })
       .eq("id", grant_version_id);
 
-    // Audit log - include total step count (research + assembly)
+    // Audit log - include total step count with Firecrawl breakdown
     const totalStepCount = stepsToInsert.length;
     await supabaseAdmin.from("audit_logs").insert({
       entity_type: "grant_version",
@@ -954,10 +1045,12 @@ OUTPUT JSON SCHEMA:
       user_id: userId,
       new_value_json: { 
         bundle_id: bundle.id, 
-        research_steps: researchSteps.length,
+        firecrawl_steps: firecrawlSteps.length,
+        ai_analysis_steps: aiAnalysisSteps.length,
         assembly_steps: assemblySteps.length,
         total_steps: totalStepCount,
-        pipeline_name: pipelineData.pipeline_name
+        pipeline_name: pipelineData.pipeline_name,
+        hybrid_architecture: true
       }
     });
 
@@ -967,7 +1060,8 @@ OUTPUT JSON SCHEMA:
       success: true,
       bundle_id: bundle.id,
       step_count: totalStepCount,
-      research_steps: researchSteps.length,
+      firecrawl_steps: firecrawlSteps.length,
+      ai_analysis_steps: aiAnalysisSteps.length,
       assembly_steps: assemblySteps.length,
       suggestions: {
         grant_summary: suggestions.grant_summary,

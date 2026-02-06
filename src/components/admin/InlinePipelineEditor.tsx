@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Plus, Trash2, ChevronUp, ChevronDown, Info, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { Json } from "@/integrations/supabase/types";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,6 +42,7 @@ import {
   useDeletePromptStep,
   useReorderPromptSteps,
   PromptBundleStep,
+  StepType,
 } from "@/hooks/usePromptBundles";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { PromptStepEditor, GrantContext } from "@/components/admin/PromptStepEditor";
@@ -168,12 +170,22 @@ export function InlinePipelineEditor({
 
   const handleStepUpdate = async (
     stepId: string,
-    data: { prompt_template?: string; model_override?: string | null }
+    data: { 
+      prompt_template?: string; 
+      model_override?: string | null;
+      timeout_seconds?: number | null;
+      is_heavy?: boolean;
+      max_expected_seconds?: number | null;
+      step_type?: StepType;
+      step_config_json?: Record<string, unknown>;
+    }
   ) => {
     await updateStep.mutateAsync({
       id: stepId,
       bundleId,
       ...data,
+      // Cast step_config_json to Json for Supabase compatibility
+      step_config_json: data.step_config_json as Json,
     });
   };
 
