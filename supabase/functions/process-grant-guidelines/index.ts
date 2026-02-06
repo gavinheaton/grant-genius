@@ -1084,50 +1084,152 @@ OUTPUT JSON SCHEMA:
 }`
     },
     {
-      step_name: "finalize_report_html",
-      step_description: "Merge sections, tables, and sources into final report_html output",
+      step_name: "clean_citations_apa",
+      step_description: "Transform internal source IDs to APA author-year citations and build References section",
       model_tier: "balanced",
-      phase: "render",
-      prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
+      phase: "assembly",
+      prompt_template: `STEP ${maxAIStep + 3} — Clean Citations (APA Transformation)
 
 ${WRITER_STANCE_PREAMBLE}
 
-You are merging the research narrative with data tables to produce the final report.
+You are a citation formatting specialist. Transform all internal source ID markers 
+into proper APA author-year citations and produce a clean References section.
+
+INPUTS:
+- {{step${maxAIStep + 1}}}: sections_html containing internal citation markers
+- {{step${maxAIStep + 2}}}: tables and all_sources array
+
+INTERNAL MARKER PATTERNS TO REMOVE:
+- [S0-1], [S0-A1], [S1-2] (step-source format)
+- [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format)  
+- [TBD], [{TBD}], any bracketed ALLCAPS/ID token
+- <sup>[S0-1]</sup> (superscript-wrapped markers)
+
+HARD RULES:
+1. NEVER output any bracketed internal source IDs in the cleaned HTML
+2. Do NOT replace internal IDs with new placeholders like [1] or [Author]
+3. Do NOT cite sources not present in all_sources
+4. If a claim cannot be supported by a validated source, keep the claim but 
+   remove the marker completely OR label as "Unknown (no validated source)"
+5. No malformed or duplicate references
+6. Hyperlink citations and reference URLs where available
+
+TRANSFORMATION PROCESS:
+
+A) Build source lookup map:
+   Parse all_sources from Step ${maxAIStep + 2} to create a dictionary keyed by "id" (e.g., "S0-1")
+   Extract for each source: author/publisher, year, title, url
+
+B) Clean the report body (sections_html from Step ${maxAIStep + 1}):
+   Scan for bracketed internal ID tokens (including <sup>-wrapped)
+   
+   IF resolvable to a source with usable metadata:
+   - Replace with APA in-text citation: <a href="URL">(Author, Year)</a>
+   - Consolidate adjacent markers into single citation: "(Author, 2023; Author2, 2024)"
+   - Use organisation/publisher name if no author available
+   - Use (n.d.) if no date available
+   
+   IF NOT resolvable:
+   - Remove the bracket token completely (leave no trace)
+   - Add to unknowns array: { "marker": "...", "location": "section name", "needed": "source metadata" }
+
+C) Clean tables (from Step ${maxAIStep + 2}):
+   Apply same replacement rules inside every table cell
+   Preserve table structure and styling
+
+D) Build APA References section:
+   - Include ONLY sources that are actually cited in the cleaned report
+   - Format each reference: Author/Org. (Year). Title. Publisher. <a href="URL">URL</a>
+   - If author unknown, use organisation/publisher as author
+   - If date unknown, use (n.d.)
+   - Each entry must be hyperlinked to its URL
+   - NO internal IDs in the References list
+   - Sort alphabetically by author/organisation name
+
+OUTPUT REQUIREMENTS (CRITICAL):
+1. Return ONLY valid JSON - no code fences, no markdown
+2. First character must be {, last must be }
+3. All HTML must be properly escaped in JSON strings
+
+OUTPUT JSON SCHEMA:
+{
+  "sections_html_cleaned": "FULL cleaned HTML with APA citations (no internal IDs)",
+  "tables_cleaned": {
+    "competitors": "cleaned table HTML",
+    "market_sizing": "cleaned table HTML", 
+    "partners": "cleaned table HTML"
+  },
+  "references_html": "<h2>References</h2><div class='references'><ul><li><a href='URL'>Author. (Year). Title. Publisher.</a></li>...</ul></div>",
+  "metadata": {
+    "cited_source_ids": ["S0-1", "S0-2"],
+    "unresolved_markers_count": 0,
+    "removed_internal_markers_count": 5
+  },
+  "unknowns": [
+    { "marker": "[ARTICLE-99]", "location": "Section 3", "needed": "source metadata" }
+  ]
+}
+
+VALIDATION CHECKS (must pass before outputting):
+- sections_html_cleaned must NOT contain any [S, [ARTICLE, [SEARCH, {TBD} patterns
+- tables_cleaned must NOT contain any internal ID patterns
+- Every in-text citation must have a corresponding References entry
+- Every References entry must correspond to at least one in-text citation
+- No duplicate references`
+    },
+    {
+      step_name: "finalize_report_html",
+      step_description: "Merge cleaned sections, tables, and references into final report_html output",
+      model_tier: "balanced",
+      phase: "render",
+      prompt_template: `STEP ${maxAIStep + 4} — Finalize Report (HTML)
+
+${WRITER_STANCE_PREAMBLE}
+
+You are merging the cleaned research narrative with data tables to produce the final report.
 
 INPUT DATA FORMAT:
-You will receive two JSON objects from previous steps:
+You will receive data from previous steps:
 
 Step ${maxAIStep + 1} data ({{step${maxAIStep + 1}}}):
-- "sections_html": string - The complete narrative HTML document
-- "data_gaps": array - List of data gaps identified
+- "data_gaps": array - List of data gaps identified during assembly
 
-Step ${maxAIStep + 2} data ({{step${maxAIStep + 2}}}):
-- "tables": object with keys "competitors", "market_sizing", "partners" - HTML tables
-- "all_sources": array - All citations
+Step ${maxAIStep + 3} data ({{step${maxAIStep + 3}}}):
+- "sections_html_cleaned": The complete narrative HTML with APA citations (NO internal IDs)
+- "tables_cleaned": object with keys "competitors", "market_sizing", "partners" - cleaned HTML tables
+- "references_html": Pre-built APA References section with hyperlinks
+- "metadata": Citation transformation statistics
+- "unknowns": Unresolved markers array
 
 YOUR TASK:
-1. PARSE the JSON objects to extract the values
-2. Get the "sections_html" value from Step ${maxAIStep + 1} - this is your base HTML
-3. Find these table anchors in the HTML and replace with tables from Step ${maxAIStep + 2}:
-   - Replace "<!-- TABLE:competitors -->" with tables.competitors
-   - Replace "<!-- TABLE:market_sizing -->" with tables.market_sizing
-   - Replace "<!-- TABLE:partners -->" with tables.partners
-4. Append a References section at the end:
-   <h2>References</h2>
-   <div class="sources"><ul>...formatted citations...</ul></div>
-5. Combine data_gaps from both steps
+1. Get "sections_html_cleaned" from Step ${maxAIStep + 3} - this is your base HTML (already has APA citations)
+2. Find these table anchors in the HTML and replace with cleaned tables from Step ${maxAIStep + 3}:
+   - Replace "<!-- TABLE:competitors -->" with tables_cleaned.competitors
+   - Replace "<!-- TABLE:market_sizing -->" with tables_cleaned.market_sizing
+   - Replace "<!-- TABLE:partners -->" with tables_cleaned.partners
+3. Append the references_html from Step ${maxAIStep + 3} at the end of the document
+4. Combine data_gaps from Step ${maxAIStep + 1} with unknowns from Step ${maxAIStep + 3}
+
+VALIDATION (CRITICAL - must pass before output):
+The final report_html must NOT contain any of these patterns:
+- [S0-1], [S1-2], [S0-A1] or any [S followed by numbers/letters
+- [ARTICLE-1], [ARTICLE-2] or any [ARTICLE-*
+- [SEARCH-1], [SEARCH-2] or any [SEARCH-*
+- [TBD], [{TBD}], or any bracketed placeholder tokens
+- <sup>[S0-1]</sup> or similar superscript-wrapped internal IDs
+
+If ANY of these patterns remain, you MUST remove them before outputting.
 
 CRITICAL OUTPUT REQUIREMENTS:
-1. Return ONLY valid JSON - NO code fences (\`\`\`json or \`\`\`)
+1. Return ONLY valid JSON - NO code fences
 2. First character must be { and last must be }
-3. The "report_html" field MUST contain the complete merged HTML document
-4. Do NOT return the raw JSON objects - extract and combine the content
+3. The "report_html" field MUST contain the complete merged HTML document with NO internal IDs
 
 OUTPUT JSON SCHEMA:
 {
   "title": "Grant Report: [Project Title]",
-  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with tables inserted]...<h2>References</h2>...",
-  "all_sources": [{"id": "S0-1", "mla_citation": "...", "url": "..."}],
+  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with APA citations and tables]...<h2>References</h2>...",
+  "all_sources": [{"id": "S0-1", "apa_citation": "Author. (Year). Title. Publisher. URL", "url": "..."}],
   "data_gaps": ["gap1", "gap2"],
   "tables": {"competitors": "...", "market_sizing": "...", "partners": "..."}
 }`

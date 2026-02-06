@@ -4,12 +4,44 @@
 import DOMPurify from "dompurify";
 
 /**
+ * Remove any remaining bracketed internal source IDs from HTML
+ * Fallback for reports generated before APA citation cleanup was added
+ */
+export function stripBracketedSourceIds(html: string): string {
+  if (!html) return "";
+  
+  // Pattern matches internal source ID formats used by the pipeline:
+  // - [S0-1], [S0-A1], [S1-2] (step-source format)
+  // - [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format)
+  // - [TBD], [{TBD}] (placeholder tokens)
+  // Also handles superscript-wrapped versions: <sup>[S0-1]</sup>
+  
+  let cleaned = html;
+  
+  // Remove superscript-wrapped markers first (most specific)
+  cleaned = cleaned.replace(/<sup>\s*\[([A-Z][A-Z0-9\-_:]+)\]\s*<\/sup>/gi, "");
+  
+  // Remove plain bracketed internal IDs
+  // Pattern: [CAPITAL_LETTER followed by alphanumeric/dashes]
+  cleaned = cleaned.replace(/\[([A-Z][A-Z0-9\-_:]+)\]/g, "");
+  
+  // Remove {TBD} variants
+  cleaned = cleaned.replace(/\[\{TBD\}\]/gi, "");
+  cleaned = cleaned.replace(/\[TBD\]/gi, "");
+  
+  // Clean up any double spaces left behind
+  cleaned = cleaned.replace(/  +/g, " ");
+  
+  return cleaned;
+}
+
+/**
  * Sanitize HTML content for safe rendering
  */
 export function sanitizeHtml(html: string): string {
   if (!html) return "";
   
-  return DOMPurify.sanitize(html, {
+  const purified = DOMPurify.sanitize(html, {
     ALLOWED_TAGS: [
       "h1", "h2", "h3", "h4", "h5", "h6",
       "p", "br", "hr",
@@ -26,6 +58,9 @@ export function sanitizeHtml(html: string): string {
     ],
     ALLOW_DATA_ATTR: false,
   });
+  
+  // Clean any remaining internal source ID markers as fallback
+  return stripBracketedSourceIds(purified);
 }
 
 /**
