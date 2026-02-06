@@ -389,6 +389,88 @@ function createDataGatheringSteps(researchDomain: string, archetype: GrantArchet
 }
 
 // ============================================================================
+// QA GATES STEP
+// ============================================================================
+
+function createQAGatesStep(maxResearchStep: number, rubricSections: { key: string; title: string }[]) {
+  const stepRefs = Array.from({ length: maxResearchStep + 1 }, (_, i) => `{{step${i}}}`).join(", ");
+  const criteriaList = rubricSections.map(s => `- ${s.key}: ${s.title}`).join("\n");
+
+  return {
+    step_name: "qa_gates_validation",
+    step_description: "Validate report quality across citation integrity, criteria coverage, and assessor readiness",
+    model_tier: "balanced",
+    phase: "qa",
+    prompt_template: `STEP ${maxResearchStep + 1} — QA Gates Validation
+
+${WRITER_STANCE_PREAMBLE}
+
+INPUTS (from previous steps):
+- All prior step outputs: ${stepRefs}
+
+PURPOSE:
+Perform three mandatory quality gates before final report assembly. This step does NOT modify content—it validates and flags issues.
+
+=== GATE 1: CITATION INTEGRITY ===
+Check ALL source_ids referenced in prior steps:
+□ Every source_id (e.g., S0-1, S0-2) exists in a sources array
+□ No malformed source_ids (no "Source1", "[insert]", "{TBD}")
+□ No orphan citations (referenced but never defined)
+□ No duplicate source_ids with conflicting data
+□ URLs are valid format or explicitly marked "URL not available"
+
+=== GATE 2: CRITERIA COVERAGE ===
+Check coverage against the grant's evaluation criteria:
+${criteriaList || "- No specific criteria provided (use general assessment)"}
+
+For each criterion:
+□ Is it explicitly addressed in the research outputs?
+□ If not addressed, flag as a gap
+□ If partially addressed, note what's missing
+
+=== GATE 3: ASSESSOR READINESS ===
+Evaluate from an assessor's perspective:
+□ NARRATIVE SPINE: Is there a clear problem → solution → impact flow?
+□ ADDITIONALITY: Is "why funding is needed" clearly stated?
+□ JURISDICTION BENEFIT: Are Australian benefits (jobs, exports, sovereignty) quantified?
+□ RISKS: Are key risks identified with mitigation strategies?
+□ EVIDENCE QUALITY: Are claims supported by credible sources?
+□ UNKNOWN HANDLING: Are unknowns explicitly marked (not hidden or invented)?
+
+HARD RULES:
+1. Do NOT fix issues—only identify and report them
+2. Be specific: cite exact source_ids, step numbers, and field names
+3. Mark issues as "blocking" (must fix) or "advisory" (should fix)
+4. Calculate overall quality_score (0-100) based on percentage of checks passed
+
+OUTPUT JSON SCHEMA:
+{
+  "citation_integrity": {
+    "gate_name": "Citation Integrity",
+    "passed": true,
+    "issues": ["Missing source S0-5 referenced in step3.market_sizing"],
+    "recommendations": ["Add source S0-5 to sources array or remove citation"]
+  },
+  "criteria_coverage": {
+    "gate_name": "Criteria Coverage", 
+    "passed": true,
+    "issues": ["Criterion 'technical_feasibility' not addressed"],
+    "recommendations": ["Add technical feasibility assessment based on TRL data"]
+  },
+  "assessor_readiness": {
+    "gate_name": "Assessor Readiness",
+    "passed": true,
+    "issues": ["Additionality statement missing from economic impact"],
+    "recommendations": ["Add explicit statement on what would NOT happen without funding"]
+  },
+  "overall_pass": true,
+  "blocking_issues": ["List of issues that MUST be fixed before report can be finalized"],
+  "quality_score": 85
+}`
+  };
+}
+
+// ============================================================================
 // HTML ASSEMBLY STEPS
 // ============================================================================
 
@@ -1115,12 +1197,31 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       phase: "research"
     }));
     
-    const maxAIStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
+    const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
 
-    // Generate HTML assembly steps
-    const htmlAssemblySteps = createHtmlAssemblySteps(maxAIStep);
+    // Generate QA Gates step
+    console.log("Step 5.1: Adding QA Gates validation step...");
+    const rubricSections = suggestions.rubric?.sections || [];
+    const qaGatesTemplate = createQAGatesStep(maxResearchStep, rubricSections);
+    const qaGatesStep = {
+      step_number: maxResearchStep + 1,
+      step_name: qaGatesTemplate.step_name,
+      step_description: qaGatesTemplate.step_description,
+      prompt_template: qaGatesTemplate.prompt_template,
+      step_type: 'ai_prompt' as const,
+      step_config_json: {},
+      model_override: tierToModel[qaGatesTemplate.model_tier] || null,
+      is_heavy: false,
+      phase: qaGatesTemplate.phase
+    };
+    
+    // Max step is now after QA gates
+    const maxStepBeforeAssembly = maxResearchStep + 1; // QA gates step
+
+    // Generate HTML assembly steps (after QA gates)
+    const htmlAssemblySteps = createHtmlAssemblySteps(maxStepBeforeAssembly);
     const assemblySteps = htmlAssemblySteps.map((step, idx) => ({
-      step_number: maxAIStep + 1 + idx,
+      step_number: maxStepBeforeAssembly + 1 + idx,
       step_name: step.step_name,
       step_description: step.step_description,
       prompt_template: step.prompt_template,
@@ -1152,14 +1253,15 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       throw new Error("Failed to create prompt bundle");
     }
 
-    // Combine all steps
+    // Combine all steps: Firecrawl → AI Research → QA Gates → Assembly
     const stepsToInsert = [
       ...firecrawlSteps.map(s => ({ ...s, bundle_id: bundle.id })),
       ...aiAnalysisSteps.map(s => ({ ...s, bundle_id: bundle.id })),
+      { ...qaGatesStep, bundle_id: bundle.id },
       ...assemblySteps.map(s => ({ ...s, bundle_id: bundle.id }))
     ];
     
-    console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + ${assemblySteps.length} assembly = ${stepsToInsert.length} total`);
+    console.log(`Inserting ${firecrawlSteps.length} Firecrawl + ${aiAnalysisSteps.length} AI analysis + 1 QA gates + ${assemblySteps.length} assembly = ${stepsToInsert.length} total`);
 
     // Validate finalize_report_html step
     console.log("Step 5.5: Validating assembly step consistency...");
@@ -1167,8 +1269,9 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
     const finalizeStep = assemblySteps.find((s: any) => s.step_name === "finalize_report_html");
     if (finalizeStep) {
       const prompt = finalizeStep.prompt_template;
-      const expectedHtmlStep = `{{step${maxAIStep + 1}}}`;
-      const expectedTablesStep = `{{step${maxAIStep + 2}}}`;
+      // Assembly steps come after QA gates, so references should be maxStepBeforeAssembly + 1/2
+      const expectedHtmlStep = `{{step${maxStepBeforeAssembly + 1}}}`;
+      const expectedTablesStep = `{{step${maxStepBeforeAssembly + 2}}}`;
       
       const validationErrors: string[] = [];
       
@@ -1184,7 +1287,7 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       
       if (validationErrors.length > 0) {
         console.error("Assembly validation failed:", validationErrors);
-        const correctTemplate = createHtmlAssemblySteps(maxAIStep)[2];
+        const correctTemplate = createHtmlAssemblySteps(maxStepBeforeAssembly)[2];
         const insertIdx = stepsToInsert.findIndex((s: any) => s.step_name === "finalize_report_html");
         if (insertIdx !== -1) {
           console.log("Auto-fixing finalize_report_html step...");
@@ -1233,11 +1336,13 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
         archetype_confidence: archetypeConfidence,
         firecrawl_steps: firecrawlSteps.length,
         ai_analysis_steps: aiAnalysisSteps.length,
+        qa_gates_steps: 1,
         assembly_steps: assemblySteps.length,
         total_steps: totalStepCount,
         pipeline_name: pipelineData.pipeline_name,
         modules_included: selectedModules.map(m => m.module_name),
-        hybrid_architecture: true
+        hybrid_architecture: true,
+        qa_gates_enabled: true
       }
     });
 
@@ -1251,7 +1356,9 @@ Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
       step_count: totalStepCount,
       firecrawl_steps: firecrawlSteps.length,
       ai_analysis_steps: aiAnalysisSteps.length,
+      qa_gates_steps: 1,
       assembly_steps: assemblySteps.length,
+      qa_gates_enabled: true,
       modules_included: selectedModules.map(m => m.module_name),
       suggestions: {
         grant_summary: suggestions.grant_summary,

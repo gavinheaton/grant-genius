@@ -910,6 +910,142 @@ export function resolveModuleDependencies(modules: ModuleDefinition[]): ModuleDe
 }
 
 // ============================================================================
+// QA GATES STEP TEMPLATES
+// ============================================================================
+
+export interface QAGateResult {
+  gate_name: string;
+  passed: boolean;
+  issues: string[];
+  recommendations: string[];
+}
+
+export interface QAGatesOutput {
+  citation_integrity: QAGateResult;
+  criteria_coverage: QAGateResult;
+  assessor_readiness: QAGateResult;
+  overall_pass: boolean;
+  blocking_issues: string[];
+  quality_score: number;
+}
+
+export function createQAGatesStep(maxAIStep: number, rubricSections: { key: string; title: string }[]): {
+  step_name: string;
+  step_description: string;
+  phase: "qa";
+  model_tier: "balanced";
+  prompt_template: string;
+} {
+  const stepRefs = Array.from({ length: maxAIStep + 1 }, (_, i) => `{{step${i}}}`).join(", ");
+  const criteriaList = rubricSections.map(s => `- ${s.key}: ${s.title}`).join("\n");
+
+  return {
+    step_name: "qa_gates_validation",
+    step_description: "Validate report quality across citation integrity, criteria coverage, and assessor readiness",
+    phase: "qa",
+    model_tier: "balanced",
+    prompt_template: `STEP ${maxAIStep + 1} — QA Gates Validation
+
+${generateWriterStancePreamble()}
+
+INPUTS (from previous steps):
+- All prior step outputs: ${stepRefs}
+
+PURPOSE:
+Perform three mandatory quality gates before final report assembly. This step does NOT modify content—it validates and flags issues.
+
+=== GATE 1: CITATION INTEGRITY ===
+Check ALL source_ids referenced in prior steps:
+□ Every source_id (e.g., S0-1, S0-2) exists in a sources array
+□ No malformed source_ids (no "Source1", "[insert]", "{TBD}")
+□ No orphan citations (referenced but never defined)
+□ No duplicate source_ids with conflicting data
+□ URLs are valid format or explicitly marked "URL not available"
+
+=== GATE 2: CRITERIA COVERAGE ===
+Check coverage against the grant's evaluation criteria:
+${criteriaList || "- No specific criteria provided (use general assessment)"}
+
+For each criterion:
+□ Is it explicitly addressed in the research outputs?
+□ If not addressed, flag as a gap
+□ If partially addressed, note what's missing
+
+=== GATE 3: ASSESSOR READINESS ===
+Evaluate from an assessor's perspective:
+□ NARRATIVE SPINE: Is there a clear problem → solution → impact flow?
+□ ADDITIONALITY: Is "why funding is needed" clearly stated?
+□ JURISDICTION BENEFIT: Are Australian benefits (jobs, exports, sovereignty) quantified?
+□ RISKS: Are key risks identified with mitigation strategies?
+□ EVIDENCE QUALITY: Are claims supported by credible sources?
+□ UNKNOWN HANDLING: Are unknowns explicitly marked (not hidden or invented)?
+
+HARD RULES:
+1. Do NOT fix issues—only identify and report them
+2. Be specific: cite exact source_ids, step numbers, and field names
+3. Mark issues as "blocking" (must fix) or "advisory" (should fix)
+4. Calculate overall quality_score (0-100)
+
+OUTPUT JSON SCHEMA:
+{
+  "citation_integrity": {
+    "gate_name": "Citation Integrity",
+    "passed": true,
+    "issues": ["Missing source S0-5 referenced in step3.market_sizing"],
+    "recommendations": ["Add source S0-5 to sources array or remove citation"]
+  },
+  "criteria_coverage": {
+    "gate_name": "Criteria Coverage", 
+    "passed": true,
+    "issues": ["Criterion 'technical_feasibility' not addressed"],
+    "recommendations": ["Add technical feasibility assessment based on TRL data"]
+  },
+  "assessor_readiness": {
+    "gate_name": "Assessor Readiness",
+    "passed": true,
+    "issues": ["Additionality statement missing from economic impact"],
+    "recommendations": ["Add explicit statement on what would NOT happen without funding"]
+  },
+  "overall_pass": true,
+  "blocking_issues": ["List of issues that MUST be fixed before report can be finalized"],
+  "quality_score": 85
+}`
+  };
+}
+
+// QA Gates Module Definition for Module Library
+export const QA_GATES_MODULE: ModuleDefinition = {
+  module_name: "qa_gates",
+  when_to_include: [...GRANT_ARCHETYPES],
+  always_include: true,
+  provides_outputs: ["citation_integrity", "criteria_coverage", "assessor_readiness", "quality_score"],
+  depends_on: ["evidence_source_pack", "economic_impact", "stakeholder_mapping"],
+  step_template: {
+    role_name: "validate_qa_gates",
+    role_goal: "Perform mandatory quality validation across three gates before assembly",
+    phase: "qa",
+    inputs: ["{{step0}}", "{{step1}}", "{{stepN-1}}"],
+    outputs_schema: {
+      citation_integrity: { gate_name: "string", passed: "boolean", issues: ["string"], recommendations: ["string"] },
+      criteria_coverage: { gate_name: "string", passed: "boolean", issues: ["string"], recommendations: ["string"] },
+      assessor_readiness: { gate_name: "string", passed: "boolean", issues: ["string"], recommendations: ["string"] },
+      overall_pass: "boolean",
+      blocking_issues: ["string"],
+      quality_score: "number (0-100)"
+    },
+    hard_rules: [
+      "Do NOT modify content—only validate and report issues",
+      "Every issue must be specific: cite step numbers, field names, source_ids",
+      "Mark issues as 'blocking' (must fix) or 'advisory' (should fix)",
+      "Blocking issues prevent overall_pass from being true",
+      "Quality score reflects percentage of checks passed"
+    ],
+    prompt_template: "", // Dynamically generated by createQAGatesStep
+    model_tier: "balanced"
+  }
+};
+
+// ============================================================================
 // FIRECRAWL DATA GATHERING TEMPLATES
 // ============================================================================
 
@@ -1242,11 +1378,30 @@ export function generateBundleFromSpec(
     phase: module.step_template.phase
   }));
 
-  // Step 5: Generate HTML assembly steps
-  const maxAIStep = firecrawlOffset + aiSteps.length - 1;
-  const assemblyStepTemplates = createHtmlAssemblySteps(maxAIStep);
+  // Step 5: Generate QA Gates step (if enabled)
+  const maxResearchStep = firecrawlOffset + aiSteps.length - 1;
+  let qaGatesSteps: typeof aiSteps = [];
+  
+  if (fullConfig.enable_qa_gates) {
+    const qaGatesTemplate = createQAGatesStep(maxResearchStep, rubricSections);
+    qaGatesSteps = [{
+      step_number: maxResearchStep + 1,
+      step_name: qaGatesTemplate.step_name,
+      step_description: qaGatesTemplate.step_description,
+      step_type: "ai_prompt" as const,
+      step_config_json: {},
+      prompt_template: qaGatesTemplate.prompt_template,
+      model_override: tierToModel[qaGatesTemplate.model_tier] || null,
+      is_heavy: false,
+      phase: qaGatesTemplate.phase
+    }];
+  }
+
+  // Step 6: Generate HTML assembly steps (after QA gates)
+  const preAssemblyStepCount = maxResearchStep + qaGatesSteps.length;
+  const assemblyStepTemplates = createHtmlAssemblySteps(preAssemblyStepCount);
   const assemblySteps = assemblyStepTemplates.map((template, idx) => ({
-    step_number: maxAIStep + 1 + idx,
+    step_number: preAssemblyStepCount + 1 + idx,
     step_name: template.step_name,
     step_description: template.step_description,
     step_type: "ai_prompt" as const,
@@ -1257,7 +1412,7 @@ export function generateBundleFromSpec(
     phase: template.phase
   }));
 
-  // Combine all steps
+  // Combine all steps in order: Firecrawl → AI Research → QA Gates → Assembly
   const allSteps = [
     ...firecrawlSteps.map(s => ({
       ...s,
@@ -1267,6 +1422,7 @@ export function generateBundleFromSpec(
       phase: "intake"
     })),
     ...aiSteps,
+    ...qaGatesSteps,
     ...assemblySteps
   ];
 
