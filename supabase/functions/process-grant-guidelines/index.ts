@@ -227,6 +227,94 @@ function calculateQualityScore(prompt: string): { total: number; level: 'good' |
 }
 
 // ============================================================================
+// PROMPT QUALITY TEMPLATE (for auto-enhancement)
+// ============================================================================
+
+const PROMPT_QUALITY_TEMPLATE = `
+MANDATORY PROMPT STRUCTURE (every research step MUST include ALL of these):
+
+1. CONTEXT HEADER - State the step purpose and inputs clearly
+   Example: "STEP N — [Purpose]. INPUTS: {{summary}}, {{step0}}"
+
+2. HARD RULES SECTION - Include 5+ explicit constraints like:
+   - "Do NOT invent facts or numbers"
+   - "Only include sources you can validate as real"
+   - "If specific data unavailable, use proxy calculations with shown methodology"
+   - "NEVER use placeholder tokens like [Company] or {value} - use actual values or 'Not disclosed'"
+   - "Prefer Australian authoritative sources (.gov.au, .edu.au)"
+
+3. OUTPUT SCHEMA - Define exact JSON structure with:
+   - Every field name with its type
+   - Constraints (required, max_length, etc.)
+   - Example values
+
+4. URL VALIDATION RULES (for steps requiring sources):
+   - "Every source MUST have a valid URL or explicit 'URL not available'"
+   - "Prefer government, academic, or industry body sources"
+   - "If URL cannot be verified, mark confidence as 'low'"
+
+5. UNKNOWN HANDLING PROTOCOL:
+   - "If data unavailable, provide conservative proxy estimate with calculation shown"
+   - "Include 'unknowns' array listing what couldn't be found"
+   - "Use descriptive text like 'Not publicly disclosed' instead of 'Unknown'"
+
+MINIMUM PROMPT LENGTH: Each research step prompt MUST be at least 1,500 characters.
+`;
+
+const PROMPT_REFERENCE_EXAMPLE = `
+REFERENCE EXAMPLE (follow this exact structure for all research prompts):
+
+STEP 0 — Build Source Pack (Australia-first, domain-agnostic)
+
+You are a grant-commercialisation analyst. Your task is to curate a Source Pack of 12–25 high-quality sources relevant to the research domain described by the user.
+
+INPUTS:
+- {{summary}}: The user's 100-word research summary
+- {{grantGuidelines}}: Assessment criteria for this grant
+
+HARD RULES:
+- Do NOT invent facts or numbers.
+- Only include sources you can validate as real and relevant.
+- Prefer Australian authoritative sources first when applicable.
+- If you cannot find a source type, record it as an Unknown in the unknowns array.
+- NEVER use placeholder text like "[Source Title]" or "{URL}" - use actual content or 'Not available'.
+
+SOURCE PACK REQUIREMENTS:
+Return 12–25 sources total (max 25). Include, where relevant:
+A) Australia-first authoritative sources: ABS, data.gov.au, AIHW, Productivity Commission, NHMRC, CSIRO
+B) Sector/standards/peak bodies relevant to the research domain
+C) Academic publications, market reports, industry statistics
+D) Policy documents and regulatory guidance
+
+FOR EACH SOURCE, provide:
+- source_id: Sequential ID like "S0-1", "S0-2"
+- title: Actual title of the source (no placeholders)
+- publisher: Organization that published it
+- url: Valid URL or "URL not available"
+- date_accessed: Today's date or "Not accessible"
+- relevance: One sentence on why this source matters
+- confidence: "high" (verified URL), "medium" (known publisher), "low" (unverified)
+
+OUTPUT JSON SCHEMA:
+{
+  "sources": [
+    {
+      "source_id": "S0-1",
+      "title": "Cancer in Australia 2023 Report",
+      "publisher": "Australian Institute of Health and Welfare",
+      "url": "https://www.aihw.gov.au/reports/cancer/cancer-in-australia-2023",
+      "date_accessed": "2025-02-01",
+      "relevance": "Provides national cancer incidence and survival statistics",
+      "confidence": "high"
+    }
+  ],
+  "unknowns": [
+    "No accessible market sizing reports specific to this niche technology"
+  ]
+}
+`;
+
+// ============================================================================
 // OUTPUT SCHEMA SANITIZATION
 // ============================================================================
 
@@ -925,7 +1013,7 @@ Return ONLY valid JSON matching the schema.`;
       `- ${m.role_name}: ${m.role_goal}`
     ).join('\n');
 
-    const pipelinePrompt = `You are an expert at designing research pipelines for ${archetype} grant applications.
+    const pipelinePrompt = `You are an expert at designing high-quality research pipelines for ${archetype} grant applications.
 
 Context:
 - Grant: ${grantName}
@@ -940,13 +1028,26 @@ ${modulesDescription}
 
 ${WRITER_STANCE_PREAMBLE}
 
+${PROMPT_QUALITY_TEMPLATE}
+
+${PROMPT_REFERENCE_EXAMPLE}
+
 Design a research pipeline that addresses the rubric criteria. 
 
-KEY REQUIREMENTS:
-1. RESEARCH FOCUS: Generate steps that produce citable evidence, NOT application writing
-2. MODULE ALIGNMENT: Include steps that cover all required modules above
-3. EVIDENCE-BASED: Each step should gather external data that can be cited
-4. PROMPT QUALITY: Every prompt must be 1,500+ characters with HARD RULES and OUTPUT SCHEMA
+=== CRITICAL PROMPT QUALITY REQUIREMENTS ===
+Each prompt_template you generate MUST:
+1. Be at least 1,500 characters long
+2. Start with "STEP N — [Purpose]" header and INPUTS section
+3. Include a "HARD RULES:" section with 5+ explicit constraints including:
+   - "Do NOT invent facts or numbers"
+   - "NEVER use placeholder tokens like [Company] or {value}"
+   - Placeholder prohibition rule
+4. Include an "UNKNOWN HANDLING:" section specifying how to handle missing data
+5. Include an "OUTPUT JSON SCHEMA:" section with exact field definitions
+6. Include URL validation requirements where applicable
+
+=== RESEARCH FOCUS ===
+Generate steps that produce CITABLE EVIDENCE, not application writing. Each step should gather external data.
 
 REQUIRED PIPELINE STRUCTURE:
 - Step 0: build_source_pack (ALWAYS first - curates authoritative sources)
@@ -959,7 +1060,7 @@ For each step:
 - step_number: Sequential integer starting at 0
 - step_name: snake_case identifier
 - step_description: What research this step produces
-- prompt_template: Full prompt with {{variable}} placeholders, HARD RULES, and OUTPUT SCHEMA
+- prompt_template: Full prompt with all quality sections (1,500+ chars minimum)
   APPROVED VARIABLES: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}, 
   {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
   {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
@@ -1063,30 +1164,38 @@ Return JSON:
     const stepsNeedingEnhancement: number[] = [];
     for (const step of pipelineData.steps) {
       const score = calculateQualityScore(step.prompt_template);
-      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}`);
-      if (score.level === 'poor') {
+      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}, length=${step.prompt_template.length}`);
+      // Enhance any step that isn't 'good' (score < 70) or is under 1500 chars
+      if (score.level !== 'good' || step.prompt_template.length < 1500) {
         stepsNeedingEnhancement.push(step.step_number);
       }
     }
 
     // Auto-enhance low-quality prompts
     if (stepsNeedingEnhancement.length > 0) {
-      console.log(`Auto-enhancing ${stepsNeedingEnhancement.length} low-quality prompts...`);
+      console.log(`Auto-enhancing ${stepsNeedingEnhancement.length} prompts that don't meet quality standards...`);
 
       const enhancementPrompt = `You are an expert at improving research prompts for grant applications.
 
-The following prompts need quality improvement. For each prompt, enhance it to include:
-1. A clear STEP header with purpose and INPUTS section
-2. A HARD RULES section with 5+ explicit constraints
-3. An OUTPUT JSON SCHEMA with exact field definitions
-4. URL validation requirements
-5. Unknown handling protocol
-6. Placeholder prohibition
+${PROMPT_QUALITY_TEMPLATE}
 
-CRITICAL:
-- Each enhanced prompt MUST be at least 1,500 characters
+${PROMPT_REFERENCE_EXAMPLE}
+
+The following prompts need quality improvement. For each prompt, enhance it to include ALL of these:
+1. A "STEP N — [Purpose]" header with INPUTS section
+2. A "HARD RULES:" section with 5+ explicit constraints including:
+   - "Do NOT invent facts or numbers"
+   - "NEVER use placeholder tokens like [Company] or {value}"
+   - Placeholder prohibition language
+3. An "UNKNOWN HANDLING:" section for missing data
+4. An "OUTPUT JSON SCHEMA:" with exact field definitions
+5. URL validation requirements where applicable
+
+CRITICAL REQUIREMENTS:
+- Each enhanced prompt MUST be at least 1,500 characters (this is mandatory)
 - Template variables {{...}} are ONLY for INPUTS or HARD RULES sections
 - NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions
+- Follow the exact structure from the REFERENCE EXAMPLE
 
 Steps to enhance:
 ${stepsNeedingEnhancement.map(stepNum => {
@@ -1100,7 +1209,7 @@ ${step.prompt_template}
 ---`;
 }).join('\n')}
 
-Return JSON array: [{ "step_number": N, "enhanced_prompt": "..." }, ...]`;
+Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, ...]}`;
 
       try {
         const enhanceResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {

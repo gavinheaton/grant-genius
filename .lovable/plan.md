@@ -5,8 +5,8 @@
 
 Two issues were identified:
 
-1. **Regeneration Error** - The `regenerate-step-prompt` edge function was not deployed
-2. **Low Quality Scores** - Generated prompts score 40-60/100 because they're missing quality markers
+1. **Regeneration Error** - The `regenerate-step-prompt` edge function was not deployed ✅ RESOLVED
+2. **Low Quality Scores** - Generated prompts score 40-60/100 because they're missing quality markers ✅ FIXED
 
 ## Issue 1: Regeneration (RESOLVED)
 
@@ -14,92 +14,41 @@ The edge function has been deployed. You can now use the "Regenerate with AI" bu
 
 ---
 
-## Issue 2: Low Prompt Quality from Pipeline Generation
+## Issue 2: Low Prompt Quality from Pipeline Generation (FIXED)
 
 ### Root Cause
 
-The `process-grant-guidelines` edge function generates prompts that:
-- Are only 1,000-1,200 characters (minimum should be 1,500)
+The `process-grant-guidelines` edge function was generating prompts that:
+- Were only 1,000-1,200 characters (minimum should be 1,500)
 - Missing "unknown handling" language that scores 10 points
 - Missing "placeholder prohibition" rules that score 10 points
 - Missing explicit `STEP N` headers that score 15 points
 
-### Current State of Generated Prompts
+### Solution Applied
 
-| Step | Name | Length | Has Hard Rules | Has Schema | Quality |
-|------|------|--------|----------------|------------|---------|
-| 4 | build_source_pack | 1,201 | Yes | Yes | ~45 |
-| 5 | calculate_economic_impact | 1,230 | Yes | Yes | ~50 |
-| 6 | calculate_market_sizing | 1,164 | Yes | Yes | ~45 |
+Updated the `process-grant-guidelines` edge function with:
 
-### Solution: Enhance Pipeline Generator Prompts
+1. **Added quality templates** (`PROMPT_QUALITY_TEMPLATE` and `PROMPT_REFERENCE_EXAMPLE`) matching the regenerate function
+2. **Enhanced pipeline generation prompt** to explicitly require all quality markers
+3. **Lowered enhancement threshold** - now enhances any prompt that isn't 'good' (score < 70) OR is under 1,500 chars
+4. **Updated enhancement prompt** to use the same templates and reference examples
 
-Update the prompt generation logic in `process-grant-guidelines` to include all quality markers:
-
-1. Add `STEP N — [Purpose]` headers
-2. Add unknown handling protocol section
-3. Add placeholder prohibition rules
-4. Expand prompts to 1,500+ characters
-
----
-
-## Files to Modify
+### Changes Made
 
 **File: `supabase/functions/process-grant-guidelines/index.ts`**
 
-### Changes Required
-
-1. **Enhance the AI prompt template** that generates step prompts (around line 850-950)
-   - Add mandatory quality sections to the system prompt
-   - Include the QUALITY_TEMPLATE and REFERENCE_EXAMPLE patterns from the regenerate function
-
-2. **Update step prompt generation** to enforce:
-   - Minimum 1,500 character length
-   - `STEP N` context headers
-   - Unknown handling protocol
-   - Placeholder prohibition rules
-
-### Sample Enhanced Prompt Structure
-
-Each generated prompt should include:
-
-```text
-STEP N — [Purpose]. 
-INPUTS: {{summary}}, {{stepN-1}}, etc.
-
-You are [role description].
-
-HARD RULES:
-1. Do NOT invent facts or numbers
-2. NEVER use placeholder tokens like [Company] or {value}
-3. If data unavailable, provide conservative proxy estimate
-4. Prefer Australian authoritative sources
-5. [Additional domain-specific rules]
-
-UNKNOWN HANDLING:
-- If data unavailable, use descriptive text like "Not publicly disclosed"
-- Include "unknowns" array listing what couldn't be found
-- Provide proxy estimates with methodology shown
-
-OUTPUT JSON SCHEMA:
-{
-  [Detailed schema with types and examples]
-}
-```
-
----
-
-## Immediate Workaround
-
-While the fix is pending, you can:
-1. Use the **"Regenerate with AI"** button on each step (now working after deployment)
-2. The regeneration uses the quality template to enhance each prompt to 1,500+ characters
+- Lines 205-300: Added `PROMPT_QUALITY_TEMPLATE` and `PROMPT_REFERENCE_EXAMPLE` constants
+- Lines 1016-1080: Updated `pipelinePrompt` to include quality template and explicit requirements
+- Lines 1163-1220: Updated auto-enhancement logic to:
+  - Enhance all prompts scoring < 70 OR under 1,500 chars
+  - Use the quality templates in enhancement prompt
+  - Better error handling for enhancement responses
 
 ---
 
 ## Testing After Fix
 
-1. Reset the grant version status to `pipeline_generation_status = 'none'`
+1. Reset the grant version status: `pipeline_generation_status = 'none'`
 2. Re-trigger "Generate Pipeline"
 3. Verify all AI prompt steps score 70+ on quality
 4. Confirm prompts are 1,500+ characters with all quality markers
