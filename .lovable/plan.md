@@ -1,71 +1,176 @@
 
-# Add Missing Grant Context Variables to Execution Pipeline
-
-## Status: ✅ IMPLEMENTED
+# Pipeline QA: Variable Flow Consistency Validation
 
 ## Summary
 
-The pipeline generator correctly lists `{{requiredInputs}}` and structured rubric data as approved variables, but the execution environment (both `generate-report` and `worker-proxy`) did not fetch or provide these values to the steps. This caused prompts to use undefined variables, resulting in placeholder fallback patterns.
+Add a **Variable Flow Consistency Check** to the pipeline QA process that validates step-to-step data dependencies are correctly wired. This prevents runtime "stuck loops" caused by unresolved variables.
 
-## Changes Made
+## The Problem
 
-### 1. Updated `generate-report/index.ts`
+The current QA checks prompt **structure** (HARD RULES, OUTPUT SCHEMA, length, forbidden patterns) but does NOT validate **data flow between steps**:
 
-- Modified `fetchGrantContext` to query `required_inputs_json` and `rubric_json` from `grant_versions`
-- Return type now includes `rubricJson: object` and `requiredInputs: object[]`
-- Added `rubricJson` and `requiredInputs` to the returned context object
+1. Step 8 uses `{{project_title}}` but that variable isn't hydrated at runtime
+2. Step 5 references `{{step4}}` but Step 4's output schema doesn't produce what Step 5 expects
+3. Step 3 uses `{{requiredInputs}}` but doesn't know which specific fields are available
 
-### 2. Updated `worker-proxy/index.ts`
+When a variable like `{{project_title}}` isn't substituted, the AI receives a literal prompt containing `{{project_title}}` and often outputs placeholder patterns like `[Specific Role - e.g., Postdoctoral Fellow]`, triggering the JSON Guard repair loop.
 
-- Added `required_inputs_json` to the grant_versions SELECT query
-- Added `rubric_json` and `required_inputs` to the `grantContext` response object
-- External worker now receives these fields for interpolation
+## Proposed Solution
 
-### 3. Updated `resume-report-run/index.ts`
+Add a **Pipeline Data Flow Validator** that runs after prompt generation and before saving to the database. This validator will:
 
-- Modified `fetchGrantContext` to include `required_inputs_json` in query
-- Return type now includes `rubricJson: object` and `requiredInputs: object[]`
-- Added `grantRubricJson` and `requiredInputs` to `buildVariables()` interpolation map
+### 1. Build a Variable Availability Map
 
-## Updated Approved Variables List
+Track what variables are available at each step:
 
-All available variables for prompt templates:
+| Step | Available Variables |
+|------|---------------------|
+| 0 | `{{summary}}`, `{{publicArticleUrl}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`, `{{grantName}}`, `{{grantRubric}}`, `{{grantGuidelines}}`, `{{grantSummary}}`, `{{requiredInputs}}`, `{{sources}}`, `{{unknowns}}` |
+| 1 | All of above + `{{step0}}` |
+| 2 | All of above + `{{step1}}` |
+| N | All of above + `{{step0}}` through `{{stepN-1}}` |
 
+### 2. Extract Variables Used Per Step
+
+Scan each `prompt_template` for `{{variableName}}` patterns and compare against the availability map.
+
+### 3. Validate Output→Input Contract
+
+For each step that references `{{stepN}}`:
+- Parse Step N's OUTPUT SCHEMA to see what fields it produces
+- Check if the referencing step's prompt makes reasonable use of that output
+
+### 4. Flag Errors and Warnings
+
+| Type | Example | Action |
+|------|---------|--------|
+| **Error** | Step 5 uses `{{step7}}` (forward reference) | Block publish |
+| **Error** | Step 3 uses `{{project_title}}` (not in approved list or requiredInputs) | Block publish or auto-fix |
+| **Warning** | Step 8 references `{{step2}}` but Step 2 output schema doesn't have the fields mentioned | Flag for admin review |
+
+## Technical Implementation
+
+### New Function: `validatePipelineDataFlow()`
+
+```typescript
+interface VariableFlowValidation {
+  step_number: number;
+  step_name: string;
+  variables_used: string[];
+  unresolved_variables: string[]; // Variables not available at this step
+  forward_references: string[];   // {{stepN}} where N >= current step
+  warnings: string[];             // Non-blocking issues
+  errors: string[];               // Blocking issues
+}
+
+function validatePipelineDataFlow(
+  steps: PipelineStep[],
+  requiredInputsJson: object[]
+): {
+  valid: boolean;
+  stepValidations: VariableFlowValidation[];
+  summary: {
+    total_errors: number;
+    total_warnings: number;
+    blocking_steps: number[];
+  };
+}
 ```
-========== APPROVED VARIABLES ==========
-User Inputs:
-  {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}
 
-Grant Context:
-  {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, 
-  {{grantRubric}}, {{grantRubricJson}}, {{grantSummary}}, {{requiredInputs}}
+### Approved Base Variables (always available)
 
-Step Outputs:
-  {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
+```typescript
+const BASE_VARIABLES = [
+  'summary', 'publicArticleUrl', 'articleContent', 'trl', 'ipStatus',
+  'grantName', 'grantVersionLabel', 'grantGuidelines', 'grantRubric', 
+  'grantRubricJson', 'grantSummary', 'requiredInputs', 'sources', 'unknowns'
+];
 ```
 
-## Variable Mapping for External Worker
+### Dynamic Variables from Required Inputs
 
-The external Cloud Run worker receives `grant_context` from `worker-proxy` and should map:
+If `requiredInputs` contains `{ "key": "project_title", "label": "Project Title" }`, then `{{project_title}}` becomes valid.
 
-| Template Variable | Source |
-|-------------------|--------|
-| `{{requiredInputs}}` | `grant_context.required_inputs` (JSON stringified) |
-| `{{grantRubric}}` | `grant_context.rubric` (formatted text) |
-| `{{grantRubricJson}}` | `grant_context.rubric_json` (raw JSON stringified) |
-| `{{grantGuidelines}}` | `grant_context.guidelines_excerpt` |
-| `{{grantSummary}}` | `grant_context.summary` |
+### Integration Points
+
+1. **In `process-grant-guidelines`** (after pipeline generation, before save):
+   - Run `validatePipelineDataFlow()`
+   - If blocking errors: attempt auto-fix or fail with detailed message
+   - Log validation results
+
+2. **In frontend quality check** (`usePromptQuality.ts`):
+   - Enhanced `validateVariables()` to check against dynamic requiredInputs
+   - Show unresolved variables in admin UI
+
+3. **At publish time** (when Super Admin clicks Publish):
+   - Re-run validation as a gate
+   - Block publish if unresolved variables exist
+
+## Auto-Fix Strategy
+
+When an unresolved variable is detected:
+
+1. **If it's a required input key**: Add to the interpolation map automatically
+2. **If it's an unknown variable**: Replace with a comment instructing the AI to derive from `{{requiredInputs}}`:
+   ```
+   // Note: project_title should be extracted from {{requiredInputs}} if available
+   ```
+3. **If it's a forward reference**: Reorder steps or flag as blocking error
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `supabase/functions/process-grant-guidelines/index.ts` | Add `validatePipelineDataFlow()` function; run after pipeline generation |
+| `src/hooks/usePromptQuality.ts` | Extend `validateVariables()` to accept `requiredInputs` param and validate against dynamic list |
+| `src/components/admin/PromptQualityBadge.tsx` | Display "Unresolved Variables" warning with list of problematic variables |
+
+## Validation Output Example
+
+```json
+{
+  "valid": false,
+  "stepValidations": [
+    {
+      "step_number": 8,
+      "step_name": "budget_logic_and_value_for_money",
+      "variables_used": ["step7", "project_title", "executive_summary", "requiredInputs"],
+      "unresolved_variables": ["project_title", "executive_summary"],
+      "forward_references": [],
+      "warnings": [],
+      "errors": [
+        "Variable {{project_title}} is not in approved list or requiredInputs keys",
+        "Variable {{executive_summary}} is not in approved list or requiredInputs keys"
+      ]
+    }
+  ],
+  "summary": {
+    "total_errors": 2,
+    "total_warnings": 0,
+    "blocking_steps": [8]
+  }
+}
+```
+
+## Admin UI Enhancement
+
+In the Prompt Bundle editor, add a "Data Flow" validation panel:
+
+- **Green checkmark**: All variables resolve correctly
+- **Yellow warning**: Some variables may not resolve (admin decision)
+- **Red error**: Blocking issues prevent execution
+
+Each issue links to the specific step for quick editing.
 
 ## Testing Strategy
 
-1. **Verify Variable Resolution**
-   - Create a test pipeline with a step using `{{requiredInputs}}` 
-   - Run report generation and confirm the variable resolves to actual JSON
+1. **Generate a pipeline for a grant with specific required inputs**
+   - Verify that if a step uses `{{project_title}}` and `project_title` is in requiredInputs, it's marked valid
+   - Verify that if `{{made_up_field}}` is used, it's flagged as error
 
-2. **End-to-End Report**
-   - Upload new grant guidelines
-   - Generate a report
-   - Verify steps like `rubric_traceability_matrix` receive the rubric and required inputs
+2. **Test forward reference detection**
+   - Add a step that references `{{step10}}` when only 8 steps exist
+   - Verify it's flagged as error
 
-3. **Check Worker Logs**
-   - Confirm worker receives `grant_context.required_inputs` in the context response
+3. **End-to-end report generation**
+   - After validation passes, run a report and confirm no "unsubstituted variables" errors occur
