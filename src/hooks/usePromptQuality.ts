@@ -17,6 +17,7 @@ export interface QualityScore {
     proxyProtocol: number;      // 10 pts - Has proxy protocol for unavailable data
   };
   invalidVariables: string[];   // List any invalid variables found
+  forwardReferences: string[];  // List forward step references ({{stepN}} where N >= current)
   hasVariablesInSchema: boolean; // True if {{variables}} found in OUTPUT SCHEMA (bad)
   forbiddenPatterns: string[];  // Detected forbidden patterns like {TBD}, [Insert...]
   recommendations: string[];
@@ -28,6 +29,8 @@ export interface QualityScore {
     errors: string[];
   };
 }
+
+import { BASE_VARIABLES, type RequiredInput } from '@/lib/pipelineValidation';
 
 // Approved variable patterns (from shortcode specification)
 const VALID_VARIABLE_PATTERNS = [
@@ -42,6 +45,7 @@ const VALID_VARIABLE_PATTERNS = [
   /^grantVersionLabel$/,
   /^grantGuidelines$/,
   /^grantRubric$/,
+  /^grantRubricJson$/,
   /^grantSummary$/,
   /^requiredInputs$/,
   // Source pack
@@ -88,7 +92,24 @@ function hasVariablesInOutputSchema(prompt: string): boolean {
   return false;
 }
 
-function validateVariables(prompt: string): { score: number; invalid: string[]; hasSchemaVars: boolean } {
+/**
+ * Validate variables in a prompt against approved patterns and optional dynamic inputs
+ * @param prompt The prompt template to validate
+ * @param requiredInputs Optional array of dynamic required input definitions from the grant
+ * @param stepNumber Optional step number to validate step references
+ * @param totalSteps Optional total steps in pipeline for forward reference detection
+ */
+function validateVariables(
+  prompt: string, 
+  requiredInputs: RequiredInput[] = [],
+  stepNumber?: number,
+  totalSteps?: number
+): { 
+  score: number; 
+  invalid: string[]; 
+  hasSchemaVars: boolean;
+  forwardRefs: string[];
+} {
   const variableMatches = prompt.match(/\{\{(\w+)\}\}/g) || [];
   const variables = variableMatches.map(v => v.replace(/\{\{|\}\}/g, ''));
   
@@ -96,32 +117,66 @@ function validateVariables(prompt: string): { score: number; invalid: string[]; 
   
   if (variables.length === 0) {
     // No variables used - that's okay for some prompts
-    return { score: 10, invalid: [], hasSchemaVars };
+    return { score: 10, invalid: [], hasSchemaVars, forwardRefs: [] };
   }
   
-  const invalid = variables.filter(v => 
-    !VALID_VARIABLE_PATTERNS.some(pattern => pattern.test(v))
-  );
+  // Build dynamic validation set from required inputs
+  const dynamicInputKeys = new Set(requiredInputs.map(r => r.key));
   
-  // Score: 10 points if all valid and no schema vars, reduce for issues
+  const invalid: string[] = [];
+  const forwardRefs: string[] = [];
+  
+  for (const v of variables) {
+    // Check for step references
+    const stepMatch = v.match(/^step(\d+)$/);
+    if (stepMatch) {
+      const refStepNum = parseInt(stepMatch[1], 10);
+      // If we know the step number, check for forward references
+      if (stepNumber !== undefined && refStepNum >= stepNumber) {
+        forwardRefs.push(v);
+      }
+      // If we know total steps, check for out of bounds
+      if (totalSteps !== undefined && refStepNum >= totalSteps) {
+        invalid.push(v);
+      }
+      continue;
+    }
+    
+    // Check static patterns first
+    const matchesStatic = VALID_VARIABLE_PATTERNS.some(pattern => pattern.test(v));
+    if (matchesStatic) continue;
+    
+    // Check dynamic inputs (exact key match)
+    if (dynamicInputKeys.has(v)) continue;
+    
+    // Variable is invalid
+    invalid.push(v);
+  }
+  
+  // Score calculation
   let score = 10;
   if (invalid.length > 0) {
     const invalidRatio = invalid.length / variables.length;
     score = invalidRatio === 0 ? 10 : invalidRatio < 0.5 ? 5 : 0;
+  }
+  // Penalty for forward references
+  if (forwardRefs.length > 0) {
+    score = Math.max(0, score - 3);
   }
   // Penalty for having template vars in output schema
   if (hasSchemaVars) {
     score = Math.max(0, score - 5);
   }
   
-  return { score, invalid: [...new Set(invalid)], hasSchemaVars };
+  return { score, invalid: [...new Set(invalid)], hasSchemaVars, forwardRefs };
 }
 
 function generateRecommendations(
   breakdown: QualityScore['breakdown'], 
   invalidVars: string[], 
   hasSchemaVars: boolean,
-  forbiddenPatterns: string[]
+  forbiddenPatterns: string[],
+  forwardRefs: string[] = []
 ): string[] {
   const recommendations: string[] = [];
 
@@ -166,11 +221,26 @@ function generateRecommendations(
       'CRITICAL: Remove {{variable}} placeholders from OUTPUT SCHEMA section. Use descriptive text like "the IP status value" instead.'
     );
   }
+  if (forwardRefs.length > 0) {
+    recommendations.push(
+      `Forward references detected: ${forwardRefs.map(v => `{{${v}}}`).join(', ')}. Steps cannot reference future step outputs.`
+    );
+  }
 
   return recommendations;
 }
 
-export function calculateQualityScore(prompt: string, stepName?: string): QualityScore {
+export interface CalculateQualityScoreOptions {
+  requiredInputs?: RequiredInput[];
+  stepNumber?: number;
+  totalSteps?: number;
+}
+
+export function calculateQualityScore(
+  prompt: string, 
+  stepName?: string,
+  options: CalculateQualityScoreOptions = {}
+): QualityScore {
   if (!prompt || typeof prompt !== 'string') {
     return {
       total: 0,
@@ -186,6 +256,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
         proxyProtocol: 0,
       },
       invalidVariables: [],
+      forwardReferences: [],
       hasVariablesInSchema: false,
       forbiddenPatterns: [],
       recommendations: ['Prompt is empty or invalid'],
@@ -193,8 +264,15 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     };
   }
 
-  // Validate variables first
-  const { score: validVariablesScore, invalid: invalidVariables, hasSchemaVars } = validateVariables(prompt);
+  const { requiredInputs = [], stepNumber, totalSteps } = options;
+
+  // Validate variables with dynamic inputs and step context
+  const { 
+    score: validVariablesScore, 
+    invalid: invalidVariables, 
+    hasSchemaVars,
+    forwardRefs 
+  } = validateVariables(prompt, requiredInputs, stepNumber, totalSteps);
   
   // Detect forbidden patterns
   const forbiddenPatterns = detectForbiddenPatterns(prompt);
@@ -236,7 +314,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
   const baseTotal = Object.values(breakdown).reduce((a, b) => a + b, 0);
   const total = Math.max(0, baseTotal - forbiddenPenalty);
   
-  const recommendations = generateRecommendations(breakdown, invalidVariables, hasSchemaVars, forbiddenPatterns);
+  const recommendations = generateRecommendations(breakdown, invalidVariables, hasSchemaVars, forbiddenPatterns, forwardRefs);
   
   let level: QualityScore['level'];
   if (total >= 70) {
@@ -276,6 +354,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     total: Math.round(total),
     breakdown,
     invalidVariables,
+    forwardReferences: forwardRefs,
     hasVariablesInSchema: hasSchemaVars,
     forbiddenPatterns,
     recommendations,

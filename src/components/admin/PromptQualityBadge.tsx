@@ -59,6 +59,11 @@ export function PromptQualityBadge({ prompt, showDetails = false, className }: P
               🚨 Template variables in OUTPUT SCHEMA will cause runtime failures!
             </p>
           )}
+          {score.forwardReferences.length > 0 && (
+            <p className="text-xs text-destructive mb-1">
+              🚨 Forward references: {score.forwardReferences.map(v => `{{${v}}}`).join(', ')}
+            </p>
+          )}
           {score.invalidVariables.length > 0 && (
             <p className="text-xs text-destructive mb-1">
               ⚠️ Invalid variables: {score.invalidVariables.join(', ')}
@@ -181,6 +186,24 @@ function QualityBreakdown({ score, promptLength }: QualityBreakdownProps) {
               </p>
               <p className="text-muted-foreground mt-1">
                 Approved: <code className="text-[10px] bg-muted px-1 rounded">{'{{summary}}'}</code>, <code className="text-[10px] bg-muted px-1 rounded">{'{{step0}}'}</code>, <code className="text-[10px] bg-muted px-1 rounded">{'{{grantName}}'}</code>, etc.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Forward References Warning */}
+      {score.forwardReferences.length > 0 && (
+        <div className="pt-2 border-t">
+          <div className="flex items-start gap-2 p-2 bg-destructive/10 rounded border border-destructive/20">
+            <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <p className="font-medium text-destructive">Forward References Detected:</p>
+              <p className="text-muted-foreground mt-0.5">
+                {score.forwardReferences.map(v => `{{${v}}}`).join(', ')}
+              </p>
+              <p className="text-muted-foreground mt-1">
+                Steps cannot reference outputs from future steps. Reorder steps or use earlier step outputs.
               </p>
             </div>
           </div>
