@@ -49,6 +49,11 @@ export function PromptQualityBadge({ prompt, showDetails = false, className }: P
         </TooltipTrigger>
         <TooltipContent className="max-w-xs">
           <p className="font-medium mb-1">Prompt Quality: {score.level}</p>
+          {score.forbiddenPatterns.length > 0 && (
+            <p className="text-xs text-destructive mb-1">
+              🚨 Forbidden patterns: {score.forbiddenPatterns.slice(0, 3).join(', ')}
+            </p>
+          )}
           {score.hasVariablesInSchema && (
             <p className="text-xs text-destructive mb-1">
               🚨 Template variables in OUTPUT SCHEMA will cause runtime failures!
@@ -105,7 +110,8 @@ function QualityBreakdown({ score, promptLength }: QualityBreakdownProps) {
     { key: 'outputSchema', label: 'Output JSON Schema', max: 20 },
     { key: 'urlValidation', label: 'URL Validation Rules', max: 15 },
     { key: 'unknownHandling', label: 'Unknown Handling Protocol', max: 10 },
-    { key: 'placeholderProhibition', label: 'Placeholder Prohibition', max: 10 },
+    { key: 'placeholderProhibition', label: 'Forbidden Patterns Ban', max: 10 },
+    { key: 'proxyProtocol', label: 'Proxy Protocol for Missing Data', max: 10 },
     { key: 'adequateLength', label: `Length (${promptLength.toLocaleString()} chars)`, max: 5 },
     { key: 'validVariables', label: 'Valid Variable References', max: 10 },
   ] as const;
@@ -144,6 +150,24 @@ function QualityBreakdown({ score, promptLength }: QualityBreakdownProps) {
           );
         })}
       </div>
+      
+      {/* Forbidden Patterns Warning */}
+      {score.forbiddenPatterns.length > 0 && (
+        <div className="pt-2 border-t">
+          <div className="flex items-start gap-2 p-2 bg-destructive/10 rounded border border-destructive/20">
+            <XCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
+            <div className="text-xs">
+              <p className="font-medium text-destructive">Forbidden Patterns Detected:</p>
+              <p className="text-muted-foreground mt-0.5">
+                {score.forbiddenPatterns.join(', ')}
+              </p>
+              <p className="text-muted-foreground mt-1">
+                Replace with: "Not publicly disclosed", proxy estimates, or add to unknowns[]
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       
       {/* Invalid Variables Warning */}
       {score.invalidVariables.length > 0 && (
