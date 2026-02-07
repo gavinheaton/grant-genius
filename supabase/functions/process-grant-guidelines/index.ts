@@ -2205,6 +2205,124 @@ Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, .
       console.log("Assembly step validation passed ✓ (4-step architecture with APA citations)");
     }
 
+    // ========== Variable Flow Validation ==========
+    console.log("Step 5.6: Validating variable flow consistency...");
+    
+    // Build required inputs list from grant version
+    const requiredInputsList: { key: string; label: string }[] = suggestions.required_inputs || [];
+    
+    // Create validation-compatible step format
+    const stepsForValidation = stepsToInsert.map((s: any) => ({
+      step_number: s.step_number,
+      step_name: s.step_name,
+      prompt_template: s.prompt_template,
+      step_type: s.step_type
+    }));
+    
+    // Extract dynamic input keys from required inputs
+    const dynamicInputKeys = new Set(requiredInputsList.map(r => r.key));
+    
+    // Base variables always available
+    const baseVariables = [
+      'summary', 'publicArticleUrl', 'articleContent', 'trl', 'ipStatus',
+      'grantName', 'grantVersionLabel', 'grantGuidelines', 'grantRubric', 
+      'grantRubricJson', 'grantSummary', 'requiredInputs', 'sources', 'unknowns'
+    ];
+    
+    const variableFlowErrors: { step: number; name: string; errors: string[] }[] = [];
+    const totalStepsCount = stepsForValidation.length;
+    
+    for (const step of stepsForValidation) {
+      // Skip Firecrawl steps (they don't use template variables the same way)
+      if (step.step_type === 'firecrawl_scrape' || step.step_type === 'firecrawl_search') {
+        continue;
+      }
+      
+      // Extract variables from prompt
+      const variableMatches = step.prompt_template.match(/\{\{(\w+)\}\}/g) || [];
+      const usedVariables = [...new Set(variableMatches.map((m: string) => m.replace(/\{\{|\}\}/g, '')))];
+      
+      // Build available variables for this step
+      const available = new Set([...baseVariables, ...dynamicInputKeys]);
+      for (let i = 0; i < step.step_number; i++) {
+        available.add(`step${i}`);
+      }
+      
+      const stepErrors: string[] = [];
+      
+      for (const varName of usedVariables) {
+        // Check for step references
+        const stepMatch = varName.match(/^step(\d+)$/);
+        if (stepMatch) {
+          const refStepNum = parseInt(stepMatch[1], 10);
+          if (refStepNum >= step.step_number) {
+            stepErrors.push(`Forward reference: {{${varName}}} (step ${step.step_number} cannot reference step ${refStepNum})`);
+          } else if (refStepNum >= totalStepsCount) {
+            stepErrors.push(`Invalid reference: {{${varName}}} (step ${refStepNum} does not exist)`);
+          }
+          continue;
+        }
+        
+        // Check if variable is available
+        if (!available.has(varName)) {
+          stepErrors.push(`Unresolved variable: {{${varName}}} not in base variables or required inputs`);
+        }
+      }
+      
+      if (stepErrors.length > 0) {
+        variableFlowErrors.push({
+          step: step.step_number,
+          name: step.step_name,
+          errors: stepErrors
+        });
+      }
+    }
+    
+    if (variableFlowErrors.length > 0) {
+      console.warn(`Variable flow validation found ${variableFlowErrors.length} steps with issues:`);
+      for (const v of variableFlowErrors) {
+        console.warn(`  Step ${v.step} (${v.name}): ${v.errors.join('; ')}`);
+      }
+      
+      // Auto-fix: Replace unresolved variables with extraction instructions
+      for (const issue of variableFlowErrors) {
+        const stepIdx = stepsToInsert.findIndex((s: any) => s.step_number === issue.step);
+        if (stepIdx !== -1) {
+          let prompt = stepsToInsert[stepIdx].prompt_template;
+          
+          for (const error of issue.errors) {
+            const varMatch = error.match(/\{\{(\w+)\}\}/);
+            if (varMatch) {
+              const varName = varMatch[1];
+              const isRequiredInput = dynamicInputKeys.has(varName.toLowerCase());
+              
+              if (isRequiredInput) {
+                // Replace with extraction instruction
+                const pattern = new RegExp(`\\{\\{${varName}\\}\\}`, 'g');
+                prompt = prompt.replace(
+                  pattern,
+                  `[Extract "${varName}" from requiredInputs if provided, otherwise use "Not specified"]`
+                );
+              } else if (!error.includes('Forward reference')) {
+                // Replace with generic instruction
+                const pattern = new RegExp(`\\{\\{${varName}\\}\\}`, 'g');
+                const readable = varName.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
+                prompt = prompt.replace(
+                  pattern,
+                  `[The ${readable} - derive from available context or mark as "Not available"]`
+                );
+              }
+            }
+          }
+          
+          stepsToInsert[stepIdx].prompt_template = prompt;
+          console.log(`Auto-fixed unresolved variables in step ${issue.step}`);
+        }
+      }
+    } else {
+      console.log("Variable flow validation passed ✓ (all variables resolve correctly)");
+    }
+
     const { error: stepsError } = await supabaseAdmin
       .from("prompt_bundle_steps")
       .insert(stepsToInsert);
