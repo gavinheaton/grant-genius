@@ -147,6 +147,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
   versionLabel: string;
   guidelinesExcerpt: string;
   formattedRubric: string;
+  rubricJson: object;
+  requiredInputs: object[];
   summary: string;
 }> {
   const MAX_GUIDELINES_LENGTH = 10000;
@@ -158,6 +160,7 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
         version_number,
         guidelines_raw_text,
         rubric_json,
+        required_inputs_json,
         ai_suggestions_json,
         grant:grants!inner(name)
       `)
@@ -171,6 +174,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
         versionLabel: "",
         guidelinesExcerpt: "",
         formattedRubric: "",
+        rubricJson: { sections: [] },
+        requiredInputs: [],
         summary: "",
       };
     }
@@ -218,6 +223,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
       versionLabel,
       guidelinesExcerpt,
       formattedRubric: formattedRubric.trim(),
+      rubricJson: data.rubric_json || { sections: [] },
+      requiredInputs: data.required_inputs_json || [],
       summary,
     };
   } catch (e) {
@@ -227,6 +234,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
       versionLabel: "",
       guidelinesExcerpt: "",
       formattedRubric: "",
+      rubricJson: { sections: [] },
+      requiredInputs: [],
       summary: "",
     };
   }
@@ -564,6 +573,8 @@ async function processSingleStep(
     grantVersionLabel: grantContext.versionLabel,
     grantGuidelines: grantContext.guidelinesExcerpt,
     grantRubric: grantContext.formattedRubric,
+    grantRubricJson: JSON.stringify(grantContext.rubricJson, null, 2),
+    requiredInputs: JSON.stringify(grantContext.requiredInputs, null, 2),
     grantSummary: grantContext.summary,
     // Source pack from Step 0
     sources: sourcesJson,

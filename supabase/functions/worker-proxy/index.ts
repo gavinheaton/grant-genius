@@ -227,6 +227,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
         version_number,
         guidelines_raw_text,
         rubric_json,
+        required_inputs_json,
         ai_suggestions_json,
         prompt_bundle_id,
         pipeline_generation_status,
@@ -310,6 +311,8 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
         version_number: grantVersion.version_number,
         guidelines_excerpt: guidelinesExcerpt,
         rubric: formattedRubric,
+        rubric_json: grantVersion.rubric_json || { sections: [] },
+        required_inputs: grantVersion.required_inputs_json || [],
         summary: aiSuggestions?.grant_summary || aiSuggestions?.summary || "",
       };
     }
