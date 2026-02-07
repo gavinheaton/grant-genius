@@ -674,7 +674,7 @@ async function processStep0Only(
       const stepConfig = bundle?.steps.get(0);
       
       // Build interpolation variables including grant context
-      const interpolationVars = {
+      const interpolationVars: Record<string, string> = {
         summary,
         publicArticleUrl,
         articleContent: articleContent.slice(0, 8000),
@@ -685,7 +685,28 @@ async function processStep0Only(
         grantGuidelines: grantContext.guidelinesExcerpt,
         grantRubric: grantContext.formattedRubric,
         grantSummary: grantContext.summary,
+        requiredInputs: JSON.stringify(grantContext.requiredInputs, null, 2),
+        grantRubricJson: JSON.stringify(grantContext.rubricJson, null, 2),
       };
+      
+      // DYNAMIC INPUT HYDRATION: Add ALL applicant input keys from inputs_json
+      // This ensures any grant-specific field is available as a template variable
+      const canonicalKeys = ['summary', 'publicArticleUrl', 'trl', 'ipStatus'];
+      for (const [key, value] of Object.entries(inputs)) {
+        // Skip already-mapped canonical fields
+        if (canonicalKeys.includes(key)) continue;
+        // Skip if variable already exists
+        if (interpolationVars[key] !== undefined) continue;
+        
+        // Map value based on type
+        if (value === null || value === undefined) {
+          interpolationVars[key] = "";
+        } else if (typeof value === "object") {
+          interpolationVars[key] = JSON.stringify(value);
+        } else {
+          interpolationVars[key] = String(value);
+        }
+      }
       
       let sourcePackPrompt: string;
       if (stepConfig?.prompt_template) {
