@@ -204,13 +204,45 @@ function selectModulesForArchetype(archetype: GrantArchetype): ModuleDefinition[
 }
 
 // ============================================================================
-// QUALITY SCORING
+// QUALITY SCORING + FORBIDDEN PATTERN DETECTION
 // ============================================================================
 
-function calculateQualityScore(prompt: string): { total: number; level: 'good' | 'warning' | 'poor' } {
+// Forbidden patterns that must NEVER appear in prompt outputs or final reports
+const FORBIDDEN_PATTERNS = [
+  { regex: /\{TBD\}/gi, name: "{TBD}" },
+  { regex: /\[Insert[^\]]*\]/gi, name: "[Insert...]" },
+  { regex: /Hypothetical\s+\w+/gi, name: "Hypothetical [Entity]" },
+  { regex: /\[PROJECT\s*NAME\]/gi, name: "[PROJECT NAME]" },
+  { regex: /\[COMPANY\]/gi, name: "[COMPANY]" },
+  { regex: /\{value\}/gi, name: "{value}" },
+  { regex: /Source\s*[12]\b/gi, name: "Source 1/2" },
+  { regex: /\[Your\s+/gi, name: "[Your..." },
+  { regex: /\{\s*\}/g, name: "{}" },
+  { regex: /\[TBD\]/gi, name: "[TBD]" },
+];
+
+function detectForbiddenPatterns(text: string): string[] {
+  if (!text) return [];
+  return FORBIDDEN_PATTERNS.filter(p => p.regex.test(text)).map(p => p.name);
+}
+
+function calculateQualityScore(prompt: string): { 
+  total: number; 
+  level: 'good' | 'warning' | 'poor'; 
+  forbiddenPatterns: string[];
+  hasProxyProtocol: boolean;
+} {
   if (!prompt || typeof prompt !== 'string') {
-    return { total: 0, level: 'poor' };
+    return { total: 0, level: 'poor', forbiddenPatterns: [], hasProxyProtocol: false };
   }
+
+  // Detect forbidden patterns
+  const forbiddenPatterns = detectForbiddenPatterns(prompt);
+  const forbiddenPenalty = forbiddenPatterns.length * 5; // -5 points per pattern
+
+  // Check for proxy protocol language (good practice)
+  const hasProxyProtocol = /proxy.*estimate|proxy.*calculation|if.*unavailable.*calculate|conservative.*proxy|PROXY PROTOCOL/i.test(prompt);
+  const proxyBonus = hasProxyProtocol ? 10 : 0;
 
   const scores = {
     contextHeader: /STEP\s*\d|INPUTS?:/i.test(prompt) ? 15 : 0,
@@ -218,13 +250,15 @@ function calculateQualityScore(prompt: string): { total: number; level: 'good' |
     outputSchema: /OUTPUT.*JSON|JSON.*SCHEMA|OUTPUT.*SCHEMA|Return.*JSON/is.test(prompt) ? 20 : 0,
     urlValidation: /URL.*valid|valid.*URL|URL.*require|source.*URL/i.test(prompt) ? 15 : 0,
     unknownHandling: /unknown.*handling|if.*not.*found|unknowns.*array|Not disclosed|proxy.*estimate/i.test(prompt) ? 15 : 0,
-    placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden/i.test(prompt) ? 10 : 0,
+    placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden|FORBIDDEN.*PATTERN/i.test(prompt) ? 10 : 0,
     adequateLength: prompt.length >= 1500 ? 5 : Math.round((prompt.length / 1500) * 5 * 10) / 10,
   };
 
-  const total = Object.values(scores).reduce((a, b) => a + b, 0);
+  const baseTotal = Object.values(scores).reduce((a, b) => a + b, 0);
+  const total = Math.max(0, baseTotal - forbiddenPenalty + proxyBonus);
   const level = total >= 70 ? 'good' : total >= 40 ? 'warning' : 'poor';
-  return { total: Math.round(total), level };
+  
+  return { total: Math.round(total), level, forbiddenPatterns, hasProxyProtocol };
 }
 
 // ============================================================================
@@ -1568,7 +1602,7 @@ Grant Guidelines (raw text): ${guidelines_text.substring(0, 15000)}
 Selected Archetype Modules:
 ${modulesDescription}
 
-OBJECTIVE
+========== OBJECTIVE ==========
 
 Generate a pipeline that produces:
 
@@ -1578,30 +1612,65 @@ Generate a pipeline that produces:
 
 This pipeline must generalise to ANY grant archetype by including a mandatory "Grant Writer Core" plus archetype-specific modules.
 
-WRITER STANCE CONTRACT
+========== WRITER STANCE CONTRACT ==========
 
 You are a professional grant writer (10+ years Australian government funding experience) and a commercialisation analyst. Your audience is expert assessors scoring against published criteria.
 
 TONE RULES:
 1. No hype or unsubstantiated superlatives—use qualified, evidence-based language.
 2. Every assumption must be labelled: (High confidence) / (Medium confidence) / (Low confidence).
-3. If a claim is not supported by an allowed source_id, output exactly: "Unknown (no validated source found)".
-4. Always address additionality and counterfactual: what happens without funding vs with funding.
-5. Always articulate jurisdiction benefit relevant to the grant: Australian jobs, exports, productivity, sovereign capability, regional impact, health outcomes, emissions reduction, etc.
+3. Always address additionality and counterfactual: what happens without funding vs with funding.
+4. Always articulate jurisdiction benefit relevant to the grant: Australian jobs, exports, productivity, sovereign capability, regional impact, health outcomes, emissions reduction, etc.
 
 EVIDENCE RULES:
 1. All numeric claims must have a source_id.
 2. Preserve source IDs exactly as provided in Step 0 source pack—never renumber or invent IDs.
-3. Never use placeholders like "Source1", "[insert]", "{TBD}", "article", or bracketed tokens in final narrative outputs.
-4. Every source_id used must exist in the consolidated sources list.
-5. If specific data is unavailable, provide conservative proxy estimates and show the method and sensitivity.
+3. Every source_id used must exist in the consolidated sources list.
 
 OUTPUT RULES:
 1. Return ONLY valid JSON (no code fences, no prose outside JSON).
 2. First character must be { and last character must be }.
 3. Do not include \`\`\` anywhere.
 
-MANDATORY PIPELINE DESIGN (applies to ALL grants)
+========== FORBIDDEN OUTPUT PATTERNS (HARD BAN) ==========
+
+The following patterns must NEVER appear in ANY step's outputs:
+- {TBD} or any {bracketed_placeholder}
+- [Insert ...], [Your Company], [PROJECT NAME], [COMPANY]
+- "Hypothetical" + any entity name (e.g., "Hypothetical Competitor")
+- "Source 1", "Source 2" (use actual source names or source_ids)
+- "Unknown (no validated source found)" WITHOUT a proxy attempt
+- Empty values like "{}" or "[]" for required numeric fields
+
+REPLACEMENT PROTOCOL (when data is unavailable):
+- If entity unknown: output "Not publicly disclosed" or "No named entity identified in available sources"
+- If number unknown: Provide a PROXY ESTIMATE with method shown, inputs cited, sensitivity range, and confidence label
+- If source unavailable: Add to unknowns[] with "next_best_source" guidance for the applicant
+- Never invent hypothetical companies, products, or statistics
+
+========== MANDATORY PROXY PROTOCOL FOR TAM/SAM/SOM ==========
+
+When market sizing data is not directly available, steps MUST use this structure:
+
+{
+  "tam_global": {
+    "value": number,
+    "currency": "USD|AUD",
+    "year": 2024,
+    "method": "Top-down: [Parent Market] × [Segment Share]",
+    "inputs": [
+      {"description": "Parent market size", "value": number, "source_id": "S0-X"},
+      {"description": "Segment share assumption", "value": 0.XX, "source_id": "S0-Y|ESTIMATE"}
+    ],
+    "sensitivity": {"low": number, "high": number},
+    "confidence": "high|medium|low",
+    "source_ids": ["S0-X", "S0-Y"]
+  }
+}
+
+NEVER output "Unknown" for TAM/SAM/SOM without attempting a proxy calculation using available data.
+
+========== MANDATORY PIPELINE DESIGN (applies to ALL grants) ==========
 
 You MUST include the following "GRANT WRITER CORE" steps in every pipeline, in this order (after Step 0):
 
@@ -1610,31 +1679,40 @@ Step 0: build_source_pack (always first)
 
 Core Steps (must always exist, names must match exactly):
 
-Step 1: rubric_mapping_matrix
-  - Produces a table mapping each rubric criterion → required evidence types → where it will be addressed in the report.
+Step 1: rubric_traceability_matrix
+  - Map each rubric criterion → required evidence types → where it will be addressed in the report.
+  - Output: rubric_mapping[], required_inputs_mapping[], gaps[], mitigations[]
 
-Step 2: required_inputs_coverage_map
-  - Produces a checklist ensuring every required_inputs.key is addressed and where it appears.
+Step 2: assessor_insight_layer
+  - For each rubric section, generate: assessor_intent, typical_failure_modes[], evidence_plan[], applicant_requests[]
+  - This helps the applicant understand what assessors are really looking for
 
 Step 3: assumptions_register
   - Produces a structured list of assumptions + confidence + sensitivity notes.
 
-Step 4: additionality_and_benefit_case
+Step 4: comparables_market_signals
+  - Identify at least 5 named comparables (companies, programs, projects) OR explicitly document why not
+  - Include 2+ market_signals (investment rounds, regulatory approvals, procurement, revenue data) each with source_id
+  - Output: comparables[], search_strategy_if_limited, market_signals[], unknowns[]
+
+Step 5: additionality_and_benefit_case
   - Produces the counterfactual, need for funding, and jurisdiction benefit logic aligned to rubric weighting.
+  - Output: additionality_case{without_funding, with_funding, funding_gap_justification}, australia_benefit_case{}
 
-Step 5: delivery_plan_and_milestones
-  - Produces milestones, timeline, dependencies, and (if relevant) TRL progression and validation approach.
+Step 6: commercialisation_logic
+  - TRL pathway + milestones + dependencies (regulatory, manufacturing, standards)
+  - Output: trl_pathway[], milestones[], dependency_risks[], additionality_case, australia_benefit_case{}
 
-Step 6: risk_register_and_governance
-  - Produces key risks, mitigations, owners, governance approach, compliance constraints.
+Step 7: risk_register_and_governance
+  - Key risks, mitigations, owners, governance approach, compliance constraints.
 
-Step 7: budget_logic_and_value_for_money
-  - Produces budget narrative logic: cost categories, co-contribution logic, value-for-money rationale (no invented numbers unless sourced).
+Step 8: budget_logic_and_value_for_money
+  - Budget narrative logic: cost categories, co-contribution logic, value-for-money rationale (no invented numbers unless sourced).
 
 After the core steps, include archetype-specific research modules chosen from the selected modules above, such as:
-- market_need_quantification
-- competitor_and_alternatives
-- tam_sam_som_analysis
+- market_need_quantification (with PROXY PROTOCOL for TAM/SAM/SOM)
+- competitor_and_alternatives (real named entities only, no hypotheticals)
+- tam_sam_som_analysis (mandatory proxy estimates if direct data unavailable)
 - regulatory_and_pathway (for health/clinical/defence)
 - partner_stakeholder_mapping
 - impact_model (economic, social, climate)
@@ -1653,9 +1731,9 @@ N: finalize_citations
 
 IMPORTANT: Do NOT include HTML assembly steps in this pipeline—those are added automatically downstream.
 
-MANDATORY PROMPT TEMPLATE STRUCTURE (for EVERY step prompt_template)
+========== MANDATORY PROMPT TEMPLATE STRUCTURE (for EVERY step) ==========
 
-Each step's prompt_template MUST:
+Each step's prompt_template MUST be at least 1,500 characters and include ALL of:
 
 1. Start with: "STEP N — [Purpose]"
 
@@ -1663,36 +1741,49 @@ Each step's prompt_template MUST:
 
 3. Include HARD RULES (5+ explicit constraints):
    - Do NOT invent facts or numbers.
-   - NEVER use placeholder tokens or bracketed placeholders.
-   - Only cite validated sources; otherwise use "Unknown (no validated source found)".
-   - Show methods for calculations and proxy estimates.
-   - Prefer Australian authoritative sources where applicable.
+   - NEVER use placeholder tokens like {TBD}, [Insert...], [Company], Hypothetical [X].
+   - If entity cannot be found, output "Not publicly disclosed" or "No named entity identified".
+   - Show methods for calculations and proxy estimates with sensitivity ranges.
    - All numeric claims must have source_id.
    - Output valid JSON only.
 
-4. Include UNKNOWN HANDLING protocol (unknowns array + what's needed to validate).
+4. Include FORBIDDEN PATTERNS section:
+   - {TBD}, [Insert...], [PROJECT NAME], [COMPANY], Hypothetical [Entity]
+   - Source 1, Source 2 (use actual names)
+   - "Unknown" without proxy attempt for numeric fields
 
-5. Include OUTPUT JSON SCHEMA with exact fields, types, and constraints.
+5. Include PROXY PROTOCOL section (for steps with numeric outputs):
+   - If direct data unavailable: state "Direct data not publicly available"
+   - Provide 1-3 conservative proxy methods with formulas
+   - Cite proxy inputs with source_id
+   - Label confidence + sensitivity range
 
-MINIMUM PROMPT LENGTH: Each research step prompt MUST be at least 1,500 characters.
+6. Include UNKNOWN HANDLING protocol (unknowns array + what's needed to validate).
 
-APPROVED VARIABLES:
+7. Include OUTPUT JSON SCHEMA with exact fields, types, and constraints.
+
+========== APPROVED VARIABLES ==========
 Only these variables may appear in prompt_template INPUTS/HARD RULES:
 {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}},
 {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantSummary}},
 {{requiredInputs}}, {{sources}}, {{unknowns}}, {{step0}}, {{step1}}, {{step2}}, etc.
 
-QUALITY GATES (must satisfy):
+========== QUALITY GATES (must satisfy) ==========
 1. Every rubric section and criterion must be addressed by at least one step (explicitly).
-2. Every required input key must be mapped to a report section in required_inputs_coverage_map.
-3. report_assembly must instruct the model to write like a grant writer and to explicitly reference rubric sections (by title) and required input sections (by source_section).
-4. finalize_citations must output clean APA references and must ensure no placeholder citation tokens remain in the assembled report.
+2. Every required input key must be mapped to a report section in rubric_traceability_matrix.
+3. assessor_insight_layer must exist and cover all rubric sections.
+4. comparables_market_signals must identify 5+ named entities or document search strategy.
+5. commercialisation_logic must include TRL pathway and additionality case.
+6. TAM/SAM/SOM analysis must use PROXY PROTOCOL if direct data unavailable.
+7. No forbidden patterns may appear in any prompt template.
+8. report_assembly must instruct the model to write like a grant writer.
+9. finalize_citations must ensure no placeholder tokens remain.
 
 Output integrity rules:
 - step_number sequential from 0 with no gaps
 - step_name snake_case unique
-- include at least 10 total steps (8 core + archetype modules + 2 final)
-- include all 8 Grant Writer Core steps (build_source_pack, rubric_mapping_matrix, required_inputs_coverage_map, assumptions_register, additionality_and_benefit_case, delivery_plan_and_milestones, risk_register_and_governance, budget_logic_and_value_for_money)
+- include at least 12 total steps (9 core + archetype modules + 2 final)
+- include all Grant Writer Core steps
 - include final report_assembly and finalize_citations steps
 
 Return JSON:
@@ -1705,7 +1796,7 @@ Return JSON:
       "step_number": 0,
       "step_name": "build_source_pack",
       "step_description": "string",
-      "prompt_template": "string (1,500+ chars)",
+      "prompt_template": "string (1,500+ chars with PROXY PROTOCOL and FORBIDDEN PATTERNS)",
       "model_tier": "lite" | "balanced" | "pro"
     }
   ]
@@ -1801,16 +1892,17 @@ Now generate the pipeline steps using the Grant Writer Core structure, adding ar
     console.log("Step 3.5: Validating mandatory Grant Writer Core steps...");
     const stepNames = pipelineData.steps.map((s: any) => s.step_name);
     
-    // Define the mandatory Grant Writer Core steps
+    // Define the mandatory Grant Writer Core steps (updated with assessor-grade requirements)
     const GRANT_WRITER_CORE_STEPS = [
       { name: 'build_source_pack', step: 0, description: 'Curate 12-25 high-quality evidence sources' },
-      { name: 'rubric_mapping_matrix', step: 1, description: 'Map rubric criteria → evidence types → report location' },
-      { name: 'required_inputs_coverage_map', step: 2, description: 'Checklist ensuring every required input is addressed' },
+      { name: 'rubric_traceability_matrix', step: 1, description: 'Map rubric criteria → evidence types → report location' },
+      { name: 'assessor_insight_layer', step: 2, description: 'Generate assessor intent, failure modes, evidence plan per rubric section' },
       { name: 'assumptions_register', step: 3, description: 'Structured assumptions + confidence + sensitivity' },
-      { name: 'additionality_and_benefit_case', step: 4, description: 'Counterfactual, funding need, jurisdiction benefit' },
-      { name: 'delivery_plan_and_milestones', step: 5, description: 'Timeline, dependencies, TRL progression' },
-      { name: 'risk_register_and_governance', step: 6, description: 'Risks, mitigations, governance, compliance' },
-      { name: 'budget_logic_and_value_for_money', step: 7, description: 'Budget narrative, co-contribution, VFM rationale' }
+      { name: 'comparables_market_signals', step: 4, description: 'Identify 5+ named comparables + 2+ market signals with source_ids' },
+      { name: 'additionality_and_benefit_case', step: 5, description: 'Counterfactual, funding need, jurisdiction benefit' },
+      { name: 'commercialisation_logic', step: 6, description: 'TRL pathway, milestones, dependencies, additionality template' },
+      { name: 'risk_register_and_governance', step: 7, description: 'Risks, mitigations, governance, compliance' },
+      { name: 'budget_logic_and_value_for_money', step: 8, description: 'Budget narrative, co-contribution, VFM rationale' }
     ];
     
     // Check for each mandatory core step
@@ -1835,8 +1927,8 @@ Now generate the pipeline steps using the Grant Writer Core structure, adding ar
       step.step_number = index;
     });
 
-    // Check minimum step count
-    if (pipelineData.steps.length < 8) {
+    // Check minimum step count (updated for new core structure)
+    if (pipelineData.steps.length < 10) {
       console.warn(`Only ${pipelineData.steps.length} steps generated - pipeline may need enhancement`);
     }
 
@@ -1846,9 +1938,10 @@ Now generate the pipeline steps using the Grant Writer Core structure, adding ar
     const stepsNeedingEnhancement: number[] = [];
     for (const step of pipelineData.steps) {
       const score = calculateQualityScore(step.prompt_template);
-      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}, length=${step.prompt_template.length}`);
-      // Enhance any step that isn't 'good' (score < 70) or is under 1500 chars
-      if (score.level !== 'good' || step.prompt_template.length < 1500) {
+      const hasForbidden = score.forbiddenPatterns.length > 0;
+      console.log(`Step ${step.step_number} (${step.step_name}): quality=${score.total}, level=${score.level}, length=${step.prompt_template.length}, forbidden=${hasForbidden ? score.forbiddenPatterns.join(',') : 'none'}`);
+      // Enhance any step that isn't 'good' (score < 70), is under 1500 chars, or has forbidden patterns
+      if (score.level !== 'good' || step.prompt_template.length < 1500 || hasForbidden) {
         stepsNeedingEnhancement.push(step.step_number);
       }
     }
@@ -1865,19 +1958,32 @@ ${PROMPT_REFERENCE_EXAMPLE}
 
 The following prompts need quality improvement. For each prompt, enhance it to include ALL of these:
 1. A "STEP N — [Purpose]" header with INPUTS section
-2. A "HARD RULES:" section with 5+ explicit constraints including:
-   - "Do NOT invent facts or numbers"
-   - "NEVER use placeholder tokens like [Company] or {value}"
-   - Placeholder prohibition language
-3. An "UNKNOWN HANDLING:" section for missing data
-4. An "OUTPUT JSON SCHEMA:" with exact field definitions
-5. URL validation requirements where applicable
+2. A "HARD RULES:" section with 5+ explicit constraints
+3. A "FORBIDDEN PATTERNS:" section explicitly banning: {TBD}, [Insert...], [PROJECT NAME], Hypothetical [X], Source 1/2
+4. A "PROXY PROTOCOL:" section for numeric fields (TAM/SAM/SOM, market sizes, economic impact):
+   - If direct data unavailable, provide conservative proxy estimate
+   - Show calculation method and inputs with source_ids
+   - Include sensitivity range and confidence label
+5. An "UNKNOWN HANDLING:" section (unknowns array + next_best_source guidance)
+6. An "OUTPUT JSON SCHEMA:" with exact field definitions
 
 CRITICAL REQUIREMENTS:
 - Each enhanced prompt MUST be at least 1,500 characters (this is mandatory)
 - Template variables {{...}} are ONLY for INPUTS or HARD RULES sections
 - NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions
 - Follow the exact structure from the REFERENCE EXAMPLE
+
+FORBIDDEN OUTPUT PATTERNS (these must be explicitly banned in HARD RULES):
+- {TBD} or any {bracketed_placeholder}
+- [Insert ...], [Your Company], [PROJECT NAME], [COMPANY]
+- "Hypothetical" + any entity name
+- "Source 1", "Source 2" (use actual source names)
+- "Unknown (no validated source found)" without proxy attempt
+
+REPLACEMENT PROTOCOL (include in enhanced prompts):
+- If entity unknown: "Not publicly disclosed" or "No named entity identified"
+- If number unknown: Provide proxy estimate with method shown
+- If source unavailable: Add to unknowns[] with "next_best_source" guidance
 
 Steps to enhance:
 ${stepsNeedingEnhancement.map(stepNum => {

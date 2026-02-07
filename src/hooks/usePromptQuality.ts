@@ -14,9 +14,11 @@ export interface QualityScore {
     placeholderProhibition: number; // 10 pts - Prohibits [brackets] or {braces}
     adequateLength: number;     // 5 pts - At least 1000 characters
     validVariables: number;     // 10 pts - All {{variables}} are valid shortcodes
+    proxyProtocol: number;      // 10 pts - Has proxy protocol for unavailable data
   };
   invalidVariables: string[];   // List any invalid variables found
   hasVariablesInSchema: boolean; // True if {{variables}} found in OUTPUT SCHEMA (bad)
+  forbiddenPatterns: string[];  // Detected forbidden patterns like {TBD}, [Insert...]
   recommendations: string[];
   level: 'good' | 'warning' | 'poor';
   // Assembly step validation (for finalize_report_html)
@@ -41,12 +43,36 @@ const VALID_VARIABLE_PATTERNS = [
   /^grantGuidelines$/,
   /^grantRubric$/,
   /^grantSummary$/,
+  /^requiredInputs$/,
   // Source pack
   /^sources$/,
   /^unknowns$/,
   // Step outputs (step0 through step99)
   /^step\d{1,2}$/,
 ];
+
+// Forbidden patterns that must NEVER appear in prompt outputs or final reports
+const FORBIDDEN_PATTERNS = [
+  { regex: /\{TBD\}/gi, name: "{TBD}" },
+  { regex: /\[Insert[^\]]*\]/gi, name: "[Insert...]" },
+  { regex: /Hypothetical\s+\w+/gi, name: "Hypothetical [Entity]" },
+  { regex: /\[PROJECT\s*NAME\]/gi, name: "[PROJECT NAME]" },
+  { regex: /\[COMPANY\]/gi, name: "[COMPANY]" },
+  { regex: /\{value\}/gi, name: "{value}" },
+  { regex: /Source\s*[12]\b/gi, name: "Source 1/2" },
+  { regex: /\[Your\s+/gi, name: "[Your..." },
+  { regex: /\{\s*\}/g, name: "{}" },
+  { regex: /\[TBD\]/gi, name: "[TBD]" },
+];
+
+/**
+ * Detect forbidden patterns in text
+ * Returns list of pattern names found
+ */
+export function detectForbiddenPatterns(text: string): string[] {
+  if (!text) return [];
+  return FORBIDDEN_PATTERNS.filter(p => p.regex.test(text)).map(p => p.name);
+}
 
 // Check for template variables in OUTPUT SCHEMA sections (bad practice)
 function hasVariablesInOutputSchema(prompt: string): boolean {
@@ -91,8 +117,20 @@ function validateVariables(prompt: string): { score: number; invalid: string[]; 
   return { score, invalid: [...new Set(invalid)], hasSchemaVars };
 }
 
-function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVars: string[], hasSchemaVars: boolean): string[] {
+function generateRecommendations(
+  breakdown: QualityScore['breakdown'], 
+  invalidVars: string[], 
+  hasSchemaVars: boolean,
+  forbiddenPatterns: string[]
+): string[] {
   const recommendations: string[] = [];
+
+  // Priority: forbidden patterns first
+  if (forbiddenPatterns.length > 0) {
+    recommendations.push(
+      `CRITICAL: Remove forbidden patterns from prompt: ${forbiddenPatterns.join(', ')}. Use "Not publicly disclosed" or proxy estimates instead.`
+    );
+  }
 
   if (breakdown.contextHeader === 0) {
     recommendations.push('Add a STEP header with purpose and INPUTS section listing variables used');
@@ -110,7 +148,10 @@ function generateRecommendations(breakdown: QualityScore['breakdown'], invalidVa
     recommendations.push('Add unknown handling protocol (proxy estimates, "unknowns" array, descriptive fallbacks)');
   }
   if (breakdown.placeholderProhibition === 0) {
-    recommendations.push('Add placeholder prohibition (forbid [brackets] and {braces} in output)');
+    recommendations.push('Add FORBIDDEN PATTERNS section banning {TBD}, [Insert...], Hypothetical [X], Source 1/2');
+  }
+  if (breakdown.proxyProtocol === 0) {
+    recommendations.push('Add PROXY PROTOCOL section: if data unavailable, provide conservative proxy estimate with method, inputs, sensitivity, and confidence');
   }
   if (breakdown.adequateLength < 5) {
     recommendations.push('Expand prompt to at least 1,500 characters with detailed instructions');
@@ -142,9 +183,11 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
         placeholderProhibition: 0,
         adequateLength: 0,
         validVariables: 0,
+        proxyProtocol: 0,
       },
       invalidVariables: [],
       hasVariablesInSchema: false,
+      forbiddenPatterns: [],
       recommendations: ['Prompt is empty or invalid'],
       level: 'poor',
     };
@@ -152,6 +195,13 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
 
   // Validate variables first
   const { score: validVariablesScore, invalid: invalidVariables, hasSchemaVars } = validateVariables(prompt);
+  
+  // Detect forbidden patterns
+  const forbiddenPatterns = detectForbiddenPatterns(prompt);
+  const forbiddenPenalty = forbiddenPatterns.length * 5; // -5 points per pattern
+
+  // Check for proxy protocol language (good practice)
+  const hasProxyProtocol = /proxy.*estimate|proxy.*calculation|if.*unavailable.*calculate|conservative.*proxy|PROXY PROTOCOL|sensitivity.*range/i.test(prompt);
 
   const breakdown = {
     // Context header: STEP N with purpose or INPUTS section
@@ -170,17 +220,23 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     unknownHandling: /unknown.*handling|if.*not.*found|unknowns.*array|Not disclosed|proxy.*estimate/i.test(prompt) ? 10 : 0,
     
     // Placeholder prohibition: no brackets/braces in output
-    placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden/i.test(prompt) ? 10 : 0,
+    placeholderProhibition: /\[.*\].*forbidden|placeholder.*prohibit|NEVER.*\[|Do NOT.*\[|bracket.*forbidden|FORBIDDEN.*PATTERN/i.test(prompt) ? 10 : 0,
     
     // Adequate length: at least 1000 characters (5 pts max)
     adequateLength: prompt.length >= 1500 ? 5 : Math.round((prompt.length / 1500) * 5 * 10) / 10,
     
     // Valid variables: all {{variables}} are approved shortcodes
     validVariables: validVariablesScore,
+    
+    // Proxy protocol: has proxy estimation protocol for unavailable data
+    proxyProtocol: hasProxyProtocol ? 10 : 0,
   };
 
-  const total = Object.values(breakdown).reduce((a, b) => a + b, 0);
-  const recommendations = generateRecommendations(breakdown, invalidVariables, hasSchemaVars);
+  // Calculate total with forbidden pattern penalty
+  const baseTotal = Object.values(breakdown).reduce((a, b) => a + b, 0);
+  const total = Math.max(0, baseTotal - forbiddenPenalty);
+  
+  const recommendations = generateRecommendations(breakdown, invalidVariables, hasSchemaVars, forbiddenPatterns);
   
   let level: QualityScore['level'];
   if (total >= 70) {
@@ -221,6 +277,7 @@ export function calculateQualityScore(prompt: string, stepName?: string): Qualit
     breakdown,
     invalidVariables,
     hasVariablesInSchema: hasSchemaVars,
+    forbiddenPatterns,
     recommendations,
     level,
     assemblyValidation,

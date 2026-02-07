@@ -7,32 +7,70 @@ import DOMPurify from "dompurify";
  * Remove any remaining bracketed internal source IDs from HTML
  * Fallback for reports generated before APA citation cleanup was added
  */
+/**
+ * Forbidden patterns that should never appear in final reports
+ */
+const REPORT_FORBIDDEN_PATTERNS = [
+  // Internal source ID formats
+  /<sup>\s*\[([A-Z][A-Z0-9\-_:]+)\]\s*<\/sup>/gi, // <sup>[S0-1]</sup>
+  /\[([A-Z][A-Z0-9\-_:]+)\]/g,                     // [S0-1], [ARTICLE-1], [SEARCH-2]
+  /\[\{TBD\}\]/gi,                                  // [{TBD}]
+  /\[TBD\]/gi,                                      // [TBD]
+  /\{TBD\}/gi,                                      // {TBD}
+  // Placeholder patterns
+  /Source\s*[12]\b/gi,                              // Source 1, Source 2
+  /Hypothetical\s+\w+/gi,                           // Hypothetical Company
+  /\[Insert[^\]]*\]/gi,                             // [Insert company name]
+  /\[PROJECT\s*NAME\]/gi,                           // [PROJECT NAME]
+  /\[COMPANY\]/gi,                                  // [COMPANY]
+  /\[Your\s+[^\]]*\]/gi,                            // [Your Company]
+];
+
 export function stripBracketedSourceIds(html: string): string {
   if (!html) return "";
   
-  // Pattern matches internal source ID formats used by the pipeline:
-  // - [S0-1], [S0-A1], [S1-2] (step-source format)
-  // - [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format)
-  // - [TBD], [{TBD}] (placeholder tokens)
-  // Also handles superscript-wrapped versions: <sup>[S0-1]</sup>
-  
   let cleaned = html;
   
-  // Remove superscript-wrapped markers first (most specific)
-  cleaned = cleaned.replace(/<sup>\s*\[([A-Z][A-Z0-9\-_:]+)\]\s*<\/sup>/gi, "");
-  
-  // Remove plain bracketed internal IDs
-  // Pattern: [CAPITAL_LETTER followed by alphanumeric/dashes]
-  cleaned = cleaned.replace(/\[([A-Z][A-Z0-9\-_:]+)\]/g, "");
-  
-  // Remove {TBD} variants
-  cleaned = cleaned.replace(/\[\{TBD\}\]/gi, "");
-  cleaned = cleaned.replace(/\[TBD\]/gi, "");
+  // Apply all forbidden pattern replacements
+  for (const pattern of REPORT_FORBIDDEN_PATTERNS) {
+    // Reset lastIndex for global patterns
+    pattern.lastIndex = 0;
+    cleaned = cleaned.replace(pattern, "");
+  }
   
   // Clean up any double spaces left behind
   cleaned = cleaned.replace(/  +/g, " ");
   
+  // Clean up empty parentheses left behind from removed citations
+  cleaned = cleaned.replace(/\(\s*\)/g, "");
+  cleaned = cleaned.replace(/\(\s*;\s*\)/g, "");
+  
   return cleaned;
+}
+
+/**
+ * Validate that no internal source IDs or forbidden patterns remain
+ * Returns array of patterns found (empty if clean)
+ */
+export function validateNoInternalMarkers(html: string): string[] {
+  if (!html) return [];
+  
+  const found: string[] = [];
+  
+  // Check for internal source ID patterns
+  const internalIdPattern = /\[([A-Z][A-Z0-9\-_:]+)\]/g;
+  let match;
+  while ((match = internalIdPattern.exec(html)) !== null) {
+    found.push(`[${match[1]}]`);
+  }
+  
+  // Check for other forbidden patterns
+  if (/\{TBD\}/i.test(html)) found.push("{TBD}");
+  if (/Source\s*[12]\b/i.test(html)) found.push("Source 1/2");
+  if (/Hypothetical\s+\w+/i.test(html)) found.push("Hypothetical [Entity]");
+  if (/\[Insert/i.test(html)) found.push("[Insert...]");
+  
+  return [...new Set(found)]; // Deduplicate
 }
 
 /**
