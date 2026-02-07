@@ -562,38 +562,62 @@ async function processSingleStep(
   const unknownsJson = JSON.stringify(sourcePack.unknowns || []);
 
   // Build complete interpolation variables
-  const buildVariables = (): Record<string, string> => ({
-    // User inputs
-    summary,
-    publicArticleUrl,
-    trl,
-    ipStatus,
-    // Grant context
-    grantName: grantContext.name,
-    grantVersionLabel: grantContext.versionLabel,
-    grantGuidelines: grantContext.guidelinesExcerpt,
-    grantRubric: grantContext.formattedRubric,
-    grantRubricJson: JSON.stringify(grantContext.rubricJson, null, 2),
-    requiredInputs: JSON.stringify(grantContext.requiredInputs, null, 2),
-    grantSummary: grantContext.summary,
-    // Source pack from Step 0
-    sources: sourcesJson,
-    unknowns: unknownsJson,
-    // All step outputs (dynamically built from DB)
-    ...stepVariables,
-    // Legacy semantic names for backward compatibility with old prompts
-    researchContext: String(reportContent.researchContext || ""),
-    competitorResearch: String(reportContent.competitorResearch || ""),
-    marketSegments: String(reportContent.marketSegments || ""),
-    existingCompetitors: String(reportContent.existingCompetitors || ""),
-    tam: String(reportContent.tam || ""),
-    sam: String(reportContent.sam || ""),
-    som: String(reportContent.som || ""),
-    economicImpact: String(reportContent.economicImpact || ""),
-    competitorTable: String(reportContent.competitorTable || ""),
-    partnerBusinesses: String(reportContent.partnerBusinesses || ""),
-    marketSizingSourcePack: String(reportContent.marketSizingSourcePack || ""),
-  });
+  const buildVariables = (): Record<string, string> => {
+    const vars: Record<string, string> = {
+      // User inputs (canonical)
+      summary,
+      publicArticleUrl,
+      trl,
+      ipStatus,
+      // Grant context
+      grantName: grantContext.name,
+      grantVersionLabel: grantContext.versionLabel,
+      grantGuidelines: grantContext.guidelinesExcerpt,
+      grantRubric: grantContext.formattedRubric,
+      grantRubricJson: JSON.stringify(grantContext.rubricJson, null, 2),
+      requiredInputs: JSON.stringify(grantContext.requiredInputs, null, 2),
+      grantSummary: grantContext.summary,
+      // Source pack from Step 0
+      sources: sourcesJson,
+      unknowns: unknownsJson,
+      // All step outputs (dynamically built from DB)
+      ...stepVariables,
+      // Legacy semantic names for backward compatibility with old prompts
+      researchContext: String(reportContent.researchContext || ""),
+      competitorResearch: String(reportContent.competitorResearch || ""),
+      marketSegments: String(reportContent.marketSegments || ""),
+      existingCompetitors: String(reportContent.existingCompetitors || ""),
+      tam: String(reportContent.tam || ""),
+      sam: String(reportContent.sam || ""),
+      som: String(reportContent.som || ""),
+      economicImpact: String(reportContent.economicImpact || ""),
+      competitorTable: String(reportContent.competitorTable || ""),
+      partnerBusinesses: String(reportContent.partnerBusinesses || ""),
+      marketSizingSourcePack: String(reportContent.marketSizingSourcePack || ""),
+    };
+    
+    // DYNAMIC INPUT HYDRATION: Add ALL applicant input keys from inputs_json
+    // This ensures any grant-specific field (e.g., project_budget, nrf_priority_area)
+    // is available as a template variable if defined in required_inputs_json
+    const canonicalKeys = ['summary', 'publicArticleUrl', 'trl', 'ipStatus'];
+    for (const [key, value] of Object.entries(inputs)) {
+      // Skip already-mapped canonical fields to avoid overwriting
+      if (canonicalKeys.includes(key)) continue;
+      // Skip if variable already exists (from step outputs or other sources)
+      if (vars[key] !== undefined) continue;
+      
+      // Map value based on type
+      if (value === null || value === undefined) {
+        vars[key] = "";
+      } else if (typeof value === "object") {
+        vars[key] = JSON.stringify(value);
+      } else {
+        vars[key] = String(value);
+      }
+    }
+    
+    return vars;
+  };
 
   try {
     // Find the step configuration from the bundle

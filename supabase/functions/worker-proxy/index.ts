@@ -382,6 +382,10 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     };
   }) || [];
 
+  // Extract applicant inputs for external worker convenience
+  // This allows external workers to hydrate dynamic template variables
+  const applicantInputs = application?.inputs_json || {};
+
   return jsonResponse({
     run: {
       id: run.id,
@@ -403,6 +407,8 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
     grant_context: grantContext,
     existing_steps: steps || [],
     step_outputs,  // Normalized map for consistent step access by number
+    // DYNAMIC INPUT HYDRATION: Provide applicant inputs for external worker hydration
+    applicant_inputs: applicantInputs,
   });
 }
 
