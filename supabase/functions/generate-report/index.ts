@@ -143,6 +143,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
   versionLabel: string;
   guidelinesExcerpt: string;
   formattedRubric: string;
+  rubricJson: object;
+  requiredInputs: object[];
   summary: string;
 }> {
   const MAX_GUIDELINES_LENGTH = 10000;
@@ -154,6 +156,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
         version_number,
         guidelines_raw_text,
         ai_suggestions_json,
+        required_inputs_json,
+        rubric_json,
         grant:grants!inner(name)
       `)
       .eq("id", grantVersionId)
@@ -166,6 +170,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
         versionLabel: "",
         guidelinesExcerpt: "",
         formattedRubric: "",
+        rubricJson: { sections: [] },
+        requiredInputs: [],
         summary: "",
       };
     }
@@ -182,14 +188,18 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
       guidelinesExcerpt = guidelinesExcerpt.slice(0, MAX_GUIDELINES_LENGTH) + "\n\n[Guidelines truncated...]";
     }
 
-    // Format rubric from ai_suggestions_json
+    // Format rubric from rubric_json or ai_suggestions_json
     let formattedRubric = "";
     // deno-lint-ignore no-explicit-any
+    const rubricData = data.rubric_json as any;
+    // deno-lint-ignore no-explicit-any
     const suggestions = data.ai_suggestions_json as any;
-    if (suggestions?.rubric?.sections && Array.isArray(suggestions.rubric.sections)) {
+    const rubricSections = rubricData?.sections || suggestions?.rubric?.sections;
+    
+    if (rubricSections && Array.isArray(rubricSections)) {
       formattedRubric = "Assessment Criteria:\n\n";
       // deno-lint-ignore no-explicit-any
-      suggestions.rubric.sections.forEach((section: any, index: number) => {
+      rubricSections.forEach((section: any, index: number) => {
         const weight = section.weight ? ` (${section.weight}%)` : "";
         formattedRubric += `${index + 1}. ${section.title || section.key}${weight}\n`;
         if (Array.isArray(section.criteria)) {
@@ -202,13 +212,15 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
     }
 
     // Get summary from ai_suggestions_json
-    const summary = suggestions?.summary || "";
+    const summary = suggestions?.summary || suggestions?.grant_summary || "";
 
     return {
       name: grantName,
       versionLabel,
       guidelinesExcerpt,
       formattedRubric: formattedRubric.trim(),
+      rubricJson: data.rubric_json || { sections: [] },
+      requiredInputs: data.required_inputs_json || [],
       summary,
     };
   } catch (e) {
@@ -218,6 +230,8 @@ async function fetchGrantContext(supabase: any, grantVersionId: string): Promise
       versionLabel: "",
       guidelinesExcerpt: "",
       formattedRubric: "",
+      rubricJson: { sections: [] },
+      requiredInputs: [],
       summary: "",
     };
   }
