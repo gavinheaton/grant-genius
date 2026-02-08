@@ -105,11 +105,20 @@ const GENERIC_SOURCE_PATTERN = /\[([A-Za-z]+[\d]*-?[\w]*(?:\s*,\s*[A-Za-z]+[\d]*
 // ============================================================================
 
 const FORBIDDEN_PATTERNS: { pattern: RegExp; name: string }[] = [
+  // Internal source ID formats
   { pattern: /\[S\d+-[A-Z0-9]+\]/gi, name: 'Internal source ID [S0-1]' },
   { pattern: /\[ARTICLE-\d+\]/gi, name: 'Article marker [ARTICLE-1]' },
   { pattern: /\[SEARCH-\d+\]/gi, name: 'Search marker [SEARCH-1]' },
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
+  
+  // Generic single-word markers
+  { pattern: /\[article\]/gi, name: '[article]' },
+  { pattern: /\[ref\]/gi, name: '[ref]' },
+  { pattern: /\[source\d*\]/gi, name: '[source] or [source1]' },
+  { pattern: /\[reference\d*\]/gi, name: '[reference]' },
+  
+  // Placeholder patterns
   { pattern: /\{TBD\}/gi, name: '{TBD}' },
   { pattern: /\[TBD\]/gi, name: '[TBD]' },
   { pattern: /\[\{TBD\}\]/gi, name: '[{TBD}]' },
@@ -121,6 +130,17 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /Hypothetical\s+\w+/gi, name: 'Hypothetical [Entity]' },
   { pattern: /\{value\}/gi, name: '{value}' },
   { pattern: /\{\s*\}/g, name: '{}' },
+  
+  // Budget placeholders: $[Amount], $[...]
+  { pattern: /\$\[[^\]]+\]/g, name: 'Budget placeholder $[...]' },
+  
+  // Curly brace placeholders (exclude valid style/class attributes)
+  { pattern: /\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, name: 'Curly placeholder {name}' },
+  
+  // "undefined" adjacent to brackets or source markers
+  { pattern: /undefined\s*\[/gi, name: 'undefined before bracket' },
+  { pattern: /\]\s*undefined/gi, name: 'undefined after bracket' },
+  { pattern: /\bundefined\b(?=\s*(?:S\d|Source|ref|ARTICLE))/gi, name: 'undefined near source ref' },
 ];
 
 // ============================================================================
@@ -621,6 +641,205 @@ export function lintBracketTokens(html: string): LintResult {
     violations: uniqueViolations,
     violationCount: uniqueViolations.length,
   };
+}
+
+// ============================================================================
+// SANITIZE FINAL REPORT
+// ============================================================================
+
+export interface SanitizationResult {
+  html: string;
+  removedTokens: UnknownEntry[];
+  stats: {
+    tokensRemoved: number;
+    tokensReplaced: number;
+  };
+}
+
+/**
+ * Check if removing a token at this position would break sentence meaning
+ * Returns true if the token appears to be critical to the sentence
+ */
+function wouldBreakMeaning(html: string, offset: number, match: string): boolean {
+  // Get surrounding context
+  const before = html.substring(Math.max(0, offset - 30), offset).trim();
+  const after = html.substring(offset + match.length, offset + match.length + 30).trim();
+  
+  // If token is preceded by "according to" or "as reported by" type phrases
+  if (/(?:according\s+to|as\s+(?:reported|stated|noted)\s+by|per|from)\s*$/i.test(before)) {
+    return true;
+  }
+  
+  // If token is the subject of a verb (followed by verb-like patterns)
+  if (/^(?:\s*(?:shows?|reports?|states?|indicates?|found|concluded))/i.test(after)) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Sanitize final report HTML by removing all forbidden tokens
+ * 
+ * Options:
+ * - preserveContext: Replace tokens with "(citation unavailable)" instead of removing
+ * - failOnViolations: Throw error if violations remain after sanitization
+ */
+export function sanitizeFinalReport(
+  html: string,
+  options: { 
+    preserveContext?: boolean;
+    failOnViolations?: boolean;
+  } = {}
+): SanitizationResult {
+  const { preserveContext = false, failOnViolations = false } = options;
+  const removedTokens: UnknownEntry[] = [];
+  let sanitized = html || '';
+  let tokensRemoved = 0;
+  let tokensReplaced = 0;
+
+  // Apply all forbidden pattern replacements
+  for (const { pattern, name } of FORBIDDEN_PATTERNS) {
+    pattern.lastIndex = 0;
+    
+    sanitized = sanitized.replace(pattern, (match, ...args) => {
+      // Extract offset from args (second to last argument in replace callback)
+      const offset = typeof args[args.length - 2] === 'number' ? args[args.length - 2] : 0;
+      
+      removedTokens.push({
+        type: 'citation_unresolved',
+        original_token: match,
+        location_hint: extractLocationHint(html, offset),
+        what_is_missing: `Unresolved ${name}`,
+        what_would_validate: 'Valid source in source pack or applicant input'
+      });
+
+      if (preserveContext && wouldBreakMeaning(html, offset, match)) {
+        tokensReplaced++;
+        return '(citation unavailable)';
+      }
+      
+      tokensRemoved++;
+      return '';
+    });
+  }
+  
+  // Clean up any remaining generic bracket tokens that look like internal markers
+  // [SomeID123], [RefA1], etc. but NOT linked citations
+  const genericBracketPattern = /\[([A-Za-z]+\d+[^\]]*)\]/g;
+  sanitized = sanitized.replace(genericBracketPattern, (match, content, offset) => {
+    // Skip if this is inside a link
+    const before = sanitized.substring(Math.max(0, offset - 50), offset);
+    if (before.includes('href="#ref-')) {
+      return match;
+    }
+    
+    removedTokens.push({
+      type: 'citation_unresolved',
+      original_token: match,
+      location_hint: extractLocationHint(html, offset),
+      what_is_missing: `Generic bracket token`,
+      what_would_validate: 'Valid source ID or remove marker'
+    });
+    
+    if (preserveContext && wouldBreakMeaning(html, offset, match)) {
+      tokensReplaced++;
+      return '(citation unavailable)';
+    }
+    
+    tokensRemoved++;
+    return '';
+  });
+
+  // Clean up orphan artifacts
+  sanitized = sanitized.replace(/\(\s*\)/g, '');
+  sanitized = sanitized.replace(/\(\s*;\s*\)/g, '');
+  sanitized = sanitized.replace(/\s{2,}/g, ' ');
+  sanitized = sanitized.replace(/\s+([.,;:!?])/g, '$1');
+
+  // Hard fail check if requested
+  if (failOnViolations) {
+    const remaining = lintBracketTokens(sanitized);
+    if (!remaining.passed) {
+      throw new Error(
+        `Internal citation markers leaked into final report: ${remaining.violations.slice(0, 5).join(', ')}`
+      );
+    }
+  }
+
+  return {
+    html: sanitized,
+    removedTokens,
+    stats: { tokensRemoved, tokensReplaced }
+  };
+}
+
+// ============================================================================
+// VALIDATE FINAL REPORT (HARD FAILURE GATE)
+// ============================================================================
+
+/**
+ * Validate that no forbidden patterns remain in the final report
+ * Throws an error if any violations are found
+ * 
+ * This is a hard failure gate - call this before saving reports
+ */
+export function validateFinalReport(html: string): void {
+  if (!html) return;
+  
+  const violations: string[] = [];
+  
+  // Check all forbidden patterns
+  for (const { pattern, name } of FORBIDDEN_PATTERNS) {
+    pattern.lastIndex = 0;
+    if (pattern.test(html)) {
+      pattern.lastIndex = 0;
+      const match = pattern.exec(html);
+      violations.push(`${name}: "${match?.[0] || 'unknown'}"`);
+    }
+  }
+  
+  // Check for "undefined" adjacent to source-like patterns
+  const undefinedPatterns = [
+    /undefined\s*\[/gi,
+    /\]\s*undefined/gi,
+    /\bundefined\b(?=\s*(?:S\d|Source|ref|ARTICLE))/gi,
+  ];
+  
+  for (const pattern of undefinedPatterns) {
+    pattern.lastIndex = 0;
+    if (pattern.test(html)) {
+      violations.push('undefined adjacent to marker detected');
+      break;
+    }
+  }
+  
+  // Check for any remaining unlinked bracket tokens
+  const bracketPattern = /\[([^\]]+)\]/g;
+  let match: RegExpExecArray | null;
+  
+  while ((match = bracketPattern.exec(html)) !== null) {
+    const content = match[1];
+    
+    // Allow numeric citations that are linked
+    if (/^\d+$/.test(content)) {
+      const before = html.substring(Math.max(0, match.index - 100), match.index);
+      if (before.includes('href="#ref-')) {
+        continue;
+      }
+    }
+    
+    // Any other bracket token is a violation
+    if (/^[A-Z]/.test(content) || /\d/.test(content)) {
+      violations.push(`Unresolved bracket token: "${match[0]}"`);
+    }
+  }
+  
+  if (violations.length > 0) {
+    throw new Error(
+      `Internal citation markers leaked into final report: ${violations.slice(0, 5).join(', ')}`
+    );
+  }
 }
 
 // ============================================================================

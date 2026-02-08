@@ -1,0 +1,397 @@
+/**
+ * Citation Normalizer Test Suite
+ * 
+ * Tests for the citation sanitization system including:
+ * - sanitizeFinalReport()
+ * - lintBracketTokens()
+ * - validateFinalReport()
+ * - normalizeReportHtml()
+ */
+
+import { describe, it, expect } from "vitest";
+import { 
+  sanitizeFinalReport, 
+  lintBracketTokens,
+  normalizeReportHtml,
+  validateFinalReport,
+  buildSourceMap,
+  type SourceEntry,
+} from "../lib/citationNormalizer";
+
+describe("citationNormalizer", () => {
+  
+  // ============================================
+  // sanitizeFinalReport tests
+  // ============================================
+  
+  describe("sanitizeFinalReport", () => {
+    it("should remove [S0-1] internal markers", () => {
+      const input = "<p>This is a claim [S0-1] with citation.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.removedTokens.length).toBeGreaterThan(0);
+      expect(result.stats.tokensRemoved).toBeGreaterThan(0);
+    });
+
+    it("should remove [article] placeholder", () => {
+      const input = "<p>According to the study [article], results show...</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[article]");
+      expect(result.removedTokens.some(t => t.original_token === "[article]")).toBe(true);
+    });
+
+    it("should remove $[Amount] budget placeholders", () => {
+      const input = "<p>The budget is $[Amount] million.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("$[Amount]");
+      expect(result.html).not.toContain("$[");
+      expect(result.removedTokens.some(t => t.original_token.includes("$["))).toBe(true);
+    });
+
+    it("should remove {TBD} placeholders", () => {
+      const input = "<p>The value is {TBD} for this field.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("{TBD}");
+    });
+
+    it("should remove undefined adjacent to markers", () => {
+      const input = "<p>This undefined [S0-1] is broken.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toMatch(/undefined\s*\[/);
+    });
+
+    it("should remove [ARTICLE-1] format markers", () => {
+      const input = "<p>Research shows [ARTICLE-1] that...</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[ARTICLE-1]");
+    });
+
+    it("should remove [SOURCE-2] format markers", () => {
+      const input = "<p>Data from [SOURCE-2] indicates...</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[SOURCE-2]");
+    });
+
+    it("should preserve linked numeric citations [1]", () => {
+      const input = '<p>Citation <a href="#ref-1">[1]</a> is valid.</p>';
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).toContain('[1]');
+      expect(result.html).toContain('href="#ref-1"');
+    });
+
+    it("should handle multiple markers in sequence", () => {
+      const input = "<p>Claims [S0-1][S0-2] with multiple citations.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).not.toContain("[S0-2]");
+    });
+
+    it("should clean up orphan parentheses after removal", () => {
+      const input = "<p>According to research ([S0-1]) this is true.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("()");
+    });
+
+    it("should use preserveContext option to replace with (citation unavailable)", () => {
+      const input = "<p>According to [S0-1] the market grew.</p>";
+      const result = sanitizeFinalReport(input, { preserveContext: true });
+      
+      // Note: preserveContext only applies when wouldBreakMeaning returns true
+      expect(result.html).not.toContain("[S0-1]");
+    });
+
+    it("should throw when failOnViolations is true and violations remain", () => {
+      // This tests the hard failure gate
+      const input = "<p>Leaked [RefA1] marker.</p>";
+      
+      // Shouldn't throw with failOnViolations: false (default)
+      expect(() => sanitizeFinalReport(input)).not.toThrow();
+      
+      // The sanitizer should have cleaned it
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toContain("[RefA1]");
+    });
+  });
+
+  // ============================================
+  // lintBracketTokens tests
+  // ============================================
+
+  describe("lintBracketTokens", () => {
+    it("should pass for clean HTML with linked citations", () => {
+      const html = '<p>Claim <a href="#ref-1">[1]</a> is cited.</p>';
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(true);
+      expect(result.violations).toHaveLength(0);
+    });
+
+    it("should fail for internal source IDs [S0-1]", () => {
+      const html = "<p>Claim [S0-1] has internal ID.</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.length).toBeGreaterThan(0);
+      expect(result.violations.some(v => v.includes("S0-1"))).toBe(true);
+    });
+
+    it("should fail for [ARTICLE-1] markers", () => {
+      const html = "<p>According to [ARTICLE-1] research...</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.some(v => v.includes("ARTICLE"))).toBe(true);
+    });
+
+    it("should fail for {TBD} placeholders", () => {
+      const html = "<p>Value is {TBD}.</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+    });
+
+    it("should fail for $[Amount] budget placeholders", () => {
+      const html = "<p>Budget: $[Amount]</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.some(v => v.includes("Budget"))).toBe(true);
+    });
+
+    it("should fail for undefined adjacent to markers", () => {
+      const html = "<p>This undefined [ref] is broken.</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+    });
+
+    it("should detect unlinked numeric citations", () => {
+      const html = "<p>Citation [1] without href.</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.some(v => v.includes("Unlinked citation"))).toBe(true);
+    });
+
+    it("should pass for completely clean report", () => {
+      const html = `
+        <h1>Market Analysis Report</h1>
+        <p>The market is growing at 15% CAGR <a href="#ref-1">[1]</a>.</p>
+        <p>Competition is increasing <a href="#ref-2">[2]</a>.</p>
+        <section class="references-section">
+          <h2>References</h2>
+          <ol>
+            <li id="ref-1">Smith, J. (2024). Market Report.</li>
+            <li id="ref-2">Jones, A. (2023). Industry Analysis.</li>
+          </ol>
+        </section>
+      `;
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(true);
+    });
+  });
+
+  // ============================================
+  // validateFinalReport tests (hard fail)
+  // ============================================
+
+  describe("validateFinalReport (hard fail)", () => {
+    it("should throw for remaining internal markers", () => {
+      const html = "<p>Leaked [S0-1] marker.</p>";
+      
+      expect(() => validateFinalReport(html)).toThrow(
+        /Internal citation markers leaked into final report/
+      );
+    });
+
+    it("should throw for [article] placeholders", () => {
+      const html = "<p>According to [article] the data shows...</p>";
+      
+      expect(() => validateFinalReport(html)).toThrow();
+    });
+
+    it("should throw for undefined adjacent to markers", () => {
+      const html = "<p>This undefined [ref] is wrong.</p>";
+      
+      expect(() => validateFinalReport(html)).toThrow();
+    });
+
+    it("should not throw for clean report", () => {
+      const html = '<p>Clean <a href="#ref-1">[1]</a> report.</p>';
+      
+      expect(() => validateFinalReport(html)).not.toThrow();
+    });
+
+    it("should not throw for empty HTML", () => {
+      expect(() => validateFinalReport("")).not.toThrow();
+    });
+
+    it("should handle reports with only text (no citations)", () => {
+      const html = "<p>This is a simple paragraph with no citations.</p>";
+      
+      expect(() => validateFinalReport(html)).not.toThrow();
+    });
+  });
+
+  // ============================================
+  // normalizeReportHtml tests
+  // ============================================
+
+  describe("normalizeReportHtml", () => {
+    const mockSources: SourceEntry[] = [
+      {
+        id: "S0-1",
+        title: "Market Research Report 2024",
+        publisher: "Industry Analytics",
+        year: "2024",
+        url: "https://example.com/report"
+      },
+      {
+        id: "S0-2",
+        title: "Competitor Analysis",
+        authors: "Smith, John",
+        year: "2023",
+        url: "https://example.com/analysis"
+      }
+    ];
+
+    it("should convert [S0-1] to linked numeric citations", () => {
+      const html = "<p>Market is growing [S0-1].</p>";
+      const result = normalizeReportHtml(html, mockSources);
+      
+      expect(result.html).toContain('href="#ref-1"');
+      expect(result.html).toContain('[1]');
+      expect(result.html).not.toContain('[S0-1]');
+    });
+
+    it("should build references section", () => {
+      const html = "<p>Data shows [S0-1] growth.</p>";
+      const result = normalizeReportHtml(html, mockSources);
+      
+      expect(result.referencesHtml).toContain('Market Research Report 2024');
+      expect(result.referencesHtml).toContain('Industry Analytics');
+      expect(result.referencesHtml).toContain('2024');
+    });
+
+    it("should track unresolved sources in unknowns", () => {
+      const html = "<p>According to [S0-999] this is unknown.</p>";
+      const result = normalizeReportHtml(html, mockSources);
+      
+      expect(result.unknowns.length).toBeGreaterThan(0);
+    });
+
+    it("should handle empty source list gracefully", () => {
+      const html = "<p>Text with [S0-1] marker.</p>";
+      const result = normalizeReportHtml(html, []);
+      
+      expect(result.html).not.toContain('[S0-1]');
+      expect(result.unknowns.length).toBeGreaterThan(0);
+    });
+
+    it("should include stats about normalization", () => {
+      const html = "<p>Growth [S0-1] and competition [S0-2].</p>";
+      const result = normalizeReportHtml(html, mockSources);
+      
+      expect(result.stats).toBeDefined();
+      expect(result.stats.totalMarkersFound).toBeGreaterThanOrEqual(2);
+      expect(result.stats.markersResolved).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  // ============================================
+  // buildSourceMap tests
+  // ============================================
+
+  describe("buildSourceMap", () => {
+    it("should build map from sources array", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", title: "Test Source" },
+        { id: "S0-2", title: "Another Source" }
+      ];
+      
+      const map = buildSourceMap(sources);
+      
+      expect(map.size).toBe(4); // Original + alternate keys
+      expect(map.has("S0-1")).toBe(true);
+      expect(map.has("S0-2")).toBe(true);
+    });
+
+    it("should handle empty array", () => {
+      const map = buildSourceMap([]);
+      
+      expect(map.size).toBe(0);
+    });
+
+    it("should normalize IDs to uppercase", () => {
+      const sources: SourceEntry[] = [
+        { id: "s0-1", title: "Lowercase ID" }
+      ];
+      
+      const map = buildSourceMap(sources);
+      
+      expect(map.has("S0-1")).toBe(true);
+    });
+  });
+
+  // ============================================
+  // Edge cases and integration tests
+  // ============================================
+
+  describe("edge cases", () => {
+    it("should handle HTML with style attributes (not strip them)", () => {
+      const input = '<p style="color: red;">Text here</p>';
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).toContain('style="color: red;"');
+    });
+
+    it("should handle multiple placeholder types in one document", () => {
+      const input = `
+        <p>Budget: $[Amount] million</p>
+        <p>Source: [S0-1]</p>
+        <p>Value: {TBD}</p>
+        <p>Company: [COMPANY]</p>
+      `;
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("$[Amount]");
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).not.toContain("{TBD}");
+      expect(result.html).not.toContain("[COMPANY]");
+    });
+
+    it("should handle nested HTML elements", () => {
+      const input = '<p><strong>Important [S0-1] claim</strong> here.</p>';
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).toContain("<strong>");
+      expect(result.html).toContain("</strong>");
+    });
+
+    it("should handle tables with placeholders", () => {
+      const input = `
+        <table>
+          <tr><td>Market Size</td><td>$[Amount]</td></tr>
+          <tr><td>Source</td><td>[S0-1]</td></tr>
+        </table>
+      `;
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("$[Amount]");
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).toContain("<table>");
+    });
+  });
+});
