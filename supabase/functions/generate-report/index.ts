@@ -673,6 +673,19 @@ async function processStep0Only(
       // Get step 0 prompt from bundle
       const stepConfig = bundle?.steps.get(0);
       
+      // Semantic equivalents mapping: alternate names for canonical input fields
+      // This prevents loops when prompts use {{project_summary}} but form only collects {{summary}}
+      const SEMANTIC_EQUIVALENTS: Record<string, string> = {
+        'project_summary': 'summary',
+        'research_summary': 'summary',
+        'project_description': 'summary',
+        'executive_summary': 'summary',
+        'project_title': 'projectName',
+        'article_url': 'publicArticleUrl',
+        'technology_readiness_level': 'trl',
+        'ip_status_description': 'ipStatus',
+      };
+
       // Build interpolation variables including grant context
       const interpolationVars: Record<string, string> = {
         summary,
@@ -705,6 +718,15 @@ async function processStep0Only(
           interpolationVars[key] = JSON.stringify(value);
         } else {
           interpolationVars[key] = String(value);
+        }
+      }
+      
+      // SEMANTIC EQUIVALENTS FALLBACK: Map alternate variable names to canonical fields
+      // This handles cases where prompts use {{project_summary}} but form only has {{summary}}
+      for (const [alias, canonical] of Object.entries(SEMANTIC_EQUIVALENTS)) {
+        // Only add alias if it's not already defined AND the canonical value exists
+        if (interpolationVars[alias] === undefined && interpolationVars[canonical]) {
+          interpolationVars[alias] = interpolationVars[canonical];
         }
       }
       

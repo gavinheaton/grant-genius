@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { 
   GraduationCap, 
@@ -17,23 +16,17 @@ import { useEntitlements } from "@/hooks/useEntitlements";
 import { useReportGeneration } from "@/hooks/useReportGeneration";
 import { useAuth } from "@/hooks/useAuth";
 import { PurchaseModal } from "@/components/PurchaseModal";
-import { ReportInputs } from "@/components/workspace/ReportInputs";
+import { ReportInputs, RequiredInput } from "@/components/workspace/ReportInputs";
 import { GenerationProgress } from "@/components/workspace/GenerationProgress";
 import { ReportsList } from "@/components/workspace/ReportsList";
-
-interface ApplicationInputs {
-  publicArticleUrl: string;
-  summary: string;
-  trl: string;
-  ipStatus: string;
-}
 
 interface ApplicationData {
   id: string;
   title: string | null;
   status: string;
-  inputs_json: ApplicationInputs;
+  inputs_json: Record<string, string>;
   grant_version: {
+    required_inputs_json: RequiredInput[] | null;
     grant: {
       name: string;
     };
@@ -51,7 +44,7 @@ export default function ApplicationWorkspace() {
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [inputsCollapsed, setInputsCollapsed] = useState(false);
   const [projectName, setProjectName] = useState<string>("");
-  const [inputs, setInputs] = useState<ApplicationInputs>({
+  const [inputs, setInputs] = useState<Record<string, string>>({
     publicArticleUrl: "",
     summary: "",
     trl: "",
@@ -109,6 +102,7 @@ export default function ApplicationWorkspace() {
           status,
           inputs_json,
           grant_version:grant_versions!inner(
+            required_inputs_json,
             grant:grants!inner(name)
           )
         `)
@@ -125,24 +119,51 @@ export default function ApplicationWorkspace() {
         navigate("/dashboard");
       } else if (data) {
         const inputsData = data.inputs_json as Record<string, unknown> || {};
-        const appData = {
+        
+        // Convert all input values to strings for form state
+        const normalizedInputs: Record<string, string> = {};
+        for (const [key, value] of Object.entries(inputsData)) {
+          if (value === null || value === undefined) {
+            normalizedInputs[key] = "";
+          } else if (typeof value === "object") {
+            normalizedInputs[key] = JSON.stringify(value);
+          } else {
+            normalizedInputs[key] = String(value);
+          }
+        }
+        
+        // Ensure base fields exist
+        if (!normalizedInputs.publicArticleUrl) normalizedInputs.publicArticleUrl = "";
+        if (!normalizedInputs.summary) normalizedInputs.summary = "";
+        if (!normalizedInputs.trl) normalizedInputs.trl = "";
+        if (!normalizedInputs.ipStatus) normalizedInputs.ipStatus = "";
+        
+        // Parse required_inputs_json from grant version
+        const grantVersionData = data.grant_version as unknown as { 
+          required_inputs_json: unknown; 
+          grant: { name: string } | { name: string }[] 
+        };
+        const requiredInputsRaw = grantVersionData?.required_inputs_json;
+        const parsedRequiredInputs: RequiredInput[] = Array.isArray(requiredInputsRaw) 
+          ? requiredInputsRaw as RequiredInput[]
+          : [];
+        
+        const grantName = Array.isArray(grantVersionData?.grant) 
+          ? grantVersionData.grant[0]?.name 
+          : grantVersionData?.grant?.name || "Unknown Grant";
+        
+        const appData: ApplicationData = {
           id: data.id,
           title: data.title,
           status: data.status,
-          inputs_json: {
-            publicArticleUrl: (inputsData.publicArticleUrl as string) || "",
-            summary: (inputsData.summary as string) || "",
-            trl: (inputsData.trl as string) || "",
-            ipStatus: (inputsData.ipStatus as string) || "",
-          },
+          inputs_json: normalizedInputs,
           grant_version: {
-            grant: {
-              name: (data.grant_version as any)?.grant?.name || "Unknown Grant"
-            }
+            required_inputs_json: parsedRequiredInputs,
+            grant: { name: grantName }
           }
         };
         setApplication(appData);
-        setInputs(appData.inputs_json);
+        setInputs(normalizedInputs);
         setProjectName(data.title || "");
       } else {
         toast({
@@ -227,8 +248,8 @@ export default function ApplicationWorkspace() {
     }
   }, [isGenerating]);
 
-  const handleInputChange = (field: keyof ApplicationInputs, value: string) => {
-    setInputs((prev) => ({ ...prev, [field]: value }));
+  const handleInputChange = (key: string, value: string) => {
+    setInputs((prev) => ({ ...prev, [key]: value }));
   };
 
   const handleGenerateReport = async () => {
@@ -242,8 +263,8 @@ export default function ApplicationWorkspace() {
     setTimeout(() => refetchEntitlements(), 1000);
   };
 
-  // Check if inputs are complete
-  const inputsComplete = inputs.publicArticleUrl.trim() !== "" && inputs.summary.trim() !== "";
+  // Check if base required inputs are complete
+  const inputsComplete = (inputs.publicArticleUrl || '').trim() !== "" && (inputs.summary || '').trim() !== "";
 
   if (isLoading) {
     return (
@@ -320,6 +341,7 @@ export default function ApplicationWorkspace() {
           onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
           projectName={projectName}
           onProjectNameChange={setProjectName}
+          requiredInputs={application.grant_version.required_inputs_json || []}
         />
 
         {/* Generate Report Button */}

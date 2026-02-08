@@ -561,6 +561,19 @@ async function processSingleStep(
   const sourcesJson = JSON.stringify(sourcePack.sources || []);
   const unknownsJson = JSON.stringify(sourcePack.unknowns || []);
 
+  // Semantic equivalents mapping: alternate names for canonical input fields
+  // This prevents loops when prompts use {{project_summary}} but form only collects {{summary}}
+  const SEMANTIC_EQUIVALENTS: Record<string, string> = {
+    'project_summary': 'summary',
+    'research_summary': 'summary',
+    'project_description': 'summary',
+    'executive_summary': 'summary',
+    'project_title': 'projectName',
+    'article_url': 'publicArticleUrl',
+    'technology_readiness_level': 'trl',
+    'ip_status_description': 'ipStatus',
+  };
+
   // Build complete interpolation variables
   const buildVariables = (): Record<string, string> => {
     const vars: Record<string, string> = {
@@ -613,6 +626,15 @@ async function processSingleStep(
         vars[key] = JSON.stringify(value);
       } else {
         vars[key] = String(value);
+      }
+    }
+    
+    // SEMANTIC EQUIVALENTS FALLBACK: Map alternate variable names to canonical fields
+    // This handles cases where prompts use {{project_summary}} but form only has {{summary}}
+    for (const [alias, canonical] of Object.entries(SEMANTIC_EQUIVALENTS)) {
+      // Only add alias if it's not already defined AND the canonical value exists
+      if (vars[alias] === undefined && vars[canonical]) {
+        vars[alias] = vars[canonical];
       }
     }
     
