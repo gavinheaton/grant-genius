@@ -12,9 +12,11 @@ import { describe, it, expect } from "vitest";
 import { 
   sanitizeFinalReport, 
   lintBracketTokens,
+  lintBracketTokensDetailed,
   normalizeReportHtml,
   validateFinalReport,
   buildSourceMap,
+  convertToApaInText,
   type SourceEntry,
 } from "../lib/citationNormalizer";
 
@@ -392,6 +394,183 @@ describe("citationNormalizer", () => {
       expect(result.html).not.toContain("$[Amount]");
       expect(result.html).not.toContain("[S0-1]");
       expect(result.html).toContain("<table>");
+    });
+  });
+
+  // ============================================
+  // Step reference patterns (new)
+  // ============================================
+
+  describe("step reference patterns", () => {
+    it("should remove [step9] references", () => {
+      const input = "<p>Data from [step9] shows growth.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[step9]");
+    });
+
+    it("should remove [step0] references", () => {
+      const input = "<p>According to [step0] the sources indicate...</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[step0]");
+    });
+
+    it("should remove [Source1] markers", () => {
+      const input = "<p>According to [Source1] the market is growing.</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[Source1]");
+    });
+
+    it("should remove [Source] without number", () => {
+      const input = "<p>The data from [Source] shows...</p>";
+      const result = sanitizeFinalReport(input);
+      
+      expect(result.html).not.toContain("[Source]");
+    });
+
+    it("should fail lint for step references", () => {
+      const html = "<p>Based on [step5] analysis...</p>";
+      const result = lintBracketTokens(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.some(v => v.includes("step5"))).toBe(true);
+    });
+  });
+
+  // ============================================
+  // APA citation format tests
+  // ============================================
+
+  describe("APA citation format", () => {
+    it("should convert [S0-1] to (Author, Year) format", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", authors: "Smith, J.", year: "2024", title: "Market Report" }
+      ];
+      const result = convertToApaInText("<p>Market grew [S0-1].</p>", buildSourceMap(sources));
+      
+      expect(result.html).toContain("(Smith, 2024)");
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).toContain('href="#ref-1"');
+    });
+
+    it("should use publisher when author not available", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", publisher: "ABS", year: "2023", title: "Industry Report" }
+      ];
+      const result = convertToApaInText("<p>Data shows [S0-1].</p>", buildSourceMap(sources));
+      
+      expect(result.html).toContain("(ABS, 2023)");
+    });
+
+    it("should use n.d. when year not available", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", authors: "Jones", title: "Research Paper" }
+      ];
+      const result = convertToApaInText("<p>Research [S0-1].</p>", buildSourceMap(sources));
+      
+      expect(result.html).toContain("(Jones, n.d.)");
+    });
+
+    it("should replace missing source with Unknown phrase", () => {
+      const result = convertToApaInText("<p>Data [S0-999] unavailable.</p>", new Map());
+      
+      expect(result.html).toContain("Unknown (no validated source found)");
+      expect(result.unknowns.length).toBe(1);
+      expect(result.unknowns[0].type).toBe("citation_unresolved");
+    });
+
+    it("should log unknowns with sentence context", () => {
+      const result = convertToApaInText(
+        "<p>The market analysis from [S0-999] indicates strong growth potential.</p>", 
+        new Map()
+      );
+      
+      expect(result.unknowns.length).toBe(1);
+      expect(result.unknowns[0].sentence_context).toContain("market analysis");
+    });
+
+    it("should handle multiple sources in sequence", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", authors: "Smith", year: "2024", title: "Report 1" },
+        { id: "S0-2", publisher: "ABS", year: "2023", title: "Report 2" }
+      ];
+      const result = convertToApaInText(
+        "<p>Growth [S0-1] and competition [S0-2].</p>", 
+        buildSourceMap(sources)
+      );
+      
+      expect(result.html).toContain("(Smith, 2024)");
+      expect(result.html).toContain("(ABS, 2023)");
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).not.toContain("[S0-2]");
+    });
+  });
+
+  // ============================================
+  // Sentence context in errors
+  // ============================================
+
+  describe("sentence context in errors", () => {
+    it("should include surrounding sentence in validation errors", () => {
+      const html = "<p>The market showed [S0-1] significant growth rates in 2024.</p>";
+      
+      expect(() => validateFinalReport(html)).toThrow(/growth rates/);
+    });
+
+    it("should provide detailed violations with sentence context", () => {
+      const html = "<p>According to [article] the industry is growing rapidly.</p>";
+      const result = lintBracketTokensDetailed(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.length).toBeGreaterThan(0);
+      expect(result.violations[0].sentence).toContain("industry is growing");
+    });
+
+    it("should include offset in detailed violations", () => {
+      const html = "<p>Data from [Source1] shows trends.</p>";
+      const result = lintBracketTokensDetailed(html);
+      
+      expect(result.passed).toBe(false);
+      expect(result.violations.some(v => v.offset > 0)).toBe(true);
+    });
+  });
+
+  // ============================================
+  // Integration test: full pipeline
+  // ============================================
+
+  describe("full normalization pipeline", () => {
+    it("should produce clean report with APA citations and no internal markers", () => {
+      const sources: SourceEntry[] = [
+        { id: "S0-1", authors: "Smith, J.", year: "2024", title: "Market Analysis", url: "https://example.com" },
+        { id: "S0-2", publisher: "Australian Bureau of Statistics", year: "2023", title: "Industry Report" }
+      ];
+      
+      const inputHtml = `
+        <h1>Report</h1>
+        <p>The market is growing at 15% CAGR [S0-1].</p>
+        <p>Competition is increasing [S0-2].</p>
+        <p>Budget: $[Amount] million {TBD}.</p>
+        <p>Unknown data [S0-999].</p>
+      `;
+      
+      const result = normalizeReportHtml(inputHtml, sources);
+      
+      // Should not contain internal markers
+      expect(result.html).not.toContain("[S0-1]");
+      expect(result.html).not.toContain("[S0-2]");
+      expect(result.html).not.toContain("[S0-999]");
+      expect(result.html).not.toContain("$[Amount]");
+      expect(result.html).not.toContain("{TBD}");
+      
+      // Should have references section
+      expect(result.referencesHtml).toContain("Smith");
+      expect(result.referencesHtml).toContain("2024");
+      
+      // Should track unknowns
+      expect(result.unknowns.length).toBeGreaterThan(0);
     });
   });
 });

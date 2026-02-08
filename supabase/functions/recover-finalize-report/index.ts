@@ -99,6 +99,14 @@ interface SourceEntry {
   source?: string;
 }
 
+interface UnknownEntry {
+  type: string;
+  original_token: string;
+  sentence_context: string;
+  what_is_missing: string;
+  what_would_validate: string;
+}
+
 /**
  * Build a lookup map from sources array
  */
@@ -115,15 +123,63 @@ function buildSourceMap(sources: SourceEntry[]): Map<string, SourceEntry> {
 }
 
 /**
- * Normalize citations to numeric linked format and build references
+ * Extract sentence context from HTML for error reporting
+ */
+function extractSentenceContext(html: string, matchIndex: number, matchLength: number): string {
+  const cleanText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const beforeMatch = html.substring(0, matchIndex).replace(/<[^>]+>/g, ' ').length;
+  
+  const sentenceEnd = cleanText.indexOf('.', beforeMatch + matchLength);
+  const sentenceEndPos = sentenceEnd === -1 ? Math.min(beforeMatch + matchLength + 80, cleanText.length) : Math.min(sentenceEnd + 1, cleanText.length);
+  
+  let sentenceStart = beforeMatch;
+  for (let i = beforeMatch - 1; i >= 0 && i >= beforeMatch - 150; i--) {
+    if (cleanText[i] === '.' || cleanText[i] === '!' || cleanText[i] === '?') {
+      sentenceStart = i + 1;
+      break;
+    }
+    if (i === Math.max(0, beforeMatch - 150)) {
+      sentenceStart = i;
+    }
+  }
+  
+  let sentence = cleanText.substring(sentenceStart, sentenceEndPos).trim();
+  if (sentence.length > 200) {
+    sentence = sentence.substring(0, 200) + '...';
+  }
+  return sentence;
+}
+
+/**
+ * Format a source entry as an APA in-text citation: (Author, Year)
+ */
+function formatApaInTextCitation(source: SourceEntry): string {
+  const author = source.authors || source.author || source.publisher || 'Unknown';
+  const year = source.year || (source.date ? source.date.match(/\b(19|20)\d{2}\b/)?.[0] : null) || 'n.d.';
+  
+  let cleanAuthor = author;
+  if (author.includes(',')) {
+    const parts = author.split(',');
+    cleanAuthor = parts[0].trim();
+    if (parts.length > 2) {
+      cleanAuthor += ' et al.';
+    }
+  }
+  
+  return `(${cleanAuthor}, ${year})`;
+}
+
+/**
+ * Normalize citations to APA in-text format and build references
  */
 function normalizeCitationsInHtml(
   html: string,
   sources: SourceEntry[]
-): { html: string; referencesHtml: string; stats: { resolved: number; removed: number } } {
+): { html: string; referencesHtml: string; unknowns: UnknownEntry[]; stats: { resolved: number; removed: number } } {
   const sourceMap = buildSourceMap(sources);
   const citationOrder = new Map<string, number>();
   const usedSources = new Set<string>();
+  const unknowns: UnknownEntry[] = [];
   let nextNum = 1;
   let resolved = 0;
   let removed = 0;
@@ -143,46 +199,75 @@ function normalizeCitationsInHtml(
     }
   }
 
-  // Second pass: replace superscript markers
-  normalizedHtml = normalizedHtml.replace(supPattern, (_fullMatch, markerId) => {
+  // Second pass: replace superscript markers with APA format
+  normalizedHtml = normalizedHtml.replace(supPattern, (fullMatch, markerId, offset) => {
     const id = markerId.toUpperCase();
-    if (citationOrder.has(id)) {
+    const source = sourceMap.get(id);
+    if (source && citationOrder.has(id)) {
       const num = citationOrder.get(id)!;
+      const apaCitation = formatApaInTextCitation(source);
       resolved++;
-      return `<a href="#ref-${num}" class="citation-link"><sup>[${num}]</sup></a>`;
+      return `<a href="#ref-${num}" class="citation-link">${apaCitation}</a>`;
     }
+    // Source not found - replace with Unknown phrase
+    unknowns.push({
+      type: 'citation_unresolved',
+      original_token: fullMatch,
+      sentence_context: extractSentenceContext(html, offset, fullMatch.length),
+      what_is_missing: `Source ${markerId} not in source pack`,
+      what_would_validate: `Add source with id="${markerId}" to sources array`
+    });
     removed++;
-    return '';
+    return 'Unknown (no validated source found)';
   });
 
-  // Third pass: replace bracket markers
+  // Third pass: replace bracket markers with APA format
   normalizedHtml = normalizedHtml.replace(
     /\[([A-Z][A-Z0-9]*-[A-Z0-9]+)\]/gi,
-    (_fullMatch, markerId) => {
+    (fullMatch, markerId, offset) => {
       const id = markerId.toUpperCase();
-      if (citationOrder.has(id)) {
+      const source = sourceMap.get(id);
+      if (source && citationOrder.has(id)) {
         const num = citationOrder.get(id)!;
+        const apaCitation = formatApaInTextCitation(source);
         resolved++;
-        return `<a href="#ref-${num}" class="citation-link">[${num}]</a>`;
+        return `<a href="#ref-${num}" class="citation-link">${apaCitation}</a>`;
       }
+      // Source not found - replace with Unknown phrase
+      unknowns.push({
+        type: 'citation_unresolved',
+        original_token: fullMatch,
+        sentence_context: extractSentenceContext(html, offset, fullMatch.length),
+        what_is_missing: `Source ${markerId} not in source pack`,
+        what_would_validate: `Add source with id="${markerId}" to sources array`
+      });
       removed++;
-      return '';
+      return 'Unknown (no validated source found)';
     }
   );
 
-  // Remove other forbidden patterns
+  // Remove other forbidden patterns (step references, article markers, etc.)
   const forbiddenPatterns = [
-    /\{TBD\}/gi, /\[TBD\]/gi, /\[Insert[^\]]*\]/gi,
-    /\[PROJECT\s*NAME\]/gi, /\[COMPANY\]/gi, /Source\s+[12]\b/gi,
+    { pattern: /\[step\d+\]/gi, name: '[stepN]' },
+    { pattern: /\[Source\d*\]/gi, name: '[Source1]' },
+    { pattern: /\[article\]/gi, name: '[article]' },
+    { pattern: /\{TBD\}/gi, name: '{TBD}' },
+    { pattern: /\[TBD\]/gi, name: '[TBD]' },
+    { pattern: /\[Insert[^\]]*\]/gi, name: '[Insert...]' },
+    { pattern: /\[PROJECT\s*NAME\]/gi, name: '[PROJECT NAME]' },
+    { pattern: /\[COMPANY\]/gi, name: '[COMPANY]' },
+    { pattern: /Source\s+[12]\b/gi, name: 'Source 1/2' },
+    { pattern: /\$\[[^\]]+\]/g, name: '$[Amount]' },
   ];
-  for (const pattern of forbiddenPatterns) {
+  
+  for (const { pattern } of forbiddenPatterns) {
     normalizedHtml = normalizedHtml.replace(pattern, '');
   }
 
   // Clean up
   normalizedHtml = normalizedHtml.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
 
-  // Build references section
+  // Build APA-style references section
   let referencesHtml = '';
   if (citationOrder.size > 0) {
     const entries = [...citationOrder.entries()].sort((a, b) => a[1] - b[1]);
@@ -193,14 +278,14 @@ function normalizeCitationsInHtml(
       const year = source.year || source.date?.match(/\b(19|20)\d{2}\b/)?.[0] || 'n.d.';
       const title = source.title || source.source || 'Untitled';
       const url = source.url || '';
-      const urlHtml = url ? ` <a href="${url}" target="_blank">${url}</a>` : '';
+      const urlHtml = url ? ` <a href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>` : '';
       return `<li id="ref-${num}">${author}. (${year}). <em>${title}</em>.${urlHtml}</li>`;
     }).filter(Boolean);
     
     referencesHtml = `<section class="references-section"><h2>References</h2><ol class="references-list">${listItems.join('\n')}</ol></section>`;
   }
 
-  return { html: normalizedHtml, referencesHtml, stats: { resolved, removed } };
+  return { html: normalizedHtml, referencesHtml, unknowns, stats: { resolved, removed } };
 }
 
 /**
@@ -440,11 +525,16 @@ serve(async (req) => {
     console.log(`[RECOVER] sources count: ${allSources.length}`);
 
     // ============ CITATION NORMALIZATION ============
-    // Convert internal markers to numeric linked citations
-    console.log("[RECOVER] Running citation normalization...");
+    // Convert internal markers to APA format and handle missing sources
+    console.log("[RECOVER] Running citation normalization with APA format...");
     const normResult = normalizeCitationsInHtml(reportHtml, allSources as SourceEntry[]);
     reportHtml = normResult.html;
-    console.log(`[RECOVER] Normalization stats: ${normResult.stats.resolved} resolved, ${normResult.stats.removed} removed`);
+    console.log(`[RECOVER] Normalization stats: ${normResult.stats.resolved} resolved, ${normResult.stats.removed} removed, ${normResult.unknowns.length} unknowns`);
+
+    // Log unknowns for debugging
+    if (normResult.unknowns.length > 0) {
+      console.log(`[RECOVER] Unknowns: ${JSON.stringify(normResult.unknowns.slice(0, 3))}`);
+    }
 
     // Append references section (using normalized references)
     if (normResult.referencesHtml) {

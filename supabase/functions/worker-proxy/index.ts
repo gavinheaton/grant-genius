@@ -545,10 +545,13 @@ const FORBIDDEN_PATTERNS_LINT = [
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
   
+  // Step reference patterns
+  { pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
+  { pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
+  
   // Generic single-word markers
   { pattern: /\[article\]/gi, name: '[article]' },
   { pattern: /\[ref\]/gi, name: '[ref]' },
-  { pattern: /\[source\d*\]/gi, name: '[source] or [source1]' },
   { pattern: /\[reference\d*\]/gi, name: '[reference]' },
   
   // Placeholder patterns
@@ -577,19 +580,57 @@ const FORBIDDEN_PATTERNS_LINT = [
 ];
 
 /**
- * Lint HTML for forbidden bracket tokens
+ * Extract sentence context from HTML for error reporting
+ */
+function extractSentenceContext(html: string, matchIndex: number, matchLength: number): string {
+  const cleanText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const beforeMatch = html.substring(0, matchIndex).replace(/<[^>]+>/g, ' ').length;
+  
+  const sentenceEnd = cleanText.indexOf('.', beforeMatch + matchLength);
+  const sentenceEndPos = sentenceEnd === -1 ? Math.min(beforeMatch + matchLength + 80, cleanText.length) : Math.min(sentenceEnd + 1, cleanText.length);
+  
+  let sentenceStart = beforeMatch;
+  for (let i = beforeMatch - 1; i >= 0 && i >= beforeMatch - 150; i--) {
+    if (cleanText[i] === '.' || cleanText[i] === '!' || cleanText[i] === '?') {
+      sentenceStart = i + 1;
+      break;
+    }
+    if (i === Math.max(0, beforeMatch - 150)) {
+      sentenceStart = i;
+    }
+  }
+  
+  let sentence = cleanText.substring(sentenceStart, sentenceEndPos).trim();
+  if (sentence.length > 200) {
+    sentence = sentence.substring(0, 200) + '...';
+  }
+  return sentence;
+}
+
+interface LintViolation {
+  token: string;
+  pattern: string;
+  context: string;
+}
+
+/**
+ * Lint HTML for forbidden bracket tokens with sentence context
  * Returns violations array (empty if clean)
  */
-function lintReportHtml(html: string): string[] {
+function lintReportHtml(html: string): LintViolation[] {
   if (!html) return [];
   
-  const violations: string[] = [];
+  const violations: LintViolation[] = [];
   
   for (const { pattern, name } of FORBIDDEN_PATTERNS_LINT) {
     pattern.lastIndex = 0;
     let match;
     while ((match = pattern.exec(html)) !== null) {
-      violations.push(`${name}: "${match[0]}"`);
+      violations.push({
+        token: match[0],
+        pattern: name,
+        context: extractSentenceContext(html, match.index, match[0].length)
+      });
     }
   }
   
@@ -606,20 +647,31 @@ function lintReportHtml(html: string): string[] {
         continue; // Valid linked citation
       }
       // Unlinked numeric - still a violation
-      violations.push(`Unlinked citation: "${match[0]}"`);
+      violations.push({
+        token: match[0],
+        pattern: 'Unlinked citation',
+        context: extractSentenceContext(html, match.index, match[0].length)
+      });
       continue;
     }
     
     // Check if it looks like an internal marker (starts with letter, contains number)
     if (/^[A-Z]/i.test(content) && /\d/.test(content)) {
-      const alreadyCounted = violations.some(v => v.includes(match![0]));
+      const alreadyCounted = violations.some(v => v.token === match![0]);
       if (!alreadyCounted) {
-        violations.push(`Bracket token: "${match[0]}"`);
+        violations.push({
+          token: match[0],
+          pattern: 'Bracket token',
+          context: extractSentenceContext(html, match.index, match[0].length)
+        });
       }
     }
   }
   
-  return [...new Set(violations)]; // Dedupe
+  // Deduplicate
+  return violations.filter((v, i, arr) => 
+    arr.findIndex(x => x.token === v.token && x.context === v.context) === i
+  );
 }
 
 /**
@@ -741,14 +793,18 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
       
       if (violations.length > 0) {
         console.warn(`[LINT] save_report blocked: ${violations.length} violations found`);
-        console.warn(`[LINT] First 5 violations: ${violations.slice(0, 5).join('; ')}`);
+        console.warn(`[LINT] First 5 violations: ${violations.slice(0, 5).map(v => `${v.token} in "${v.context.substring(0, 50)}..."`).join('; ')}`);
         
         return jsonResponse({
           error: "Citation lint failed",
           message: "Internal citation markers leaked into final report",
-          violations: violations.slice(0, 10),
+          violations: violations.slice(0, 10).map(v => ({
+            token: v.token,
+            pattern: v.pattern,
+            context: v.context
+          })),
           violation_count: violations.length,
-          hint: "The external worker should run citation normalization before calling save_report"
+          hint: "The external worker should run citation normalization before calling save_report. Convert all [S0-1] markers to APA format (Author, Year) or remove them."
         }, 400);
       }
       

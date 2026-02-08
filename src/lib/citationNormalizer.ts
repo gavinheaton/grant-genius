@@ -56,6 +56,7 @@ export interface UnknownEntry {
   type: 'citation_unresolved' | 'applicant_input_missing';
   original_token: string;
   location_hint: string;
+  sentence_context?: string;
   what_is_missing: string;
   what_would_validate: string;
 }
@@ -64,6 +65,13 @@ export interface LintResult {
   passed: boolean;
   violations: string[];
   violationCount: number;
+}
+
+export interface LintViolation {
+  pattern: string;
+  match: string;
+  sentence: string;
+  offset: number;
 }
 
 // ============================================================================
@@ -112,10 +120,13 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
   
+  // Step reference patterns (new)
+  { pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
+  { pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
+  
   // Generic single-word markers
   { pattern: /\[article\]/gi, name: '[article]' },
   { pattern: /\[ref\]/gi, name: '[ref]' },
-  { pattern: /\[source\d*\]/gi, name: '[source] or [source1]' },
   { pattern: /\[reference\d*\]/gi, name: '[reference]' },
   
   // Placeholder patterns
@@ -234,6 +245,126 @@ function extractLocationHint(html: string, matchIndex: number): string {
   }
   
   return `In text: "${context}"`;
+}
+
+/**
+ * Extract the sentence surrounding a match for error context
+ */
+function extractSentenceContext(html: string, matchIndex: number, matchLength: number): string {
+  // Clean HTML for sentence extraction
+  const cleanText = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  
+  // Estimate position in clean text (approximate)
+  const beforeMatch = html.substring(0, matchIndex).replace(/<[^>]+>/g, ' ').length;
+  
+  // Find sentence boundaries
+  const sentenceEnd = cleanText.indexOf('.', beforeMatch + matchLength);
+  const sentenceEndPos = sentenceEnd === -1 ? Math.min(beforeMatch + matchLength + 80, cleanText.length) : Math.min(sentenceEnd + 1, cleanText.length);
+  
+  // Look back for sentence start
+  let sentenceStart = beforeMatch;
+  for (let i = beforeMatch - 1; i >= 0 && i >= beforeMatch - 150; i--) {
+    if (cleanText[i] === '.' || cleanText[i] === '!' || cleanText[i] === '?') {
+      sentenceStart = i + 1;
+      break;
+    }
+    if (i === Math.max(0, beforeMatch - 150)) {
+      sentenceStart = i;
+    }
+  }
+  
+  let sentence = cleanText.substring(sentenceStart, sentenceEndPos).trim();
+  if (sentence.length > 200) {
+    sentence = sentence.substring(0, 200) + '...';
+  }
+  
+  return sentence;
+}
+
+// ============================================================================
+// APA CITATION CONVERSION
+// ============================================================================
+
+/**
+ * Format a source entry as an APA in-text citation: (Author, Year)
+ */
+function formatApaInTextCitation(source: SourceEntry): string {
+  const author = source.authors || source.author || source.publisher || 'Unknown';
+  const year = source.year || (source.date ? source.date.match(/\b(19|20)\d{2}\b/)?.[0] : null) || 'n.d.';
+  
+  // Clean author name for in-text citation (use first author/org name)
+  let cleanAuthor = author;
+  if (author.includes(',')) {
+    // Multiple authors or "Last, First" format
+    const parts = author.split(',');
+    cleanAuthor = parts[0].trim();
+    if (parts.length > 2) {
+      cleanAuthor += ' et al.';
+    }
+  }
+  
+  return `(${cleanAuthor}, ${year})`;
+}
+
+/**
+ * Convert internal source markers to APA in-text citations
+ * 
+ * Returns normalized HTML with APA citations and list of unknowns for missing sources
+ */
+export function convertToApaInText(
+  html: string,
+  sourceMap: Map<string, SourceEntry>
+): { html: string; unknowns: UnknownEntry[]; citationOrder: Map<string, number> } {
+  const unknowns: UnknownEntry[] = [];
+  const citationOrder = new Map<string, number>();
+  let nextNum = 1;
+  let result = html;
+  
+  // Internal marker pattern
+  const markerPattern = /\[([A-Z][A-Z0-9]*-[A-Z0-9]+)\]/gi;
+  
+  // First pass: collect all used sources and assign numbers
+  let match: RegExpExecArray | null;
+  const markerMatches: { fullMatch: string; markerId: string; index: number }[] = [];
+  
+  while ((match = markerPattern.exec(html)) !== null) {
+    markerMatches.push({
+      fullMatch: match[0],
+      markerId: match[1].toUpperCase(),
+      index: match.index
+    });
+    
+    const normalizedId = match[1].toUpperCase();
+    if (sourceMap.has(normalizedId) && !citationOrder.has(normalizedId)) {
+      citationOrder.set(normalizedId, nextNum++);
+    }
+  }
+  
+  // Second pass: replace markers with APA citations (in reverse order to preserve indices)
+  for (const { fullMatch, markerId, index } of markerMatches.reverse()) {
+    const source = sourceMap.get(markerId);
+    
+    if (source) {
+      const num = citationOrder.get(markerId)!;
+      const apaCitation = formatApaInTextCitation(source);
+      const linkedCitation = `<a href="#ref-${num}" class="citation-link">${apaCitation}</a>`;
+      result = result.substring(0, index) + linkedCitation + result.substring(index + fullMatch.length);
+    } else {
+      // Source not found - replace with Unknown phrase and log
+      const sentenceContext = extractSentenceContext(html, index, fullMatch.length);
+      unknowns.push({
+        type: 'citation_unresolved',
+        original_token: fullMatch,
+        location_hint: extractLocationHint(html, index),
+        sentence_context: sentenceContext,
+        what_is_missing: `Source ${markerId} not found in source pack`,
+        what_would_validate: `Add source with id="${markerId}" to sources array`
+      });
+      result = result.substring(0, index) + 'Unknown (no validated source found)' + result.substring(index + fullMatch.length);
+    }
+  }
+  
+  return { html: result, unknowns, citationOrder };
 }
 
 // ============================================================================
@@ -779,65 +910,99 @@ export function sanitizeFinalReport(
 // ============================================================================
 
 /**
+ * Lint with detailed violation info including sentence context
+ */
+export function lintBracketTokensDetailed(html: string): { 
+  passed: boolean; 
+  violations: LintViolation[];
+  violationCount: number;
+} {
+  if (!html) {
+    return { passed: true, violations: [], violationCount: 0 };
+  }
+  
+  const violations: LintViolation[] = [];
+  
+  // Check all forbidden patterns
+  for (const { pattern, name } of FORBIDDEN_PATTERNS) {
+    pattern.lastIndex = 0;
+    
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(html)) !== null) {
+      violations.push({
+        pattern: name,
+        match: match[0],
+        sentence: extractSentenceContext(html, match.index, match[0].length),
+        offset: match.index
+      });
+    }
+  }
+  
+  // Check for unlinked bracket tokens
+  const bracketPattern = /\[([^\]]+)\]/g;
+  let match: RegExpExecArray | null;
+  
+  while ((match = bracketPattern.exec(html)) !== null) {
+    const content = match[1];
+    const fullMatch = match[0];
+    
+    // ALLOWED: Numeric citations that are hyperlinked [1], [2], etc.
+    if (/^\d+$/.test(content)) {
+      const beforeContext = html.substring(Math.max(0, match.index - 100), match.index);
+      if (beforeContext.includes('href="#ref-')) {
+        continue; // Valid linked citation
+      }
+      violations.push({
+        pattern: 'Unlinked citation',
+        match: fullMatch,
+        sentence: extractSentenceContext(html, match.index, fullMatch.length),
+        offset: match.index
+      });
+      continue;
+    }
+    
+    // Skip if already counted by a specific pattern
+    const alreadyCounted = violations.some(v => v.match === fullMatch && v.offset === match!.index);
+    if (!alreadyCounted && (/^[A-Z]/.test(content) || /\d/.test(content))) {
+      violations.push({
+        pattern: 'Bracket token',
+        match: fullMatch,
+        sentence: extractSentenceContext(html, match.index, fullMatch.length),
+        offset: match.index
+      });
+    }
+  }
+  
+  // Deduplicate by match + offset
+  const unique = violations.filter((v, i, arr) => 
+    arr.findIndex(x => x.match === v.match && x.offset === v.offset) === i
+  );
+  
+  return {
+    passed: unique.length === 0,
+    violations: unique,
+    violationCount: unique.length
+  };
+}
+
+/**
  * Validate that no forbidden patterns remain in the final report
- * Throws an error if any violations are found
+ * Throws an error if any violations are found, including sentence context
  * 
  * This is a hard failure gate - call this before saving reports
  */
 export function validateFinalReport(html: string): void {
   if (!html) return;
   
-  const violations: string[] = [];
+  const result = lintBracketTokensDetailed(html);
   
-  // Check all forbidden patterns
-  for (const { pattern, name } of FORBIDDEN_PATTERNS) {
-    pattern.lastIndex = 0;
-    if (pattern.test(html)) {
-      pattern.lastIndex = 0;
-      const match = pattern.exec(html);
-      violations.push(`${name}: "${match?.[0] || 'unknown'}"`);
-    }
-  }
-  
-  // Check for "undefined" adjacent to source-like patterns
-  const undefinedPatterns = [
-    /undefined\s*\[/gi,
-    /\]\s*undefined/gi,
-    /\bundefined\b(?=\s*(?:S\d|Source|ref|ARTICLE))/gi,
-  ];
-  
-  for (const pattern of undefinedPatterns) {
-    pattern.lastIndex = 0;
-    if (pattern.test(html)) {
-      violations.push('undefined adjacent to marker detected');
-      break;
-    }
-  }
-  
-  // Check for any remaining unlinked bracket tokens
-  const bracketPattern = /\[([^\]]+)\]/g;
-  let match: RegExpExecArray | null;
-  
-  while ((match = bracketPattern.exec(html)) !== null) {
-    const content = match[1];
+  if (!result.passed) {
+    const errorDetails = result.violations.slice(0, 5).map(v => 
+      `- ${v.match} in: "${v.sentence}"`
+    ).join('\n');
     
-    // Allow numeric citations that are linked
-    if (/^\d+$/.test(content)) {
-      const before = html.substring(Math.max(0, match.index - 100), match.index);
-      if (before.includes('href="#ref-')) {
-        continue;
-      }
-    }
-    
-    // Any other bracket token is a violation
-    if (/^[A-Z]/.test(content) || /\d/.test(content)) {
-      violations.push(`Unresolved bracket token: "${match[0]}"`);
-    }
-  }
-  
-  if (violations.length > 0) {
     throw new Error(
-      `Internal citation markers leaked into final report: ${violations.slice(0, 5).join(', ')}`
+      `Internal citation markers leaked into final report:\n${errorDetails}`
     );
   }
 }
