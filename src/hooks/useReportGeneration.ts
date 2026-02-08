@@ -151,13 +151,33 @@ export function useReportGeneration(
     }
 
     if (data) {
-      // Check if the run is stale (older than threshold)
-      const startedAt = new Date(data.started_at || data.created_at);
-      const now = new Date();
-      const isStale = now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS;
+      // Fetch steps first so we can check activity-based staleness
+      const { data: stepData } = await supabase
+        .from("report_run_steps")
+        .select("step_number, step_name, status, started_at, completed_at, error_message")
+        .eq("report_run_id", data.id)
+        .order("step_number", { ascending: true });
+
+      const fetchedSteps = (stepData as ReportRunStep[]) || [];
+      setSteps(fetchedSteps);
+
+      // Find most recent step activity (completed_at or started_at)
+      const latestStepActivity = fetchedSteps.reduce((latest, step) => {
+        const stepTime = step.completed_at || step.started_at;
+        return stepTime ? Math.max(latest, new Date(stepTime).getTime()) : latest;
+      }, 0);
+
+      const now = Date.now();
+      const runStartTime = new Date(data.started_at || data.created_at).getTime();
+      const timeSinceLastActivity = latestStepActivity 
+        ? (now - latestStepActivity) 
+        : (now - runStartTime);
+
+      // Only mark as stalled if no step activity for 5+ minutes
+      const isStale = timeSinceLastActivity > STALE_THRESHOLD_MS;
 
       // Check if any failed step has a 504/transient error
-      const failedSteps = steps.filter(s => s.status === 'failed');
+      const failedSteps = fetchedSteps.filter(s => s.status === 'failed');
       const has504Error = failedSteps.some(s => isTransientError(s.error_message));
 
       const runData: ReportRun = {
@@ -170,9 +190,6 @@ export function useReportGeneration(
 
       setActiveRun(runData);
       setIsGenerating(true);
-      
-      // Fetch steps for this run
-      fetchSteps(data.id);
     } else {
       // No active run - check for recent completed/failed run to keep logs visible
       const { data: recentRun } = await supabase
@@ -185,14 +202,34 @@ export function useReportGeneration(
         .maybeSingle();
 
       if (recentRun) {
-        // Keep the recent run in state so logs remain visible
-        const failedSteps = steps.filter(s => s.status === 'failed');
+        // Fetch steps for activity-based staleness check
+        const { data: recentStepData } = await supabase
+          .from("report_run_steps")
+          .select("step_number, step_name, status, started_at, completed_at, error_message")
+          .eq("report_run_id", recentRun.id)
+          .order("step_number", { ascending: true });
+
+        const recentSteps = (recentStepData as ReportRunStep[]) || [];
+        setSteps(recentSteps);
+
+        // Find most recent step activity
+        const latestStepActivity = recentSteps.reduce((latest, step) => {
+          const stepTime = step.completed_at || step.started_at;
+          return stepTime ? Math.max(latest, new Date(stepTime).getTime()) : latest;
+        }, 0);
+
+        const now = Date.now();
+        const runStartTime = new Date(recentRun.started_at || recentRun.created_at).getTime();
+        const timeSinceLastActivity = latestStepActivity 
+          ? (now - latestStepActivity) 
+          : (now - runStartTime);
+
+        // Only stale if running status AND no activity for 5+ minutes
+        const isStale = recentRun.status === "running" && timeSinceLastActivity > STALE_THRESHOLD_MS;
+
+        // Check for 504/transient errors
+        const failedSteps = recentSteps.filter(s => s.status === 'failed');
         const has504Error = failedSteps.some(s => isTransientError(s.error_message));
-        
-        // Check for stale runs
-        const startedAt = new Date(recentRun.started_at || recentRun.created_at);
-        const now = new Date();
-        const isStale = recentRun.status === "running" && (now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS);
         
         setActiveRun({
           ...recentRun,
@@ -201,14 +238,13 @@ export function useReportGeneration(
           email_on_complete: recentRun.email_on_complete ?? false,
           is504Error: has504Error,
         } as ReportRun);
-        fetchSteps(recentRun.id);
       } else {
         setActiveRun(null);
         setSteps([]);
       }
       setIsGenerating(false);
     }
-  }, [applicationId, fetchSteps, steps]);
+  }, [applicationId, fetchSteps]);
 
   // Subscribe to Realtime changes for steps
   useEffect(() => {
