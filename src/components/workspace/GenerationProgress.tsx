@@ -342,7 +342,7 @@ export function GenerationProgress({
         {isInProgress && (
           <div className="space-y-3">
             <p className="text-xs text-muted-foreground">
-              Grant Genius takes a few minutes to process. We'll be back soon with your report.
+              Report generation typically takes around 15 minutes. Feel free to close this tab - we'll keep working in the background.
             </p>
             
             {/* Email notification option */}
