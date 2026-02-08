@@ -1,172 +1,80 @@
 
-# Fix: Process Grant Guidelines Parsing Error
 
-## Problem Summary
+# Fix: Revert Dynamic Form to Research-Focused Inputs
 
-The `process-grant-guidelines` edge function fails with "Failed to parse extraction response" at the Step 1 extraction phase. The code doesn't log the actual AI response, making debugging impossible.
+## The Conceptual Error
 
-## Root Cause Analysis
+The dynamic form was incorrectly designed to collect **grant application fields** from users. But Grant Genius's purpose is to **generate the support materials** that help researchers write those fields.
 
-The parsing logic has several weaknesses:
+| What I Built (Wrong) | What It Should Be (Right) |
+|---------------------|---------------------------|
+| Dynamic form asks for `project_summary`, `nrf_priority_area` | Form asks for research context only |
+| User fills in grant-specific application fields | User provides minimal inputs about their research |
+| Platform acts like a form builder | Platform generates evidence to support the application |
 
-1. **No logging of AI response** - When parsing fails, we don't know what was received
-2. **Silent JSON.parse failures** - If `JSON.parse()` throws, it propagates up without context
-3. **Gemini-3 response format** - The tool call response structure may differ from expected
+## The Correct Model
 
 ```text
-Step 1: Extracting Grant DNA Pack...
-        │
-        ├── AI returns response
-        │           │
-        │           ├── toolCall?.function?.arguments exists?
-        │           │           │
-        │           │           ├── YES → JSON.parse(arguments)
-        │           │           │              └── May throw SyntaxError (no catch)
-        │           │           │
-        │           │           └── NO → Check content for JSON
-        │           │                          └── May also fail to parse
-        │           │
-        │           └── suggestions is undefined → throw "Failed to parse"
-        │
-        └── No log of what AI actually returned
+RESEARCHER INPUTS (minimal):          AI GENERATES (extensive):
+├── Research Article URL               ├── Market Definition & Sizing
+├── 100-Word Summary                   ├── Competitor Landscape  
+├── TRL Level                          ├── TAM/SAM/SOM Analysis
+├── IP Status                          ├── Economic Impact Assessment
+└── (Optional) Project Name            ├── Partner Mapping
+                                       ├── Risk Analysis
+                                       └── Supporting Citations
 ```
 
-## Solution
+## What `required_inputs_json` Should Actually Mean
 
-### 1. Add Comprehensive Logging
+The `required_inputs_json` in grant versions should inform the **pipeline's research priorities**, not create user-facing form fields:
 
-Log the full AI response structure before parsing so we can see what's happening:
+- If the grant heavily weights "Economic Impact" (35%) → AI dedicates more steps to impact analysis
+- If the grant requires "Competitor Analysis" → AI ensures thorough competitive landscape
+- The user doesn't fill this in - the AI uses it to know WHAT TO RESEARCH
 
-```typescript
-console.log("Extraction response structure:", JSON.stringify({
-  hasChoices: !!extractionResult.choices,
-  choiceCount: extractionResult.choices?.length,
-  hasMessage: !!extractionResult.choices?.[0]?.message,
-  hasToolCalls: !!extractionResult.choices?.[0]?.message?.tool_calls,
-  toolCallCount: extractionResult.choices?.[0]?.message?.tool_calls?.length,
-  contentLength: extractionResult.choices?.[0]?.message?.content?.length,
-  finishReason: extractionResult.choices?.[0]?.finish_reason,
-}, null, 2));
-```
+## Implementation Changes
 
-### 2. Wrap JSON.parse in Try-Catch
+### 1. Simplify ReportInputs Back to Core Fields
 
-Add proper error handling around JSON parsing with detailed error messages:
+Keep only the essential researcher-provided inputs:
+- Public Article URL (required)
+- 100-Word Summary (required)  
+- TRL Level (optional)
+- IP Status (optional)
+- Project Name (optional)
 
-```typescript
-const toolCall = extractionResult.choices?.[0]?.message?.tool_calls?.[0];
-if (toolCall?.function?.arguments) {
-  try {
-    suggestions = JSON.parse(toolCall.function.arguments);
-    console.log("Successfully parsed tool call arguments");
-  } catch (parseError) {
-    console.error("Failed to parse tool call arguments:", parseError);
-    console.error("Raw arguments (first 1000 chars):", toolCall.function.arguments.substring(0, 1000));
-  }
-}
+Remove the dynamic field generation that was pulling from `required_inputs_json`.
 
-if (!suggestions) {
-  const content = extractionResult.choices?.[0]?.message?.content;
-  if (content) {
-    console.log("Attempting content fallback, content length:", content.length);
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        suggestions = JSON.parse(jsonMatch[0]);
-        console.log("Successfully parsed from content fallback");
-      } catch (parseError) {
-        console.error("Failed to parse content JSON:", parseError);
-        console.error("Raw match (first 1000 chars):", jsonMatch[0].substring(0, 1000));
-      }
-    } else {
-      console.error("No JSON object found in content");
-    }
-  } else {
-    console.error("No content in response");
-  }
-}
-```
+### 2. Keep the Semantic Equivalents Mapping
 
-### 3. Handle Gemini-3 Specific Response Formats
+The `SEMANTIC_EQUIVALENTS` mapping in the edge functions is still valuable - it ensures that if a prompt template uses `{{project_summary}}`, it correctly falls back to `{{summary}}`.
 
-Gemini models sometimes return tool calls in a slightly different structure. Add additional fallback paths:
+### 3. Clarify the Role of `required_inputs_json`
 
-```typescript
-// Some models use tool_calls, others use function_call
-const message = extractionResult.choices?.[0]?.message;
-let toolCallArgs: string | undefined;
+This should be used by the **pipeline generator** to understand what research outputs the grant needs, not to generate form fields. Rename or document this clearly:
+- Consider renaming to `grant_assessment_criteria_json` or `rubric_weights_json`
+- Or add a clear distinction: `researcher_inputs_json` (form fields) vs `grant_criteria_json` (AI research guidance)
 
-// Try standard OpenAI format
-if (message?.tool_calls?.[0]?.function?.arguments) {
-  toolCallArgs = message.tool_calls[0].function.arguments;
-}
-// Try older function_call format
-else if (message?.function_call?.arguments) {
-  toolCallArgs = message.function_call.arguments;
-}
-// Try Gemini's grounding structure
-else if (message?.tool_calls?.[0]?.args) {
-  // Gemini sometimes puts args directly, not as string
-  suggestions = message.tool_calls[0].args;
-}
-```
+### 4. Update ApplicationWorkspace
 
-### 4. Fallback to Simpler Model
-
-If Gemini-3-Flash-Preview is having issues, add a retry with a known-stable model:
-
-```typescript
-// After first attempt fails, retry with stable model
-if (!suggestions) {
-  console.log("Retrying extraction with gemini-2.5-flash...");
-  
-  const retryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${LOVABLE_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
-      messages: [
-        { role: "system", content: extractionPrompt },
-        { role: "user", content: `Analyze these grant guidelines and extract the Grant DNA Pack. Return ONLY valid JSON:\n\n${guidelines_text.substring(0, 60000)}` },
-      ],
-      // Note: Skip tool_choice for simpler response
-    }),
-  });
-  
-  // Parse retry response...
-}
-```
+Remove the passing of `required_inputs_json` to `ReportInputs` for form generation. Keep the grant metadata for display purposes only.
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `supabase/functions/process-grant-guidelines/index.ts` | Add logging, error handling, fallback parsing, and retry logic |
+| `src/components/workspace/ReportInputs.tsx` | Remove dynamic field generation, keep core 4-5 fields |
+| `src/pages/ApplicationWorkspace.tsx` | Stop passing `required_inputs_json` for form building |
+| Documentation/memory | Clarify the distinction between user inputs and grant criteria |
 
-## Implementation Details
+## What to Preserve
 
-### Location: Lines 1666-1688
+- **Semantic Equivalents Mapping**: Keep the `SEMANTIC_EQUIVALENTS` in edge functions - it's a good safety net
+- **Variable Hydration Logic**: The universal hydration strategy is still correct for feeding data into prompts
+- **Grant-Specific Pipelines**: The pipeline generator using grant criteria to decide research steps is correct
 
-Replace the current parsing block with enhanced version that:
-1. Logs the response structure before parsing
-2. Wraps each JSON.parse in try-catch
-3. Logs what was attempted and what failed
-4. Handles multiple possible response formats
-5. Adds a retry with simpler model if first attempt fails
+## Key Insight
 
-## Testing Checklist
+The `required_inputs_json` was being conflated with "what the user provides" when it should mean "what the grant assesses, so the AI knows what to research."
 
-1. [ ] Upload a grant guidelines PDF
-2. [ ] Check edge function logs for response structure
-3. [ ] Verify parsing succeeds or provides actionable error
-4. [ ] If retry kicks in, verify it uses stable model
-5. [ ] Confirm pipeline generation completes
-
-## Expected Outcome
-
-After this fix, either:
-- **Success**: The parsing works with proper format handling
-- **Debugging**: Logs show exactly what the AI returned so we can fix the prompt/model
