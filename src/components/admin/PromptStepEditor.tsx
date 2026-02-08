@@ -28,6 +28,17 @@ const TIMEOUT_OPTIONS = [
   { value: "180", label: "180 seconds" },
 ];
 
+// Max output tokens options for AI responses
+const OUTPUT_TOKEN_OPTIONS = [
+  { value: "", label: "Default (8K)" },
+  { value: "8192", label: "8K tokens" },
+  { value: "16384", label: "16K tokens" },
+  { value: "20000", label: "20K tokens (Competitor Research)" },
+  { value: "24000", label: "24K tokens (Market Sizing)" },
+  { value: "32000", label: "32K tokens (Assembly)" },
+  { value: "65536", label: "64K tokens (Max)" },
+];
+
 export interface GrantContext {
   grantName?: string;
   grantSummary?: string;
@@ -48,6 +59,7 @@ interface PromptStepEditorProps {
       timeout_seconds?: number | null;
       is_heavy?: boolean;
       max_expected_seconds?: number | null;
+      max_output_tokens?: number | null;
       step_type?: StepType;
       step_config_json?: Record<string, unknown>;
     }
@@ -70,6 +82,9 @@ export function PromptStepEditor({
   const [isHeavy, setIsHeavy] = useState(step.is_heavy ?? false);
   const [maxExpectedSeconds, setMaxExpectedSeconds] = useState<string>(
     step.max_expected_seconds ? String(step.max_expected_seconds) : ""
+  );
+  const [maxOutputTokens, setMaxOutputTokens] = useState<string>(
+    step.max_output_tokens ? String(step.max_output_tokens) : ""
   );
   const [stepType, setStepType] = useState<StepType>(step.step_type || "ai_prompt");
   const [stepConfig, setStepConfig] = useState<Record<string, unknown>>(
@@ -117,6 +132,7 @@ export function PromptStepEditor({
     setTimeoutSeconds(step.timeout_seconds ? String(step.timeout_seconds) : "default");
     setIsHeavy(step.is_heavy ?? false);
     setMaxExpectedSeconds(step.max_expected_seconds ? String(step.max_expected_seconds) : "");
+    setMaxOutputTokens(step.max_output_tokens ? String(step.max_output_tokens) : "");
     setStepType(step.step_type || "ai_prompt");
     setStepConfig((step.step_config_json as Record<string, unknown>) || {});
     setHasChanges(false);
@@ -137,6 +153,7 @@ export function PromptStepEditor({
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
         is_heavy: isHeavy,
         max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
+        max_output_tokens: maxOutputTokens ? parseInt(maxOutputTokens, 10) : null,
         step_type: stepType,
         step_config_json: stepConfig,
       });
@@ -174,6 +191,7 @@ export function PromptStepEditor({
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
         is_heavy: isHeavy,
         max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
+        max_output_tokens: maxOutputTokens ? parseInt(maxOutputTokens, 10) : null,
       });
       setHasChanges(false);
     } finally {
@@ -286,6 +304,38 @@ export function PromptStepEditor({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Max Output Tokens */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Max Output Tokens</Label>
+              <span className="text-xs text-muted-foreground">
+                Prevents output truncation
+              </span>
+            </div>
+            <Select
+              value={maxOutputTokens}
+              onValueChange={(value) => {
+                setMaxOutputTokens(value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Default (8K)" />
+              </SelectTrigger>
+              <SelectContent>
+                {OUTPUT_TOKEN_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Higher limits prevent truncation but increase cost. Use 20-24K for research steps.
+            </p>
           </div>
 
           {/* Heavy Step Toggle */}

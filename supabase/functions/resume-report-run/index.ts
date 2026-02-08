@@ -59,6 +59,7 @@ interface StepConfig {
   model_override: string | null;
   timeout_seconds: number | null;
   is_heavy: boolean | null;
+  max_output_tokens: number | null;
 }
 
 // Type definition for prompt bundle
@@ -90,7 +91,7 @@ async function fetchBundleForGrant(supabase: any, grantVersionId: string): Promi
       if (!bundleError && bundle) {
         const { data: steps, error: stepsError } = await supabase
           .from("prompt_bundle_steps")
-          .select("step_number, step_name, prompt_template, model_override, timeout_seconds, is_heavy")
+          .select("step_number, step_name, prompt_template, model_override, timeout_seconds, is_heavy, max_output_tokens")
           .eq("bundle_id", bundle.id)
           .order("step_number", { ascending: true });
 
@@ -119,7 +120,7 @@ async function fetchBundleForGrant(supabase: any, grantVersionId: string): Promi
 
     const { data: activeSteps, error: activeStepsError } = await supabase
       .from("prompt_bundle_steps")
-      .select("step_number, step_name, prompt_template, model_override, timeout_seconds, is_heavy")
+      .select("step_number, step_name, prompt_template, model_override, timeout_seconds, is_heavy, max_output_tokens")
       .eq("bundle_id", activeBundle.id)
       .order("step_number", { ascending: true });
 
@@ -697,8 +698,9 @@ async function processSingleStep(
         
         const model = stepConfig.model_override || getDefaultModelForStep(nextStep, totalSteps);
         const timeoutMs = getTimeoutForStep(nextStep, totalSteps, stepConfig.timeout_seconds);
+        const maxOutputTokens = stepConfig.max_output_tokens || undefined;
         
-        const result = await callAIWithRetry(interpolatedPrompt, nextStep, systemPrompt, model, timeoutMs);
+        const result = await callAIWithRetry(interpolatedPrompt, nextStep, systemPrompt, model, timeoutMs, maxOutputTokens);
         
         // Store output in reportContent using step name as key
         reportContent[stepConfig.step_name] = result;
@@ -927,7 +929,8 @@ async function callAIWithRetry(
   stepNumber: number,
   systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
   model: string,
-  customTimeoutMs: number
+  customTimeoutMs: number,
+  maxOutputTokens?: number
 ): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
@@ -935,7 +938,7 @@ async function callAIWithRetry(
     throw new Error("AI service not configured. Please contact support.");
   }
 
-  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${customTimeoutMs / 1000}s`);
+  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${customTimeoutMs / 1000}s${maxOutputTokens ? `, max_tokens ${maxOutputTokens}` : ''}`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
     if (attempt > 0) {
@@ -959,6 +962,7 @@ async function callAIWithRetry(
               { role: "system", content: systemPrompt },
               { role: "user", content: prompt }
             ],
+            ...(maxOutputTokens && { max_tokens: maxOutputTokens }),
           }),
         },
         customTimeoutMs
