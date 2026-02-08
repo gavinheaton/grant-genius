@@ -145,6 +145,19 @@ function extractSourcesFromSections(sections: SectionEntry[]): AssembledReport["
 // Handles both HTML (new format) and markdown (legacy format)
 // Also supports sections array format from Replit worker
 function extractAssembledReport(content: ReportContent): AssembledReport | null {
+  // Case 0: Top-level report_html (manual reports)
+  if ((content as Record<string, unknown>).report_html && typeof (content as Record<string, unknown>).report_html === "string") {
+    console.log("Detected top-level report_html (manual report format)");
+    return {
+      title: undefined,
+      report_markdown: convertHtmlToSimpleText((content as Record<string, unknown>).report_html as string),
+      report_html: (content as Record<string, unknown>).report_html as string,
+      tables: [],
+      all_sources: [],
+      data_gaps: [],
+    };
+  }
+
   // Case 1: Sections array format (Replit worker)
   if (content.sections && Array.isArray(content.sections)) {
     console.log("Detected sections array format, extracting from finalize_report...");
