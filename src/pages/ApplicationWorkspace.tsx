@@ -47,6 +47,7 @@ export default function ApplicationWorkspace() {
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [inputsCollapsed, setInputsCollapsed] = useState(false);
   const [isSubmittingManual, setIsSubmittingManual] = useState(false);
+  const [dismissedRunId, setDismissedRunId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState<string>("");
   const [inputs, setInputs] = useState<Record<string, string>>({
     publicArticleUrl: "",
@@ -264,9 +265,17 @@ export default function ApplicationWorkspace() {
       return;
     }
 
+    // Reset dismissed state when starting new generation
+    setDismissedRunId(null);
     await startGeneration();
     // Refetch entitlements after starting (credit consumed)
     setTimeout(() => refetchEntitlements(), 1000);
+  };
+
+  const handleDismissProgress = () => {
+    if (activeRun?.id) {
+      setDismissedRunId(activeRun.id);
+    }
   };
 
   // Check if base required inputs are complete
@@ -491,7 +500,7 @@ export default function ApplicationWorkspace() {
             )}
             
             {/* Show processing/failed/stalled/completed state - keep logs visible */}
-            {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
+            {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && activeRun.id !== dismissedRunId && (
               <GenerationProgress
                 currentStep={activeRun.current_step}
                 totalSteps={activeRun.total_steps}
@@ -515,6 +524,7 @@ export default function ApplicationWorkspace() {
                     ? () => recoverFinalizeReport(activeRun.id)
                     : undefined
                 }
+                onDismiss={activeRun.status === "completed" ? handleDismissProgress : undefined}
                 isSuperAdmin={isSuperAdmin}
                 emailOnComplete={activeRun.email_on_complete}
                 onToggleEmailOnComplete={toggleEmailOnComplete}

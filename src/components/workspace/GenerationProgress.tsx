@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2, Wrench } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2, Wrench, X } from "lucide-react";
 import { ReportRunStep } from "@/hooks/useReportGeneration";
 import { ReportLogViewer } from "./ReportLogViewer";
 
@@ -22,6 +22,7 @@ interface GenerationProgressProps {
   onResume?: () => void;
   onClearAndRestart?: () => void;
   onRecoverFinalize?: () => void;
+  onDismiss?: () => void;
   isSuperAdmin?: boolean;
   emailOnComplete?: boolean;
   onToggleEmailOnComplete?: (enabled: boolean) => void;
@@ -67,6 +68,7 @@ export function GenerationProgress({
   onResume,
   onClearAndRestart,
   onRecoverFinalize,
+  onDismiss,
   isSuperAdmin = false,
   emailOnComplete = false,
   onToggleEmailOnComplete,
@@ -169,12 +171,25 @@ export function GenerationProgress({
             {status === "stalled" && <Clock className="h-5 w-5 text-warning" />}
             Generating Report
           </div>
-          {startedAt && (
-            <div className="flex items-center gap-1.5 text-sm font-normal text-muted-foreground">
-              <Clock className="h-4 w-4" />
-              <span>{formatElapsedTime(startedAt, completedAt)}</span>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {startedAt && (
+              <div className="flex items-center gap-1.5 text-sm font-normal text-muted-foreground">
+                <Clock className="h-4 w-4" />
+                <span>{formatElapsedTime(startedAt, completedAt)}</span>
+              </div>
+            )}
+            {status === "completed" && onDismiss && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDismiss}
+                className="h-7 px-2 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+                <span className="sr-only">Dismiss</span>
+              </Button>
+            )}
+          </div>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
