@@ -2205,9 +2205,16 @@ Only these variables may appear in prompt_template INPUTS/HARD RULES:
 Output integrity rules:
 - step_number sequential from 0 with no gaps
 - step_name snake_case unique
-- include at least 12 total steps (9 core + archetype modules + 2 final)
 - include all Grant Writer Core steps
 - include final report_assembly and finalize_citations steps
+
+DEPTH BUDGET CONTROLS:
+- Prefer fewer steps with deeper outputs over many shallow steps
+- Each step_description MUST include a Depth Target (e.g., "produce 3 tables + 10 sources + sensitivity range", "identify 5+ named comparables with evidence signals", "generate 4 additionality proofs with source_ids")
+- Minimum steps: 12 (9 core + archetype modules + 2 final assembly)
+- Maximum steps: 16 unless rubric has >4 weighted sections requiring additional research depth
+- If archetype modules exceed the cap, consolidate related analyses into single deeper steps rather than splitting into multiple shallow steps
+- Quality check: if any step's prompt_template lacks a concrete deliverable count (tables, sources, entities, metrics), flag it for rewrite
 
 Return JSON:
 {
