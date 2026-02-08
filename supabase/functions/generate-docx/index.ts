@@ -16,6 +16,7 @@ import {
   LevelFormat,
   ILevelsOptions,
   ShadingType,
+  TableOfContents,
 } from "https://esm.sh/docx@8.5.0";
 
 const corsHeaders = {
@@ -697,6 +698,60 @@ function mapTableIdToSection(id: string): string {
   return sectionMap[id] || formatTableId(id);
 }
 
+// Build Table of Contents for Word document
+function buildTableOfContents(): (Paragraph | TableOfContents)[] {
+  const elements: (Paragraph | TableOfContents)[] = [];
+
+  // Title for the TOC page
+  elements.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Table of Contents",
+          bold: true,
+          size: STYLES.fontSize.h1,
+          color: STYLES.primaryColor,
+        }),
+      ],
+      spacing: { before: 200, after: 400 },
+    })
+  );
+
+  // Native Word Table of Contents field
+  // This creates a TOC that Word can update automatically
+  elements.push(
+    new TableOfContents("Table of Contents", {
+      hyperlink: true,
+      headingStyleRange: "1-3",
+      stylesWithLevels: [
+        { styleName: "Heading1", level: 1 },
+        { styleName: "Heading2", level: 2 },
+        { styleName: "Heading3", level: 3 },
+      ],
+    })
+  );
+
+  // Instruction paragraph
+  elements.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Right-click and select 'Update Field' to refresh page numbers",
+          size: STYLES.fontSize.body - 2,
+          color: "888888",
+          italics: true,
+        }),
+      ],
+      spacing: { before: 200, after: 200 },
+    })
+  );
+
+  // Page break after TOC
+  elements.push(new Paragraph({ children: [new PageBreak()] }));
+
+  return elements;
+}
+
 // Normalize tables to array format
 // Handles both object { id: htmlString } and array formats
 function normalizeTables(
@@ -902,6 +957,9 @@ function buildDocument(
 
   // Page break after cover
   children.push(new Paragraph({ children: [new PageBreak()] }));
+
+  // Add Table of Contents
+  children.push(...buildTableOfContents());
 
   // Track current section for table insertion
   let currentSectionName = "";
