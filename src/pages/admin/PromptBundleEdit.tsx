@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,10 +7,28 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
+import { PipelineQualityCard } from "@/components/admin/PipelineQualityCard";
+import { validatePipelineQuality, type PipelineStep } from "@/lib/pipelineQualityGate";
 
 export default function PromptBundleEdit() {
   const { id } = useParams();
   const { data: bundle, isLoading } = usePromptBundle(id);
+
+  // Calculate quality gate results when bundle loads
+  const qualityResult = useMemo(() => {
+    if (!bundle?.steps || bundle.steps.length === 0) return null;
+
+    // Transform bundle steps to PipelineStep format
+    const pipelineSteps: PipelineStep[] = bundle.steps.map(step => ({
+      step_number: step.step_number,
+      step_name: step.step_name,
+      step_description: step.step_description,
+      prompt_template: step.prompt_template,
+      model_tier: step.model_override || undefined,
+    }));
+
+    return validatePipelineQuality(pipelineSteps);
+  }, [bundle?.steps]);
 
   if (isLoading) {
     return (
@@ -60,6 +79,11 @@ export default function PromptBundleEdit() {
           </div>
         </div>
       </div>
+
+      {/* Quality Gate Card - shown when steps exist */}
+      {qualityResult && (
+        <PipelineQualityCard result={qualityResult} />
+      )}
 
       <InlinePipelineEditor bundleId={id} showBundleSettings={true} />
     </div>
