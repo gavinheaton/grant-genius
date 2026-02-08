@@ -1,80 +1,169 @@
 
 
-# Fix: Revert Dynamic Form to Research-Focused Inputs
+# Fix: False "Stalled" Detection When Processing Continues
 
-## The Conceptual Error
+## Problem Summary
 
-The dynamic form was incorrectly designed to collect **grant application fields** from users. But Grant Genius's purpose is to **generate the support materials** that help researchers write those fields.
+The UI shows "Generation appears to have stalled" even when the pipeline is actively processing. This is a false positive caused by the stale detection logic only checking `started_at` rather than tracking **recent step activity**.
 
-| What I Built (Wrong) | What It Should Be (Right) |
-|---------------------|---------------------------|
-| Dynamic form asks for `project_summary`, `nrf_priority_area` | Form asks for research context only |
-| User fills in grant-specific application fields | User provides minimal inputs about their research |
-| Platform acts like a form builder | Platform generates evidence to support the application |
-
-## The Correct Model
+## Root Cause
 
 ```text
-RESEARCHER INPUTS (minimal):          AI GENERATES (extensive):
-├── Research Article URL               ├── Market Definition & Sizing
-├── 100-Word Summary                   ├── Competitor Landscape  
-├── TRL Level                          ├── TAM/SAM/SOM Analysis
-├── IP Status                          ├── Economic Impact Assessment
-└── (Optional) Project Name            ├── Partner Mapping
-                                       ├── Risk Analysis
-                                       └── Supporting Citations
+Pipeline starts at T=0
+        │
+        ├── Step 1 completes at T=1m
+        ├── Step 2 completes at T=2m
+        ├── Step 3 completes at T=3m
+        ├── Step 4 completes at T=4m
+        ├── Step 5 running at T=5m...
+        │
+        └── STALE CHECK (line 157):
+            now - started_at > 5min = TRUE
+            → Status set to "stalled" ❌
+            
+            But Step 5 JUST started! Processing is active.
 ```
 
-## What `required_inputs_json` Should Actually Mean
+The current logic at line 157 in `useReportGeneration.ts`:
+```typescript
+const startedAt = new Date(data.started_at || data.created_at);
+const now = new Date();
+const isStale = now.getTime() - startedAt.getTime() > STALE_THRESHOLD_MS;
+```
 
-The `required_inputs_json` in grant versions should inform the **pipeline's research priorities**, not create user-facing form fields:
+This doesn't account for:
+1. Steps actively completing (progress is happening)
+2. Long-running legitimate pipelines (research steps can take 10-15 minutes total)
 
-- If the grant heavily weights "Economic Impact" (35%) → AI dedicates more steps to impact analysis
-- If the grant requires "Competitor Analysis" → AI ensures thorough competitive landscape
-- The user doesn't fill this in - the AI uses it to know WHAT TO RESEARCH
+## Solution
 
-## Implementation Changes
+### Option A: Track Last Step Activity Time (Recommended)
 
-### 1. Simplify ReportInputs Back to Core Fields
+Instead of using `started_at`, check the most recent step timestamp:
 
-Keep only the essential researcher-provided inputs:
-- Public Article URL (required)
-- 100-Word Summary (required)  
-- TRL Level (optional)
-- IP Status (optional)
-- Project Name (optional)
+```typescript
+// Find the most recent step activity
+const latestStepTime = steps.reduce((latest, step) => {
+  const stepTime = step.completed_at || step.started_at;
+  if (stepTime) {
+    const stepTimestamp = new Date(stepTime).getTime();
+    return Math.max(latest, stepTimestamp);
+  }
+  return latest;
+}, new Date(data.started_at || data.created_at).getTime());
 
-Remove the dynamic field generation that was pulling from `required_inputs_json`.
+const now = Date.now();
+const isStale = now - latestStepTime > STALE_THRESHOLD_MS;
+```
 
-### 2. Keep the Semantic Equivalents Mapping
+This way:
+- A run that had a step complete 2 minutes ago is NOT stalled
+- A run where no step has changed for 5+ minutes IS stalled
 
-The `SEMANTIC_EQUIVALENTS` mapping in the edge functions is still valuable - it ensures that if a prompt template uses `{{project_summary}}`, it correctly falls back to `{{summary}}`.
+### Option B: Increase Threshold for Active Runs
 
-### 3. Clarify the Role of `required_inputs_json`
+If any step is currently "running", use a longer threshold (e.g., 10 minutes):
 
-This should be used by the **pipeline generator** to understand what research outputs the grant needs, not to generate form fields. Rename or document this clearly:
-- Consider renaming to `grant_assessment_criteria_json` or `rubric_weights_json`
-- Or add a clear distinction: `researcher_inputs_json` (form fields) vs `grant_criteria_json` (AI research guidance)
+```typescript
+const hasRunningStep = steps.some(s => s.status === 'running');
+const threshold = hasRunningStep ? 10 * 60 * 1000 : STALE_THRESHOLD_MS;
+const isStale = now.getTime() - startedAt.getTime() > threshold;
+```
 
-### 4. Update ApplicationWorkspace
+### Recommended: Combine Both
 
-Remove the passing of `required_inputs_json` to `ReportInputs` for form generation. Keep the grant metadata for display purposes only.
+```typescript
+// 1. Check if there's active step progress recently
+const latestStepActivity = steps.reduce((latest, step) => {
+  const stepTime = step.completed_at || step.started_at;
+  return stepTime ? Math.max(latest, new Date(stepTime).getTime()) : latest;
+}, 0);
+
+// 2. A run is stalled if:
+//    - No step activity in 5+ minutes AND
+//    - The run has been going for at least 5 minutes (to avoid false positives on fresh runs)
+const now = Date.now();
+const runStartTime = new Date(data.started_at || data.created_at).getTime();
+const timeSinceStart = now - runStartTime;
+const timeSinceLastActivity = latestStepActivity ? (now - latestStepActivity) : timeSinceStart;
+
+// Only mark as stalled if no step activity for 5+ min
+const isStale = timeSinceLastActivity > STALE_THRESHOLD_MS;
+```
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/components/workspace/ReportInputs.tsx` | Remove dynamic field generation, keep core 4-5 fields |
-| `src/pages/ApplicationWorkspace.tsx` | Stop passing `required_inputs_json` for form building |
-| Documentation/memory | Clarify the distinction between user inputs and grant criteria |
+| `src/hooks/useReportGeneration.ts` | Fix stale detection to use last step activity, not run start time |
 
-## What to Preserve
+## Implementation Details
 
-- **Semantic Equivalents Mapping**: Keep the `SEMANTIC_EQUIVALENTS` in edge functions - it's a good safety net
-- **Variable Hydration Logic**: The universal hydration strategy is still correct for feeding data into prompts
-- **Grant-Specific Pipelines**: The pipeline generator using grant criteria to decide research steps is correct
+### Location: Lines 153-170 in `checkActiveRun`
 
-## Key Insight
+Replace the current stale check with activity-based detection:
 
-The `required_inputs_json` was being conflated with "what the user provides" when it should mean "what the grant assesses, so the AI knows what to research."
+```typescript
+if (data) {
+  // Fetch steps first so we can check activity
+  const { data: stepData } = await supabase
+    .from("report_run_steps")
+    .select("step_number, step_name, status, started_at, completed_at, error_message")
+    .eq("report_run_id", data.id)
+    .order("step_number", { ascending: true });
+
+  const fetchedSteps = (stepData as ReportRunStep[]) || [];
+  setSteps(fetchedSteps);
+
+  // Find most recent step activity
+  const latestStepActivity = fetchedSteps.reduce((latest, step) => {
+    const stepTime = step.completed_at || step.started_at;
+    return stepTime ? Math.max(latest, new Date(stepTime).getTime()) : latest;
+  }, 0);
+
+  const now = Date.now();
+  const runStartTime = new Date(data.started_at || data.created_at).getTime();
+  const timeSinceLastActivity = latestStepActivity 
+    ? (now - latestStepActivity) 
+    : (now - runStartTime);
+
+  // Only stale if no activity for 5+ minutes
+  const isStale = timeSinceLastActivity > STALE_THRESHOLD_MS;
+
+  // Check for 504/transient errors
+  const failedSteps = fetchedSteps.filter(s => s.status === 'failed');
+  const has504Error = failedSteps.some(s => isTransientError(s.error_message));
+
+  const runData: ReportRun = {
+    ...data,
+    status: isStale ? "stalled" : data.status,
+    completed_at: data.completed_at ?? null,
+    email_on_complete: data.email_on_complete ?? false,
+    is504Error: has504Error,
+  } as ReportRun;
+
+  setActiveRun(runData);
+  setIsGenerating(true);
+}
+```
+
+### Also Update Lines 177-210 (Recent Run Check)
+
+Apply the same activity-based stale detection for the "recent completed/failed run" case.
+
+## Testing Checklist
+
+1. Start a report generation
+2. Wait 6+ minutes for natural processing time
+3. Verify UI does NOT show "stalled" while steps are completing
+4. Verify UI DOES show "stalled" if no step activity for 5+ minutes
+5. Verify auto-retry still works correctly for actual stalls
+
+## Expected Behavior After Fix
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| Run at 6 min, step 5 just completed | "Stalled" ❌ | "Running" ✓ |
+| Run at 3 min, no steps completing | "Running" | "Running" ✓ |
+| Run at 8 min, step 4 stalled for 5+ min | "Stalled" ✓ | "Stalled" ✓ |
 
