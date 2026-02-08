@@ -1,282 +1,127 @@
 
 
-# Add Max Output Tokens Configuration to Pipeline Steps
+# Support Gemini 3 Pro Mapping for Cloud Run Worker
 
-## Problem Analysis
+## Current State
 
-The Competitor Research and TAM/SAM/SOM steps are experiencing quality issues due to **output truncation**. The current implementation in both `generate-report/index.ts` and `resume-report-run/index.ts` does not specify `max_tokens` in the AI API calls, causing the API to use default limits.
+The `worker-proxy` maps Lovable AI model identifiers to Replit-compatible Gemini models:
 
-**Current AI Request (lines 921-927 in generate-report/index.ts):**
-```typescript
-body: JSON.stringify({
-  model,
-  messages: [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: prompt }
-  ],
-  // max_tokens is NOT specified
-}),
-```
+| Lovable AI Model | Current Mapping |
+|------------------|-----------------|
+| `google/gemini-3-pro-preview` | `gemini-1.5-pro` |
+| `google/gemini-2.5-pro` | `gemini-1.5-pro` |
+| `google/gemini-3-flash-preview` | `gemini-2.0-flash` |
+| `google/gemini-2.5-flash` | `gemini-2.0-flash` |
+| `google/gemini-2.5-flash-lite` | `gemini-1.5-flash` |
+| Default (no model specified) | `gemini-2.0-flash` |
 
-**Impact:**
-- Default Gemini 2.0 Flash output limit: ~8,192 tokens (~6,000 words)
-- Complex steps (Competitor Analysis, Market Sizing) often require 12,000-24,000 tokens
-- Results in incomplete competitor lists, truncated JSON, and missing sections
+## Required Changes
 
-## Solution Design
+Since the Cloud Run worker now defaults to **Gemini 3 Pro**, we need to:
 
-Add a new `max_output_tokens` column to `prompt_bundle_steps` with intelligent defaults based on step type, allowing admins to configure per-step output limits.
+1. **Update the model mapping** in `worker-proxy` to map `google/gemini-3-pro-preview` to the new `gemini-3-pro` identifier (or whatever the Replit worker now expects)
+2. **Potentially add a dedicated "Worker Default" option** in the UI that explicitly tells the worker to use its default (Gemini 3 Pro)
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Database Migration
+### Phase 1: Update Worker Proxy Model Mapping
 
-**Add new column to `prompt_bundle_steps` table:**
+**File: `supabase/functions/worker-proxy/index.ts`**
 
-```sql
-ALTER TABLE prompt_bundle_steps 
-ADD COLUMN max_output_tokens integer DEFAULT NULL;
+Update the `mapToReplitModel` function to correctly map to Gemini 3 Pro:
 
-COMMENT ON COLUMN prompt_bundle_steps.max_output_tokens IS 
-  'Maximum output tokens for AI response. NULL uses model default (~8K). Recommended: 20K for research, 24K for market sizing, 32K for assembly.';
-```
-
-### Phase 2: Update Edge Functions
-
-#### File: `supabase/functions/generate-report/index.ts`
-
-**Update StepConfig interface (around line 55-62):**
 ```typescript
-interface StepConfig {
-  step_number: number;
-  step_name: string;
-  prompt_template: string;
-  model_override: string | null;
-  timeout_seconds: number | null;
-  is_heavy: boolean | null;
-  max_output_tokens: number | null;  // ADD THIS
+function mapToReplitModel(lovableModel: string | null | undefined): string {
+  if (!lovableModel) {
+    return ""; // Empty = use worker default (now Gemini 3 Pro)
+  }
+  
+  const mapping: Record<string, string> = {
+    // Pro tier → gemini-3-pro (new default on worker)
+    "google/gemini-3-pro-preview": "gemini-3-pro",
+    "google/gemini-2.5-pro": "gemini-3-pro",
+    // Flash tier → gemini-2.0-flash
+    "google/gemini-3-flash-preview": "gemini-2.0-flash",
+    "google/gemini-2.5-flash": "gemini-2.0-flash",
+    // Lite/fast tier → gemini-1.5-flash (cheaper/faster)
+    "google/gemini-2.5-flash-lite": "gemini-1.5-flash",
+  };
+  
+  return mapping[lovableModel] || "";  // Empty = worker default
 }
 ```
 
-**Update fetchBundleForGrant to select max_output_tokens (around line 91-95):**
-```typescript
-const { data: steps, error: stepsError } = await supabase
-  .from("prompt_bundle_steps")
-  .select("step_number, step_name, prompt_template, model_override, timeout_seconds, is_heavy, max_output_tokens")
-  .eq("bundle_id", bundle.id)
-  .order("step_number", { ascending: true });
-```
+**Alternative approach**: If the worker expects an empty string or null to use its default, we can pass that through. Otherwise, we need to know the exact model identifier the Replit worker expects for Gemini 3 Pro.
 
-**Update AI API call (around line 921-927):**
-```typescript
-body: JSON.stringify({
-  model,
-  messages: [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: prompt }
-  ],
-  ...(stepConfig?.max_output_tokens && { max_tokens: stepConfig.max_output_tokens }),
-}),
-```
+### Phase 2: Update Default Model Logic
 
-**Add function to get default tokens based on step name:**
+**File: `supabase/functions/worker-proxy/index.ts`**
+
+Update `getDefaultModelForStep` to recommend Pro for complex steps:
+
 ```typescript
-function getDefaultMaxTokens(stepName: string, stepNumber: number, totalSteps: number): number | undefined {
-  const lowerName = stepName.toLowerCase();
-  
-  // Research and competitor steps need more output
-  if (lowerName.includes('competitor') || lowerName.includes('competitive')) return 20000;
-  if (lowerName.includes('market') && lowerName.includes('siz')) return 24000;
-  if (lowerName.includes('tam') || lowerName.includes('sam') || lowerName.includes('som')) return 24000;
-  
-  // Assembly/finalization steps need full context
-  if (lowerName.includes('assemble') || lowerName.includes('finalize') || lowerName.includes('final')) return 32000;
-  
-  // Last few steps typically do assembly
-  if (stepNumber >= totalSteps - 3) return 24000;
-  
-  // Default: let model decide (undefined means no limit specified)
-  return undefined;
+function getDefaultModelForStep(stepNumber: number): string {
+  // Complex research steps benefit from Pro
+  if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";  // Fast for early steps
+  if (stepNumber <= 7) return "google/gemini-3-flash-preview"; // Balanced for mid steps
+  // Assembly and complex analysis → Pro
+  if (stepNumber >= 8) return "google/gemini-3-pro-preview";   // Pro for assembly
+  return "google/gemini-2.5-flash-lite";
 }
 ```
 
-#### File: `supabase/functions/resume-report-run/index.ts`
+### Phase 3: Update UI Labels (Optional)
 
-Apply the same changes:
-1. Update step config select query to include `max_output_tokens`
-2. Add `max_tokens` to the API call body when configured
-3. Add the default tokens function
+**File: `src/components/admin/InlinePipelineEditor.tsx`**
 
-### Phase 3: Update Admin UI
+Update model labels to indicate which ones map to the worker default:
 
-#### File: `src/hooks/usePromptBundles.ts`
-
-**Update PromptBundleStep interface:**
 ```typescript
-export interface PromptBundleStep {
-  id: string;
-  bundle_id: string;
-  step_number: number;
-  step_name: string;
-  step_description: string;
-  prompt_template: string;
-  model_override: string | null;
-  timeout_seconds: number | null;
-  is_heavy: boolean;
-  max_expected_seconds: number | null;
-  max_output_tokens: number | null;  // ADD THIS
-  step_type: StepType;
-  step_config_json: Record<string, unknown> | null;
-  is_assembly_step?: boolean;
-  created_at: string;
-  updated_at: string;
-}
-```
-
-**Update PromptBundleStepUpdate type:**
-```typescript
-export type PromptBundleStepUpdate = {
-  // ... existing fields ...
-  max_output_tokens?: number | null;
-};
-```
-
-**Update usePromptBundle query to select max_output_tokens:**
-```typescript
-const { data: steps, error: stepsError } = await supabase
-  .from("prompt_bundle_steps")
-  .select("*, is_heavy, max_expected_seconds, step_type, step_config_json, max_output_tokens")
-  .eq("bundle_id", id)
-  .order("step_number", { ascending: true });
-```
-
-#### File: `src/components/admin/PromptStepEditor.tsx`
-
-**Add state for max output tokens:**
-```typescript
-const [maxOutputTokens, setMaxOutputTokens] = useState<string>(
-  step.max_output_tokens ? String(step.max_output_tokens) : ""
-);
-```
-
-**Add token limit options:**
-```typescript
-const OUTPUT_TOKEN_OPTIONS = [
-  { value: "", label: "Default (8K)" },
-  { value: "8192", label: "8K tokens" },
-  { value: "16384", label: "16K tokens" },
-  { value: "20000", label: "20K tokens (Competitor Research)" },
-  { value: "24000", label: "24K tokens (Market Sizing)" },
-  { value: "32000", label: "32K tokens (Assembly)" },
-  { value: "65536", label: "64K tokens (Max)" },
+const AVAILABLE_MODELS = [
+  { value: "google/gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite (Fast)" },
+  { value: "google/gemini-2.5-flash", label: "Gemini 2.5 Flash (Balanced)" },
+  { value: "google/gemini-3-flash-preview", label: "Gemini 3 Flash Preview (Smart)" },
+  { value: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro (Advanced)" },
+  { value: "google/gemini-3-pro-preview", label: "Gemini 3 Pro Preview (Best - Worker Default)" },
 ];
 ```
 
-**Add UI control (after Model selector, before Heavy Step toggle):**
-```tsx
-<div className="space-y-2">
-  <div className="flex items-center justify-between">
-    <Label>Max Output Tokens</Label>
-    <span className="text-xs text-muted-foreground">
-      Prevents output truncation
-    </span>
-  </div>
-  <Select
-    value={maxOutputTokens}
-    onValueChange={(value) => {
-      setMaxOutputTokens(value);
-      setHasChanges(true);
-    }}
-    disabled={!canEdit}
-  >
-    <SelectTrigger>
-      <SelectValue placeholder="Default (8K)" />
-    </SelectTrigger>
-    <SelectContent>
-      {OUTPUT_TOKEN_OPTIONS.map((option) => (
-        <SelectItem key={option.value} value={option.value}>
-          {option.label}
-        </SelectItem>
-      ))}
-    </SelectContent>
-  </Select>
-  <p className="text-xs text-muted-foreground">
-    Higher limits prevent truncation but increase cost. Use 20-24K for research steps.
-  </p>
-</div>
-```
+---
 
-**Update handleSave to include max_output_tokens:**
-```typescript
-await onSave(step.id, {
-  prompt_template: promptTemplate,
-  model_override: modelOverride || null,
-  timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
-  is_heavy: isHeavy,
-  max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
-  max_output_tokens: maxOutputTokens ? parseInt(maxOutputTokens, 10) : null,  // ADD
-  step_type: stepType,
-  step_config_json: stepConfig,
-});
-```
+## Clarification Needed
 
-**Update onSave prop interface:**
-```typescript
-onSave: (
-  stepId: string,
-  data: { 
-    prompt_template?: string; 
-    model_override?: string | null; 
-    timeout_seconds?: number | null;
-    is_heavy?: boolean;
-    max_expected_seconds?: number | null;
-    max_output_tokens?: number | null;  // ADD
-    step_type?: StepType;
-    step_config_json?: Record<string, unknown>;
-  }
-) => Promise<void>;
-```
+Before implementing, I need to confirm with you:
 
-### Phase 4: Update Worker Proxy (Optional)
+1. **What model identifier does the Replit worker expect for Gemini 3 Pro?**
+   - Is it `gemini-3-pro`, `gemini-3.0-pro`, or something else?
+   
+2. **Should steps with no model override use the worker's default (Gemini 3 Pro)?**
+   - Currently, the proxy passes a model to the worker even for default cases
+   - We could change this to pass `null` or empty string to let the worker decide
 
-If using Cloud Run workers, also update `worker-proxy/index.ts` to pass through `max_output_tokens` in the step configuration.
+3. **Which steps should default to Pro?**
+   - Competitor Research (Step 2)?
+   - TAM/SAM/SOM (Steps 6-8)?
+   - Assembly/Finalization (Step 12)?
 
 ---
 
-## Files Changed Summary
+## Files to Change
 
-| File | Action | Description |
-|------|--------|-------------|
-| Database Migration | CREATE | Add `max_output_tokens` column to `prompt_bundle_steps` |
-| `supabase/functions/generate-report/index.ts` | MODIFY | Add max_tokens to API calls |
-| `supabase/functions/resume-report-run/index.ts` | MODIFY | Add max_tokens to API calls |
-| `src/hooks/usePromptBundles.ts` | MODIFY | Add max_output_tokens to types and queries |
-| `src/components/admin/PromptStepEditor.tsx` | MODIFY | Add UI control for configuring max tokens |
+| File | Change |
+|------|--------|
+| `supabase/functions/worker-proxy/index.ts` | Update model mapping and default logic |
+| `src/components/admin/InlinePipelineEditor.tsx` | Update UI labels (optional) |
 
 ---
 
-## Recommended Default Settings
+## Technical Notes
 
-Once implemented, configure these defaults for existing steps:
-
-| Step Type | Recommended max_output_tokens |
-|-----------|-------------------------------|
-| Source Curation (Step 0) | 16,384 |
-| Competitor Research | 20,000 |
-| Market Sizing / TAM SAM SOM | 24,000 |
-| Economic Impact | 20,000 |
-| Assembly / Finalize | 32,000 |
-| Simple extraction steps | Default (8,192) |
-
----
-
-## Acceptance Criteria
-
-1. New `max_output_tokens` column exists in `prompt_bundle_steps`
-2. Admin UI shows a dropdown to configure max tokens per step
-3. AI API calls include `max_tokens` when configured
-4. Competitor Research and TAM SAM SOM steps no longer show truncated output
-5. Existing pipelines continue to work with default behavior (no breaking changes)
+- The current default in `mapToReplitModel` is `gemini-2.0-flash`, but the worker now defaults to Gemini 3 Pro
+- We can either:
+  - **Option A**: Pass empty/null to let worker use its default
+  - **Option B**: Explicitly map to the new model identifier
+- Recommend **Option A** for flexibility - the worker controls its own default
 
