@@ -1220,129 +1220,106 @@ OUTPUT JSON SCHEMA:
     },
     {
       step_name: "clean_citations_apa",
-      step_description: "Transform internal source IDs to APA author-year citations and build References section",
+      step_description: "Transform internal source IDs to numeric linked citations [1], [2], [3] and build References section",
       model_tier: "balanced",
       phase: "assembly",
-      prompt_template: `STEP ${maxAIStep + 3} — Clean Citations (APA Transformation)
+      prompt_template: `STEP ${maxAIStep + 3} — Clean Citations (Numeric Linked Citations)
 
 ${WRITER_STANCE_PREAMBLE}
 
 You are a citation formatting specialist. Transform all internal source ID markers 
-into proper APA author-year citations and produce a clean References section.
+into NUMERIC LINKED CITATIONS and produce a numbered References section.
+
+CITATION STYLE: Numeric Linked Citations [1], [2], [3]
+- First appearance in text defines the citation number
+- [S0-1] on first use → [1], [S0-6] on second use → [2], etc.
+- Each [n] MUST be an HTML anchor linking to its reference: <a href="#ref-n">[n]</a>
+- References section uses matching IDs: <li id="ref-1">...</li>
 
 INPUTS:
 - {{step${maxAIStep + 1}}}: sections_html containing internal citation markers
 - {{step${maxAIStep + 2}}}: tables and all_sources array
 
-INTERNAL MARKER PATTERNS TO REMOVE (strengthened):
-The following patterns must NEVER appear in sections_html_cleaned or tables_cleaned:
-- [S0-1], [S0-A1], [S1-2] (step-source format)
-- [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format)  
-- [TBD], [{TBD}], [Insert...], {value}
-- <sup>[S0-1]</sup> (superscript-wrapped markers)
-- Source 1, Source 2 (numeric source placeholders)
+INTERNAL MARKER PATTERNS TO TRANSFORM:
+These patterns MUST be replaced with numeric citations or removed:
+- [S0-1], [S0-A1], [S1-2] (step-source format) → <a href="#ref-n">[n]</a>
+- [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format) → <a href="#ref-n">[n]</a>
+- <sup>[S0-1]</sup> (superscript-wrapped markers) → <a href="#ref-n"><sup>[n]</sup></a>
+
+FORBIDDEN PATTERNS (must be REMOVED, never appear in output):
+- [TBD], [{TBD}], [Insert...], {value}, [PROJECT NAME], [COMPANY]
+- Source 1, Source 2 (text placeholders)
+- Any unresolved bracket tokens
 
 HARD RULES:
-1. NEVER output any bracketed internal source IDs in the cleaned HTML
-2. Do NOT replace internal IDs with new placeholders like [1] or [Author]
-3. Do NOT cite sources not present in all_sources
-4. If a claim cannot be supported by a validated source, keep the claim but 
-   remove the marker completely OR label as "Unknown (no validated source)"
-5. No malformed or duplicate references
-6. Hyperlink citations and reference URLs where available
-
-If a claim has an internal marker that cannot be resolved to an APA citation:
-- Remove the marker completely (leave no trace)
-- If the claim is numeric, add note: "(Estimate - requires validation)"
-- Add to unknowns with what_would_validate guidance
+1. ZERO internal source IDs may remain in the cleaned HTML
+2. Every [n] citation MUST be a hyperlink: <a href="#ref-n" class="citation-link">[n]</a>
+3. Citation numbers are assigned by FIRST APPEARANCE ORDER (not source ID order)
+4. Multiple adjacent markers become comma-separated: [1, 3] not [1][3]
+5. If a marker cannot be resolved to a source, REMOVE IT COMPLETELY (no broken links)
+6. Removed markers MUST be logged in unknowns array
 
 TRANSFORMATION PROCESS:
 
-A) Build source lookup map:
-   Parse all_sources from Step ${maxAIStep + 2} to create a dictionary keyed by "id" (e.g., "S0-1")
-   Extract for each source: author/publisher, year, title, url
-
-B) Clean the report body (sections_html from Step ${maxAIStep + 1}):
-   Scan for bracketed internal ID tokens (including <sup>-wrapped)
+A) Build source lookup map from all_sources (Step ${maxAIStep + 2}):
+   Parse to create dictionary keyed by "id" (e.g., "S0-1", "ARTICLE-1")
    
-   IF resolvable to a source with usable metadata:
-   - Replace with APA in-text citation: <a href="URL">(Author, Year)</a>
-   - Consolidate adjacent markers into single citation: "(Author, 2023; Author2, 2024)"
-   - Use organisation/publisher name if no author available
-   - Use (n.d.) if no date available
-   
-   IF NOT resolvable:
-   - Remove the bracket token completely (leave no trace)
-   - Add to unknowns array: { "marker": "...", "location": "section name", "needed": "source metadata", "what_would_validate": "..." }
+B) First pass - Build citation order:
+   Scan sections_html for ALL internal markers
+   Assign citation number by first appearance: S0-1→1, S0-6→2, etc.
+   Store mapping: {"S0-1": 1, "S0-6": 2, ...}
 
-C) Clean tables (from Step ${maxAIStep + 2}):
+C) Second pass - Replace markers with linked citations:
+   For each marker found:
+   - IF resolvable to a numbered citation:
+     Replace [S0-1] with <a href="#ref-1" class="citation-link">[1]</a>
+   - IF NOT resolvable:
+     Remove the marker completely (leave NO trace)
+     Add to unknowns: { "marker": "...", "what_would_validate": "..." }
+
+D) Clean tables (from Step ${maxAIStep + 2}):
    Apply same replacement rules inside every table cell
-   Preserve table structure and styling
-
-D) Build APA References section:
-   - Include ONLY sources that are actually cited in the cleaned report
-   - Format each reference: Author/Org. (Year). Title. Publisher. <a href="URL">URL</a>
+   
+E) Build numbered References section:
+   For each used citation number (1, 2, 3...):
+   <li id="ref-n">Author. (Year). <em>Title</em>. Publisher. <a href="URL">URL</a></li>
+   
+   Format rules:
    - If author unknown, use organisation/publisher as author
    - If date unknown, use (n.d.)
-   - Each entry must be hyperlinked to its URL
-   - NO internal IDs in the References list
-   - Sort alphabetically by author/organisation name
-
-CITATION AUDIT REQUIREMENT (new):
-Your output must include a "citations_audit" object:
-{
-  "citations_audit": {
-    "total_citations_found": number,
-    "citations_resolved": number,
-    "citations_removed": number,
-    "evidence_type_compliant": [
-      { "source_id": "S0-1", "claim_category": "market_size", "source_type": "market_report", "compliant": true }
-    ],
-    "non_compliant_citations": [
-      { "source_id": "S0-5", "claim_category": "market_size", "source_type": "epidemiology", "issue": "Wrong evidence type" }
-    ],
-    "references_list_complete": true/false
-  }
-}
+   - Each entry MUST have id="ref-n" for anchor linking
 
 OUTPUT REQUIREMENTS (CRITICAL):
 1. Return ONLY valid JSON - no code fences, no markdown
 2. First character must be {, last must be }
-3. All HTML must be properly escaped in JSON strings
+3. ZERO internal markers in output (this is validated)
 
 OUTPUT JSON SCHEMA:
 {
-  "sections_html_cleaned": "FULL cleaned HTML with APA citations (no internal IDs)",
+  "sections_html_cleaned": "FULL cleaned HTML with ONLY <a href='#ref-n'>[n]</a> citations",
   "tables_cleaned": {
-    "competitors": "cleaned table HTML",
-    "market_sizing": "cleaned table HTML", 
+    "competitors": "cleaned table HTML with numeric citations",
+    "market_sizing": "cleaned table HTML",
     "partners": "cleaned table HTML"
   },
-  "references_html": "<h2>References</h2><div class='references'><ul><li><a href='URL'>Author. (Year). Title. Publisher.</a></li>...</ul></div>",
+  "references_html": "<h2>References</h2><ol class='references-list'><li id='ref-1'>Author. (Year). <em>Title</em>. <a href='URL'>URL</a></li>...</ol>",
+  "citation_mapping": {"S0-1": 1, "S0-6": 2, "ARTICLE-1": 3},
   "citations_audit": {
-    "total_citations_found": 0,
-    "citations_resolved": 0,
-    "citations_removed": 0,
-    "evidence_type_compliant": [],
-    "non_compliant_citations": [],
-    "references_list_complete": true
-  },
-  "metadata": {
-    "cited_source_ids": ["S0-1", "S0-2"],
-    "unresolved_markers_count": 0,
-    "removed_internal_markers_count": 5
+    "total_markers_found": 15,
+    "markers_resolved": 12,
+    "markers_removed": 3,
+    "unique_sources_cited": 8
   },
   "unknowns": [
-    { "marker": "[ARTICLE-99]", "location": "Section 3", "needed": "source metadata", "what_would_validate": "..." }
+    { "marker": "[ARTICLE-99]", "location": "Section 3", "what_would_validate": "Source entry with id=ARTICLE-99" }
   ]
 }
 
-VALIDATION CHECKS (must pass before outputting):
-- sections_html_cleaned must NOT contain any [S, [ARTICLE, [SEARCH, {TBD} patterns
-- tables_cleaned must NOT contain any internal ID patterns
-- Every in-text citation must have a corresponding References entry
-- Every References entry must correspond to at least one in-text citation
-- No duplicate references`
+FINAL VALIDATION (must pass before outputting):
+- sections_html_cleaned must NOT contain: [S, [ARTICLE, [SEARCH, {TBD}, [TBD], [Insert
+- Every [n] must be wrapped in <a href="#ref-n">
+- Every ref-n must exist in references_html
+- No orphan references (every ref-n cited at least once)`
     },
     {
       step_name: "finalize_report_html",
