@@ -1,69 +1,81 @@
 
 
-# Fix Email URLs to Use Production Domain
+# Fix DOCX Generation for Manual Reports
 
-## Problem
+## Problem Identified
 
-Email links are resolving to incorrect URLs because the edge functions construct URLs by replacing the Supabase project URL domain, which produces:
-- `https://sdrawnxfhiyyiiswqvni.lovable.app` (broken)
+The `generate-docx` Edge Function cannot generate DOCX files for manual reports because the `extractAssembledReport` function doesn't handle the `content_json.report_html` field format that manual reports use.
 
-Instead of the production domain:
-- `https://grantgenius.disruptorsco.com`
+**Current manual report structure:**
+```json
+{
+  "report_html": "<html>...Word document HTML...</html>"
+}
+```
 
-## Current State
+**What the function expects:**
+```json
+{
+  "assembledReport": {
+    "report_html": "...",
+    "report_markdown": "..."
+  }
+}
+```
 
-| Function | URL Construction Method | Result |
-|----------|------------------------|--------|
-| `submit-manual-request` | `supabaseUrl.replace(".supabase.co", ".lovable.app")` | Broken URL |
-| `complete-manual-report` | `supabaseUrl.replace(".supabase.co", ".lovable.app")` | Broken URL |
-| `send-report-email` | `Deno.env.get("APP_URL")` with fallback | Works if secret is set |
+The function checks `content.assembledReport.report_html` but not `content.report_html` at the top level.
+
+---
 
 ## Solution
 
-### 1. Add APP_URL Secret
-
-Add an `APP_URL` secret with value `https://grantgenius.disruptorsco.com` so all edge functions can reference the correct production domain.
-
-### 2. Update Edge Functions
-
-Modify both manual processing functions to use the `APP_URL` environment variable with a sensible fallback:
-
-**Pattern to use:**
-```javascript
-const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
-```
+Update the `extractAssembledReport` function in `generate-docx/index.ts` to check for top-level `report_html` field before other patterns. This matches the pattern already implemented in the frontend's `extractReportHtml` function.
 
 ---
 
-## Files to Modify
+## Change Details
 
-| File | Change |
-|------|--------|
-| `supabase/functions/submit-manual-request/index.ts` | Replace URL construction (line 117) with `APP_URL` env lookup |
-| `supabase/functions/complete-manual-report/index.ts` | Replace URL construction (line 286) with `APP_URL` env lookup |
+### File: `supabase/functions/generate-docx/index.ts`
+
+| Location | Change |
+|----------|--------|
+| `extractAssembledReport` function (around line 147) | Add a new case at the beginning to check for top-level `report_html` field |
+
+**Before (current flow):**
+1. Check for `sections` array format
+2. Check for `assembledReport.report_html`
+3. Check for `assembledReport.report_markdown`
+
+**After (updated flow):**
+1. **NEW: Check for top-level `report_html` field (manual reports)**
+2. Check for `sections` array format
+3. Check for `assembledReport.report_html`
+4. Check for `assembledReport.report_markdown`
 
 ---
 
-## Additional: Update Fallback in send-report-email
+## Code Changes
 
-The `send-report-email` function already uses `APP_URL` but has a fallback to `https://grant-genius-dc.lovable.app`. This should be updated to use the production domain as the fallback:
+Add this block at the start of `extractAssembledReport`:
 
-**File:** `supabase/functions/send-report-email/index.ts`
-
-Change line 70 from:
-```javascript
-const appUrl = Deno.env.get("APP_URL") || "https://grant-genius-dc.lovable.app";
-```
-To:
-```javascript
-const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+```typescript
+// Case 0: Top-level report_html (manual reports)
+if (content.report_html && typeof content.report_html === "string") {
+  console.log("Detected top-level report_html (manual report format)");
+  return {
+    title: undefined,
+    report_markdown: convertHtmlToSimpleText(content.report_html),
+    report_html: content.report_html,
+    tables: [],
+    all_sources: [],
+    data_gaps: [],
+  };
+}
 ```
 
 ---
 
 ## Summary
 
-This fix ensures all email links point to the correct production domain by:
-1. Adding an `APP_URL` secret for the production domain
-2. Updating all three email-related edge functions to use this consistent approach
+A single addition to the DOCX generation function to recognize manual reports stored with `report_html` at the content root level, consistent with how the frontend already handles this format.
 
