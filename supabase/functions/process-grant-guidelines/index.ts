@@ -1936,7 +1936,7 @@ The following patterns must NEVER appear in ANY step's outputs:
 - [Insert ...], [Your Company], [PROJECT NAME], [COMPANY]
 - "Hypothetical" + any entity name (e.g., "Hypothetical Competitor")
 - "Source 1", "Source 2" (use actual source names or source_ids)
-- "Unknown (no validated source found)" WITHOUT a proxy attempt
+- "Unknown..." without proxy attempt OR proxy failure rule compliance
 - Empty values like "{}" or "[]" for required numeric fields
 
 REPLACEMENT PROTOCOL (when data is unavailable):
@@ -1966,6 +1966,16 @@ When market sizing data is not directly available, steps MUST use this structure
 }
 
 NEVER output "Unknown" for TAM/SAM/SOM without attempting a proxy calculation using available data.
+
+PROXY FAILURE RULE (Allowed Only After Attempts):
+If no valid anchors exist to compute a proxy estimate without violating the Evidence-Type Matching Rule, you may output:
+"Proxy not possible (insufficient validated anchors)"
+
+BUT ONLY if you also include in unknowns[]:
+- proxy_attempts[]: at least 2 attempted proxy methods with why each fails
+- anchors_missing[]: what exact anchors are missing
+- next_best_sources[]: what would validate (e.g., HTA submission, procurement listings, PBS item pricing, tender award data, annual report segment revenue)
+- recommended_user_inputs[]: what the applicant could supply to unlock a proxy (e.g., expected per-unit cost, target price band, treatable population assumptions)
 
 ========== ASSESSOR-GRADE EVIDENCE MODULES (include where relevant) ==========
 
@@ -2027,20 +2037,42 @@ Step 1: rubric_traceability_matrix
   - Output: rubric_mapping[], required_inputs_mapping[], gaps[], mitigations[]
 
 Step 2: assessor_insight_layer
-  - For each rubric section, generate: assessor_intent, typical_failure_modes[], evidence_plan[], applicant_requests[]
-  - This helps the applicant understand what assessors are really looking for
+  - For each rubric section, generate deep assessor intelligence
+  - OUTPUT MUST INCLUDE:
+    - assessor_intent: 1-2 sentences on what the assessor is really testing for
+    - typical_failure_modes[]: at least 5 concrete failure patterns (not generic)
+    - what_good_looks_like[]: measurable success indicators
+    - evidence_plan[]: criterion → evidence type → likely sources mapping
+    - applicant_requests[]: questions to ask applicant to de-risk unknowns
+    - red_flags[]: what triggers scoring penalties
 
 Step 3: assumptions_register
   - Produces a structured list of assumptions + confidence + sensitivity notes.
 
 Step 4: comparables_market_signals
-  - Identify at least 5 named comparables (companies, programs, projects) OR explicitly document why not
-  - Include 2+ market_signals (investment rounds, regulatory approvals, procurement, revenue data) each with source_id
-  - Output: comparables[], search_strategy_if_limited, market_signals[], unknowns[]
+  - Identify comparables classified as: direct | adjacent | enabler
+  - Minimum direct comparables = min(3, available_in_market), NOT always 5
+  - If fewer than 3 direct exist, require:
+    - why_direct_is_limited: explanation of market constraints
+    - adjacent_compensations: how adjacent/enabler comparables support assessor evaluation
+  - Include 2+ market_signals (investment rounds, regulatory approvals, procurement, revenue) with source_id
+  - Output: comparables[], why_direct_is_limited (if applicable), adjacent_compensations[], search_strategy_if_limited, market_signals[], unknowns[]
+
+  EVIDENCE-TYPE RULE FOR COMPARABLES:
+  | Signal Type | ALLOWED Sources |
+  |-------------|-----------------|
+  | Investment rounds | Credible databases (Crunchbase, PitchBook), SEC/ASIC filings, reputable business press (AFR, WSJ, Reuters) |
+  | Regulatory approvals | Regulator databases (ARTG, FDA 510k, TGA, EMA) |
+  | Procurement | Tender databases (AusTender, state procurement portals, BuySMARTer), contract award notices |
+  | Revenue/pricing | Annual reports, SEC filings, official price lists, PBS schedules |
 
 Step 5: additionality_and_benefit_case
   - Produces the counterfactual, need for funding, and jurisdiction benefit logic aligned to rubric weighting.
-  - Output: additionality_case{without_funding, with_funding, funding_gap_justification}, australia_benefit_case{}
+  - OUTPUT MUST INCLUDE:
+    - counterfactual_story: { without_funding: narrative, with_funding: narrative, causal_chain: string[] }
+    - additionality_proofs[]: evidence that would prove additionality (letters, co-funding commitments, procurement pathway constraints, etc.)
+    - jurisdiction_benefit_metrics[]: measurable metrics aligned to grant (jobs, exports, health outcomes, emissions, etc.) with target ranges
+    - time_to_impact: { min_years, max_years, sources_or_assumptions[] }
 
 Step 6: commercialisation_logic
   - TRL pathway + milestones + dependencies (regulatory, manufacturing, standards)
@@ -2069,8 +2101,25 @@ N-1: report_assembly
   - Must instruct the model to write like a grant writer and to explicitly reference rubric sections by title.
 
 N: finalize_citations
-  - Produces APA reference list + validates every in-text citation maps to a reference entry.
-  - Must ensure no placeholder citation tokens remain in the assembled report.
+  - Inputs: {{step0}} (source pack), {{stepN-1}} (assembled report markdown), all prior step_outputs
+  - Must produce JSON with:
+    - report_markdown_clean: same report content with in-text citations converted to APA-style hyperlinks and NO bracketed internal source IDs
+    - references_apa[]: complete validated reference list, no malformed entries
+    - citation_audit[]: array where each item includes:
+      - in_text_marker: original marker found (e.g., [S0-1])
+      - source_id: mapped source ID
+      - evidence_type_category: market|clinical|regulatory|competitor|other
+      - appears_in_references: true/false
+      - compliant_with_evidence_type_rule: true/false
+
+  TRANSFORMATION RULES:
+  1. Replace any [S0-1] style tokens with (Author, Year) hyperlinked to the source URL
+  2. If author/year missing, use (Publisher, n.d.)
+  3. If URL missing, hyperlink omitted and note in references as "URL not available"
+  4. If a bracketed token references a non-existent source_id, replace with (Source not validated) and log in audit
+
+  HARD BAN: No [ ] bracketed source tokens may remain anywhere in report_markdown_clean.
+  Final validation: regex scan for /\[S\d+-\d+\]/ or /\[ARTICLE-\d+\]/ must return zero matches.
 
 IMPORTANT: Do NOT include HTML assembly steps in this pipeline—those are added automatically downstream.
 
@@ -2118,6 +2167,16 @@ Each step's prompt_template MUST be at least 1,500 characters and include ALL of
     - Quantified constraints (not vague qualifiers)
     - Validated anchors with source_ids
     - Explicit unknowns with proxy methods where attempted"
+
+10. DECISION-GRADE SPECIFICITY RULE:
+   "For any recommendation or strategic claim, include at least ONE of:
+    - A decision threshold (e.g., 'adoption requires X evidence', 'reimbursement requires Y outcome data')
+    - A quantified range (low/high) with method documented
+    - A gating dependency (regulatory milestone, procurement stage, clinical evidence level, standards certification)
+    
+    If none can be provided, label it as 'Unknown (decision criteria not established)' and add to unknowns[] with what_would_validate.
+    
+    REJECT generic phrases like 'significant market opportunity', 'strong competitive position', 'considerable potential' unless accompanied by quantified thresholds."
 
 10. SOURCE ID RULES (strengthen existing):
    "Internal placeholders like [article], [Source1], {TBD}, [ARTICLE-1], or 
