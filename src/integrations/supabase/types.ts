@@ -44,6 +44,8 @@ export type Database = {
           grant_version_id: string
           id: string
           inputs_json: Json | null
+          manual_status: string | null
+          manual_submitted_at: string | null
           status: Database["public"]["Enums"]["application_status"]
           title: string | null
           updated_at: string
@@ -54,6 +56,8 @@ export type Database = {
           grant_version_id: string
           id?: string
           inputs_json?: Json | null
+          manual_status?: string | null
+          manual_submitted_at?: string | null
           status?: Database["public"]["Enums"]["application_status"]
           title?: string | null
           updated_at?: string
@@ -64,6 +68,8 @@ export type Database = {
           grant_version_id?: string
           id?: string
           inputs_json?: Json | null
+          manual_status?: string | null
+          manual_submitted_at?: string | null
           status?: Database["public"]["Enums"]["application_status"]
           title?: string | null
           updated_at?: string
@@ -491,27 +497,33 @@ export type Database = {
       }
       grants: {
         Row: {
+          admin_notification_email: string | null
           created_at: string
           description: string | null
           id: string
           is_active: boolean
           name: string
+          processing_mode: string
           updated_at: string
         }
         Insert: {
+          admin_notification_email?: string | null
           created_at?: string
           description?: string | null
           id?: string
           is_active?: boolean
           name: string
+          processing_mode?: string
           updated_at?: string
         }
         Update: {
+          admin_notification_email?: string | null
           created_at?: string
           description?: string | null
           id?: string
           is_active?: boolean
           name?: string
+          processing_mode?: string
           updated_at?: string
         }
         Relationships: []
@@ -1022,6 +1034,8 @@ export type Database = {
           grant_version_id: string
           id: string
           inputs_snapshot_json: Json
+          is_manual: boolean
+          manual_report_html: string | null
           pdf_path: string | null
           report_run_id: string
           report_template_version_id: string
@@ -1037,6 +1051,8 @@ export type Database = {
           grant_version_id: string
           id?: string
           inputs_snapshot_json?: Json
+          is_manual?: boolean
+          manual_report_html?: string | null
           pdf_path?: string | null
           report_run_id: string
           report_template_version_id: string
@@ -1052,6 +1068,8 @@ export type Database = {
           grant_version_id?: string
           id?: string
           inputs_snapshot_json?: Json
+          is_manual?: boolean
+          manual_report_html?: string | null
           pdf_path?: string | null
           report_run_id?: string
           report_template_version_id?: string

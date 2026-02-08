@@ -45,6 +45,8 @@ export default function GrantEdit() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isActive, setIsActive] = useState(true);
+  const [processingMode, setProcessingMode] = useState<"automated" | "manual">("automated");
+  const [adminNotificationEmail, setAdminNotificationEmail] = useState("");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [versionInputs, setVersionInputs] = useState("");
   const [versionRubric, setVersionRubric] = useState("");
@@ -123,6 +125,8 @@ export default function GrantEdit() {
       setName(grantData.name);
       setDescription(grantData.description || "");
       setIsActive(grantData.is_active);
+      setProcessingMode(grantData.processing_mode || "automated");
+      setAdminNotificationEmail(grantData.admin_notification_email || "");
 
       if (grantData.grant_versions?.length > 0) {
         const sorted = [...grantData.grant_versions].sort(
@@ -261,7 +265,13 @@ export default function GrantEdit() {
     mutationFn: async () => {
       const { error } = await supabase
         .from("grants")
-        .update({ name, description, is_active: isActive })
+        .update({ 
+          name, 
+          description, 
+          is_active: isActive,
+          processing_mode: processingMode,
+          admin_notification_email: adminNotificationEmail || null,
+        })
         .eq("id", id);
 
       if (error) throw error;
@@ -518,6 +528,59 @@ export default function GrantEdit() {
                   rows={4}
                 />
               </div>
+              
+              {/* Processing Mode */}
+              <div className="space-y-3 pt-4 border-t">
+                <Label>Processing Mode</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="processingMode"
+                      value="automated"
+                      checked={processingMode === "automated"}
+                      onChange={() => setProcessingMode("automated")}
+                      className="accent-primary"
+                    />
+                    <span>Automated (AI Pipeline)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="processingMode"
+                      value="manual"
+                      checked={processingMode === "manual"}
+                      onChange={() => setProcessingMode("manual")}
+                      className="accent-primary"
+                    />
+                    <span>Manual (Admin Review)</span>
+                  </label>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  {processingMode === "automated" 
+                    ? "Reports will be generated automatically using the AI pipeline."
+                    : "Submissions will be sent to an admin for manual report preparation."
+                  }
+                </p>
+              </div>
+
+              {/* Admin Notification Email (only for manual mode) */}
+              {processingMode === "manual" && (
+                <div className="space-y-2">
+                  <Label htmlFor="adminEmail">Admin Notification Email</Label>
+                  <Input
+                    id="adminEmail"
+                    type="email"
+                    value={adminNotificationEmail}
+                    onChange={(e) => setAdminNotificationEmail(e.target.value)}
+                    placeholder="admin@example.com"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    This email will receive notifications when users submit for manual review.
+                  </p>
+                </div>
+              )}
+
               <div className="flex items-center gap-3">
                 <Switch
                   id="active"
