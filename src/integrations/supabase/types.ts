@@ -886,6 +886,7 @@ export type Database = {
           email_on_complete: boolean | null
           execution_engine: string | null
           execution_engine_reason: string | null
+          halt_reason: string | null
           id: string
           phase: string | null
           report_template_version_id: string
@@ -903,6 +904,7 @@ export type Database = {
           email_on_complete?: boolean | null
           execution_engine?: string | null
           execution_engine_reason?: string | null
+          halt_reason?: string | null
           id?: string
           phase?: string | null
           report_template_version_id: string
@@ -920,6 +922,7 @@ export type Database = {
           email_on_complete?: boolean | null
           execution_engine?: string | null
           execution_engine_reason?: string | null
+          halt_reason?: string | null
           id?: string
           phase?: string | null
           report_template_version_id?: string
