@@ -17,7 +17,11 @@ import {
   validateFinalReport,
   buildSourceMap,
   convertToApaInText,
+  scanForForbiddenTokens,
+  sanitizeStepOutputs,
+  validateCitationBidirectional,
   type SourceEntry,
+  type SanitizationIssue,
 } from "../lib/citationNormalizer";
 
 describe("citationNormalizer", () => {
@@ -571,6 +575,217 @@ describe("citationNormalizer", () => {
       
       // Should track unknowns
       expect(result.unknowns.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ============================================
+  // Single-letter placeholder removal tests (NEW)
+  // ============================================
+
+  describe("single-letter placeholder removal", () => {
+    it("should remove $Z placeholders", () => {
+      const input = "<p>The market size is $Z million.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toContain("$Z");
+    });
+
+    it("should remove 'B additional jobs' pattern", () => {
+      const input = "<p>This will create B additional jobs in the region.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toMatch(/\bB\s+additional\s+jobs/i);
+    });
+
+    it("should remove '$X million' pattern", () => {
+      const input = "<p>Revenue is projected at $X million annually.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toMatch(/\$X\s+million/i);
+    });
+
+    it("should remove A% placeholder", () => {
+      const input = "<p>Market share of A% is expected.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toContain("A%");
+    });
+
+    it("should remove B% placeholder", () => {
+      const input = "<p>Growth rate of B% annually.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toContain("B%");
+    });
+
+    it("should remove C% placeholder", () => {
+      const input = "<p>Margin of C% expected.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toContain("C%");
+    });
+
+    it("should remove naked source IDs without brackets", () => {
+      const input = "<p>According to S0-1 the market grew.</p>";
+      const result = sanitizeFinalReport(input);
+      expect(result.html).not.toMatch(/\bS0-1\b/);
+    });
+  });
+
+  // ============================================
+  // scanForForbiddenTokens tests (NEW)
+  // ============================================
+
+  describe("scanForForbiddenTokens", () => {
+    it("should return issues_found array with location for string content", () => {
+      const content = "The TAM is $Z million based on market research.";
+      const issues = scanForForbiddenTokens(content, "step3.market_sizing.tam");
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0].location).toContain("step3.market_sizing.tam");
+      expect(issues[0].token_type).toBe("single_letter_standin");
+    });
+
+    it("should scan nested objects recursively", () => {
+      const content = { 
+        market_sizing: { 
+          tam: "The TAM is $Z million" 
+        } 
+      };
+      const issues = scanForForbiddenTokens(content, "step3");
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0].location).toContain("step3.market_sizing.tam");
+    });
+
+    it("should identify internal source ID token type", () => {
+      const content = "According to [S0-1] the market grew.";
+      const issues = scanForForbiddenTokens(content, "step2");
+      expect(issues.some(i => i.token_type === "internal_source_id")).toBe(true);
+    });
+
+    it("should identify placeholder token type", () => {
+      const content = "Value is {TBD} for this field.";
+      const issues = scanForForbiddenTokens(content, "step2");
+      expect(issues.some(i => i.token_type === "placeholder")).toBe(true);
+    });
+
+    it("should include sentence context", () => {
+      const content = "The market analysis shows $Z million in revenue potential.";
+      const issues = scanForForbiddenTokens(content, "step3");
+      expect(issues.length).toBeGreaterThan(0);
+      expect(issues[0].sentence_context).toContain("market analysis");
+    });
+  });
+
+  // ============================================
+  // sanitizeStepOutputs tests (NEW)
+  // ============================================
+
+  describe("sanitizeStepOutputs", () => {
+    it("should clean forbidden tokens from step outputs", () => {
+      const stepOutputs = {
+        step1: { content: "Market grew [S0-1] significantly." },
+        step2: { value: "$Z million" }
+      };
+      const sourceMap = new Map();
+      const result = sanitizeStepOutputs(stepOutputs, sourceMap);
+      
+      expect(result.issues_found.length).toBeGreaterThan(0);
+      expect((result.clean_outputs.step2 as Record<string, unknown>)?.value).not.toContain("$Z");
+    });
+
+    it("should track unknowns for removed tokens", () => {
+      const stepOutputs = {
+        step1: { content: "{TBD}" }
+      };
+      const sourceMap = new Map();
+      const result = sanitizeStepOutputs(stepOutputs, sourceMap);
+      
+      expect(result.unknowns.length).toBeGreaterThan(0);
+      expect(result.unknowns[0].original_token).toBe("{TBD}");
+    });
+  });
+
+  // ============================================
+  // validateCitationBidirectional tests (NEW)
+  // ============================================
+
+  describe("validateCitationBidirectional", () => {
+    it("should detect orphan references (defined but never cited)", () => {
+      const html = "<p>Growth is strong <a href='#ref-1'>(Smith, 2024)</a>.</p>";
+      const refs = '<li id="ref-1">Smith (2024)</li><li id="ref-2">Jones (2023)</li>';
+      const result = validateCitationBidirectional(html, refs);
+      
+      expect(result.passed).toBe(false);
+      expect(result.orphan_references).toContain("ref-2");
+    });
+
+    it("should detect orphan citations (cited but no reference)", () => {
+      const html = '<p>Growth <a href="#ref-1">(Smith, 2024)</a> and <a href="#ref-3">(Jones, 2023)</a>.</p>';
+      const refs = '<li id="ref-1">Smith (2024)</li>';
+      const result = validateCitationBidirectional(html, refs);
+      
+      expect(result.passed).toBe(false);
+      // Note: ref-3 is cited but ref-1 is defined, so ref-3 is orphan citation
+      expect(result.orphan_citations.length).toBeGreaterThan(0);
+    });
+
+    it("should detect malformed n.d. without retrieval date", () => {
+      const html = "<p>According to (ABS, n.d.) the data shows...</p>";
+      const refs = '<li id="ref-1">ABS. (n.d.). Title.</li>';
+      const result = validateCitationBidirectional(html, refs);
+      
+      expect(result.malformed_dates.length).toBeGreaterThan(0);
+    });
+
+    it("should pass when all citations map to references", () => {
+      const html = '<p>Growth <a href="#ref-1">(Smith, 2024)</a> is strong.</p>';
+      const refs = '<li id="ref-1">Smith (2024). Title.</li>';
+      const result = validateCitationBidirectional(html, refs);
+      
+      // Should have no orphans
+      expect(result.orphan_citations).toHaveLength(0);
+      expect(result.orphan_references).toHaveLength(0);
+    });
+
+    it("should include fix actions for orphans", () => {
+      const html = "<p>Growth <a href='#ref-1'>(Smith, 2024)</a>.</p>";
+      const refs = '<li id="ref-1">Smith (2024)</li><li id="ref-2">Jones (2023)</li>';
+      const result = validateCitationBidirectional(html, refs);
+      
+      expect(result.fix_actions.length).toBeGreaterThan(0);
+      expect(result.fix_actions.some(a => a.includes("orphan"))).toBe(true);
+    });
+  });
+
+  // ============================================
+  // lint for single-letter patterns (NEW)
+  // ============================================
+
+  describe("lint single-letter patterns", () => {
+    it("should fail lint for $Z placeholder", () => {
+      const html = "<p>Budget: $Z million</p>";
+      const result = lintBracketTokens(html);
+      expect(result.passed).toBe(false);
+    });
+
+    it("should fail lint for A% placeholder", () => {
+      // Note: A% pattern detection works via scanForForbiddenTokens, not lintBracketTokens
+      // lintBracketTokens only checks bracket patterns [...] and {...}
+      const html = "<p>Market share of A% expected.</p>";
+      const issues = scanForForbiddenTokens(html, "test");
+      expect(issues.some(i => i.offending_text === "A%")).toBe(true);
+    });
+
+    it("should fail lint for 'B additional jobs' pattern", () => {
+      const html = "<p>Creating B additional jobs in Australia.</p>";
+      const result = lintBracketTokens(html);
+      expect(result.passed).toBe(false);
+    });
+
+    it("should fail lint for '$X million' pattern", () => {
+      const html = "<p>Revenue of $X million projected.</p>";
+      const result = lintBracketTokens(html);
+      expect(result.passed).toBe(false);
+    });
+
+    it("should fail lint for naked source ID S0-1", () => {
+      const html = "<p>According to S0-1 the market grew.</p>";
+      const result = lintBracketTokens(html);
+      expect(result.passed).toBe(false);
     });
   });
 });

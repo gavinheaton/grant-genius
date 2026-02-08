@@ -258,6 +258,17 @@ function normalizeCitationsInHtml(
     { pattern: /\[COMPANY\]/gi, name: '[COMPANY]' },
     { pattern: /Source\s+[12]\b/gi, name: 'Source 1/2' },
     { pattern: /\$\[[^\]]+\]/g, name: '$[Amount]' },
+    // Single-letter quantity placeholders (assessor-grade requirement)
+    { pattern: /\$Z\b/gi, name: '$Z' },
+    { pattern: /\bA%\b/g, name: 'A%' },
+    { pattern: /\bB%\b/g, name: 'B%' },
+    { pattern: /\bC%\b/g, name: 'C%' },
+    // Single-letter stand-ins in context
+    { pattern: /\b[A-Z]\s+(?:additional|new|total)\s+(?:jobs?|employees?|FTEs?)/gi, name: 'Letter job count' },
+    { pattern: /\$[A-Z]\s+(?:million|billion)/gi, name: 'Letter currency' },
+    { pattern: /\b[XYZ]\s+(?:million|billion|percent)/gi, name: 'X/Y/Z placeholder' },
+    // Naked source IDs
+    { pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked S0-1' },
   ];
   
   for (const { pattern } of forbiddenPatterns) {
