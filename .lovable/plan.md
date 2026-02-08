@@ -1,439 +1,307 @@
 
 
-# Quality Gate Rubric for Prompt Bundle Pipelines
+# Update Report Assembly + Citation Finalization to Eliminate Internal Source IDs
 
-## Overview
+## Summary
 
-Implement a comprehensive pipeline validation system that evaluates generated prompt bundles for:
-- Structural completeness (core steps, sequencing)
-- Rubric/inputs traceability
-- Evidence discipline and auditability
-- Assessor insight quality
-- Commercial reality layer ("researcher gap filling")
+Update the report assembly pipeline to ensure internal source markers (e.g., `[S0-1]`, `[step9]`, `[article]`, `[Source1]`) never appear in final report output. Implement APA in-text citation format `(Author, Year)` for source references and add comprehensive hard validation with sentence-level error reporting.
 
-The validator runs immediately after pipeline generation and triggers auto-repair when scores fall below threshold.
+## Current State
 
-## Architecture
+The codebase has extensive citation normalization infrastructure:
+- `citationNormalizer.ts` with `sanitizeFinalReport()`, `validateFinalReport()`, and `lintBracketTokens()`
+- `worker-proxy/index.ts` with `FORBIDDEN_PATTERNS_LINT` and hard failure gates
+- Test coverage in `citationNormalizer.test.ts`
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     Pipeline Quality Gate System                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  Pipeline Generation (process-grant-guidelines)                             │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  1. HARD-FAIL VALIDATION (immediate reject)                          │    │
-│  │     - Missing core steps (build_source_pack, rubric_traceability_    │    │
-│  │       matrix, assessor_insight_layer, etc.)                          │    │
-│  │     - Step numbering invalid (gaps, non-sequential)                  │    │
-│  │     - Total steps < 12                                               │    │
-│  │     - Any prompt_template < 1500 chars or missing                    │    │
-│  │     - Forbidden patterns in ANY template                             │    │
-│  │     - finalize_citations lacks sanitizer requirements                │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                      │
-│       ▼ (if no hard-fail)                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  2. SCORED RUBRIC (0-100)                                            │    │
-│  │     Category A: Structural Completeness (0-20)                       │    │
-│  │     Category B: Traceability (0-20)                                  │    │
-│  │     Category C: Evidence Auditability (0-20)                         │    │
-│  │     Category D: Assessor Insight (0-20)                              │    │
-│  │     Category E: Commercial Reality (0-20)                            │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  3. RED-FLAG DETECTION (warnings trigger repair)                     │    │
-│  │     - Comparables not forced (min 5 entities)                        │    │
-│  │     - TAM/SAM/SOM allows "Unknown" without proxy                     │    │
-│  │     - report_assembly lacks grant-writer voice instruction           │    │
-│  │     - finalize_citations lacks bracket sanitizer                     │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│       │                                                                      │
-│       ▼                                                                      │
-│  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  4. VERDICT + AUTO-REPAIR                                            │    │
-│  │     Pass (≥85): proceed to save                                      │    │
-│  │     Conditional (75-84): run auto-repair, re-validate                │    │
-│  │     Fail (<75 or hard-fail): reject pipeline                         │    │
-│  └─────────────────────────────────────────────────────────────────────┘    │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+## Gaps to Address
+
+| Gap | Current State | Required State |
+|-----|---------------|----------------|
+| Step reference patterns | `[step9]`, `[stepN]` not covered | Add to forbidden patterns |
+| Citation format | Numeric `[1]` links | APA `(Author, Year)` hyperlinked |
+| Assembly prompts | No explicit anti-bracket rules | Explicit prohibition + APA format instruction |
+| Missing source handling | Removed silently | Replace with "Unknown (no validated source found)" + log to unknowns |
+| Error context | Pattern name only | Include surrounding sentence |
 
 ---
 
-## Implementation Details
+## Implementation Plan
 
-### File 1: Create `src/lib/pipelineQualityGate.ts` (NEW)
-
-Core validation module with all rubric logic.
-
-**Types:**
-
-```typescript
-export interface PipelineQualityResult {
-  overall_score: number;
-  verdict: 'pass' | 'conditional_pass' | 'fail';
-  hard_fail_reasons: string[];
-  category_scores: {
-    structural_completeness: number;
-    traceability: number;
-    evidence_auditability: number;
-    assessor_insight: number;
-    commercial_reality: number;
-  };
-  red_flags: string[];
-  repair_actions: RepairAction[];
-  notes: string;
-}
-
-export interface RepairAction {
-  action: 
-    | 'add_missing_core_step'
-    | 'strengthen_prompt_template'
-    | 'enforce_proxy_protocol'
-    | 'ban_forbidden_patterns'
-    | 'tighten_finalize_citations'
-    | 'add_comparables_enforcement'
-    | 'add_pricing_anchors'
-    | 'enforce_grant_writer_voice';
-  target_step_name: string;
-  instructions: string;
-}
-
-export interface PipelineStep {
-  step_number: number;
-  step_name: string;
-  step_description: string;
-  prompt_template: string;
-  model_tier?: string;
-}
-```
-
-**Core Steps Constant:**
-
-```typescript
-export const CORE_STEP_NAMES = [
-  'build_source_pack',
-  'rubric_traceability_matrix',
-  'assessor_insight_layer',
-  'assumptions_register',
-  'comparables_market_signals',
-  'additionality_and_benefit_case',
-  'commercialisation_logic',
-  'risk_register_and_governance',
-  'budget_logic_and_value_for_money',
-  'report_assembly',
-  'finalize_citations',
-] as const;
-```
-
-**Key Functions:**
-
-```typescript
-// Main validation entry point
-export function validatePipelineQuality(
-  steps: PipelineStep[]
-): PipelineQualityResult;
-
-// Hard-fail checks (returns array of failure reasons, empty = pass)
-export function checkHardFails(steps: PipelineStep[]): string[];
-
-// Scored rubric categories
-export function scoreStructuralCompleteness(steps: PipelineStep[]): number;
-export function scoreTraceability(steps: PipelineStep[]): number;
-export function scoreEvidenceAuditability(steps: PipelineStep[]): number;
-export function scoreAssessorInsight(steps: PipelineStep[]): number;
-export function scoreCommercialReality(steps: PipelineStep[]): number;
-
-// Red-flag detection
-export function detectRedFlags(steps: PipelineStep[]): string[];
-
-// Generate repair actions based on scores and red flags
-export function generateRepairActions(
-  steps: PipelineStep[],
-  result: PipelineQualityResult
-): RepairAction[];
-```
-
----
-
-### File 2: Update `supabase/functions/process-grant-guidelines/index.ts`
-
-Integrate the quality gate after pipeline generation.
+### File 1: Update `src/lib/citationNormalizer.ts`
 
 **Changes:**
 
-1. **Import/inline quality gate logic** (since edge functions can't import from src/)
-
-2. **Add validation call after AI generates pipeline:**
-
+1. **Add missing forbidden patterns:**
 ```typescript
-// After pipelineData is parsed
-const qualityResult = validatePipelineQuality(pipelineData.steps);
+// Step reference patterns
+{ pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
+{ pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
+```
 
-if (qualityResult.verdict === 'fail') {
-  console.error("Pipeline failed quality gate:", qualityResult.hard_fail_reasons);
-  // Mark as failed and return error
-  await supabaseAdmin
-    .from("grant_versions")
-    .update({ 
-      pipeline_generation_status: "failed",
-      pipeline_error: `Quality gate failed: ${qualityResult.hard_fail_reasons.join('; ')}`
-    })
-    .eq("id", grant_version_id);
-  throw new Error(`Pipeline quality gate failed: ${qualityResult.notes}`);
-}
+2. **Add APA in-text citation conversion function:**
+```typescript
+export function convertToApaInText(
+  html: string,
+  sourceMap: Map<string, SourceEntry>
+): { html: string; unknowns: UnknownEntry[] };
+```
 
-if (qualityResult.verdict === 'conditional_pass') {
-  console.log("Pipeline needs auto-repair:", qualityResult.repair_actions);
-  // Apply auto-repairs
-  pipelineData.steps = applyAutoRepairs(pipelineData.steps, qualityResult.repair_actions);
-  
-  // Re-validate after repairs
-  const revalidation = validatePipelineQuality(pipelineData.steps);
-  if (revalidation.verdict === 'fail') {
-    throw new Error("Pipeline failed after auto-repair attempt");
-  }
+This function will:
+- Find internal markers like `[S0-1]`
+- Look up the source in sourceMap
+- Convert to `<a href="#ref-N">(Author, Year)</a>` format
+- If source not found, replace with "Unknown (no validated source found)" and log to unknowns
+
+3. **Update `lintBracketTokens()` to return sentence context:**
+```typescript
+interface LintViolation {
+  pattern: string;
+  match: string;
+  sentence: string;  // Surrounding sentence context
+  offset: number;
 }
 ```
 
-3. **Add auto-repair function:**
-
+4. **Update `validateFinalReport()` to include sentence context in errors:**
 ```typescript
-function applyAutoRepairs(
-  steps: PipelineStep[],
-  repairs: RepairAction[]
-): PipelineStep[] {
-  for (const repair of repairs) {
-    const step = steps.find(s => s.step_name === repair.target_step_name);
-    if (!step) continue;
-    
-    switch (repair.action) {
-      case 'add_comparables_enforcement':
-        step.prompt_template = injectComparablesRequirement(step.prompt_template);
-        break;
-      case 'enforce_proxy_protocol':
-        step.prompt_template = injectProxyProtocol(step.prompt_template);
-        break;
-      case 'tighten_finalize_citations':
-        step.prompt_template = injectSanitizerRequirement(step.prompt_template);
-        break;
-      case 'enforce_grant_writer_voice':
-        step.prompt_template = injectGrantWriterVoice(step.prompt_template);
-        break;
-      // ... other repair types
+throw new Error(
+  `Internal citation markers leaked into final report:\n` +
+  violations.map(v => `- ${v.match} in: "${v.sentence}"`).join('\n')
+);
+```
+
+---
+
+### File 2: Update `supabase/functions/worker-proxy/index.ts`
+
+**Changes:**
+
+1. **Add missing patterns to `FORBIDDEN_PATTERNS_LINT`:**
+```typescript
+{ pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
+{ pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
+```
+
+2. **Update error response to include sentence context:**
+```typescript
+return jsonResponse({
+  error: "Citation lint failed",
+  message: "Internal citation markers leaked into final report",
+  violations: violations.slice(0, 10).map(v => ({
+    token: v.match,
+    context: v.sentence
+  })),
+  hint: "..."
+}, 400);
+```
+
+---
+
+### File 3: Update `supabase/functions/process-grant-guidelines/index.ts`
+
+**Changes:**
+
+1. **Update `report_assembly` prompt generation** to include explicit anti-bracket rules:
+
+Add to the assembly step prompt template:
+```
+CITATION FORMAT RULES (NON-NEGOTIABLE):
+1. NEVER use bracketed internal markers: [S0-1], [article], [Source1], [step9], etc.
+2. Convert source references to APA in-text citations: (Author, Year) or (Organisation, Year)
+3. If author unknown: use (Publisher, Year)
+4. Every numeric claim must have an APA in-text citation
+5. If source_id is missing from Source Pack, replace claim with: "Unknown (no validated source found)"
+
+FORBIDDEN OUTPUT PATTERNS (hard failure if present):
+- Any [S#-#] pattern
+- Any [step#] pattern  
+- Any [Source#] pattern
+- Any [article], [ref], [reference] markers
+- Any {TBD} or $[Amount] placeholders
+```
+
+2. **Update `finalize_citations` step template:**
+
+```
+STEP N — Finalize Citations (APA Transformation + Hard Validation)
+
+PURPOSE: Transform all internal source markers to APA format and validate no forbidden patterns remain.
+
+PROCESS:
+1. Build citation map: source_id → APA reference entry
+2. For each internal marker in text:
+   - If source exists: convert to (Author, Year) hyperlinked to #ref-N
+   - If source missing: replace with "Unknown (no validated source found)" + add to unknowns[]
+3. Build References section in valid APA format
+4. Run final sanitizer pass removing any remaining forbidden tokens
+
+REFERENCES LIST REQUIREMENTS:
+- Each entry must have: Author/Org, Year, Title, Publisher (if different), URL/DOI
+- No malformed stubs like "(2025)." with no title
+- All entries must be hyperlinked to their URLs
+
+HARD VALIDATION (fail run if any match):
+- /\[[Ss]\d+-\d+\]/ (internal source IDs)
+- /\[step\d+\]/ (step references)
+- /\[Source\d+\]/ (source markers)
+- /\{TBD\}/ (placeholders)
+- /\[article\]/ (generic markers)
+
+If violations found: output error listing exact tokens and surrounding sentences.
+
+OUTPUT SCHEMA:
+{
+  "report_html": "string (final HTML with APA citations, no internal markers)",
+  "references_html": "string (APA formatted references section)",
+  "unknowns": [
+    {
+      "type": "citation_unresolved",
+      "original_token": "string",
+      "sentence_context": "string",
+      "what_is_missing": "string",
+      "what_would_validate": "string"
     }
+  ],
+  "validation": {
+    "passed": boolean,
+    "violations_found": number,
+    "violations": ["string"]
   }
-  return steps;
 }
 ```
 
 ---
 
-### File 3: Create `src/test/pipelineQualityGate.test.ts` (NEW)
+### File 4: Update `supabase/functions/recover-finalize-report/index.ts`
 
-Comprehensive test suite for the quality gate.
+**Changes:**
 
-**Test Cases:**
+1. **Add missing patterns to forbidden list**
+2. **Update `normalizeCitationsInHtml()` to handle missing sources properly:**
 
 ```typescript
-describe("pipelineQualityGate", () => {
-  describe("checkHardFails", () => {
-    it("should fail if build_source_pack is missing");
-    it("should fail if step numbers have gaps");
-    it("should fail if total steps < 12");
-    it("should fail if any prompt_template < 1500 chars");
-    it("should fail if forbidden patterns exist in templates");
-    it("should fail if finalize_citations lacks sanitizer requirement");
-    it("should pass valid pipeline with all core steps");
+// When source not found in sourceMap:
+if (!citationOrder.has(id)) {
+  removed++;
+  unknowns.push({
+    type: 'citation_unresolved',
+    original_token: fullMatch,
+    sentence_context: extractSentence(html, offset),
+    what_is_missing: `Source ${markerId} not in source pack`,
+    what_would_validate: `Add source with id="${markerId}" to sources array`
+  });
+  return 'Unknown (no validated source found)';  // Instead of empty string
+}
+```
+
+---
+
+### File 5: Update `src/test/citationNormalizer.test.ts`
+
+**Add test cases:**
+
+```typescript
+describe("step reference patterns", () => {
+  it("should remove [step9] references", () => {
+    const input = "<p>Data from [step9] shows growth.</p>";
+    const result = sanitizeFinalReport(input);
+    expect(result.html).not.toContain("[step9]");
   });
 
-  describe("scoreStructuralCompleteness", () => {
-    it("should score 20 for perfect structure");
-    it("should score 10 if order is messy");
-    it("should score 0 if core steps missing");
+  it("should remove [Source1] markers", () => {
+    const input = "<p>According to [Source1] the market is growing.</p>";
+    const result = sanitizeFinalReport(input);
+    expect(result.html).not.toContain("[Source1]");
+  });
+});
+
+describe("APA citation format", () => {
+  it("should convert [S0-1] to (Author, Year) format", () => {
+    const sources = [{ id: "S0-1", authors: "Smith, J.", year: "2024", ... }];
+    const result = convertToApaInText("<p>Market grew [S0-1].</p>", buildSourceMap(sources));
+    expect(result.html).toContain("(Smith, J., 2024)");
+    expect(result.html).not.toContain("[S0-1]");
   });
 
-  describe("scoreTraceability", () => {
-    it("should score 20 if rubric coverage is explicit");
-    it("should score 10 if mentioned but not strict");
-    it("should score 0 if absent");
+  it("should replace missing source with Unknown phrase", () => {
+    const result = convertToApaInText("<p>Data [S0-999] unavailable.</p>", new Map());
+    expect(result.html).toContain("Unknown (no validated source found)");
+    expect(result.unknowns.length).toBe(1);
   });
+});
 
-  describe("scoreEvidenceAuditability", () => {
-    it("should score 20 for full evidence discipline");
-    it("should detect evidence-type matching enforcement");
-    it("should detect source ID integrity rules");
-  });
-
-  describe("scoreAssessorInsight", () => {
-    it("should score 20 for assessor intent + failure modes");
-    it("should detect genericness prevention gates");
-    it("should detect additionality discipline");
-  });
-
-  describe("scoreCommercialReality", () => {
-    it("should score 20 for buyer pathway + pricing anchors");
-    it("should detect pricing anchors requirement (≥3)");
-    it("should detect competitor comparability framework");
-  });
-
-  describe("detectRedFlags", () => {
-    it("should flag if comparables not forced to ≥5");
-    it("should flag if TAM/SAM/SOM allows Unknown");
-    it("should flag if report_assembly lacks grant-writer voice");
-    it("should flag if finalize_citations lacks bracket sanitizer");
-  });
-
-  describe("validatePipelineQuality", () => {
-    it("should return 'pass' for score ≥ 85 with no hard-fails");
-    it("should return 'conditional_pass' for score 75-84");
-    it("should return 'fail' for score < 75");
-    it("should return 'fail' if any hard-fail triggers");
+describe("sentence context in errors", () => {
+  it("should include surrounding sentence in validation errors", () => {
+    const html = "<p>The market showed [S0-1] growth rates.</p>";
+    expect(() => validateFinalReport(html)).toThrow(/growth rates/);
   });
 });
 ```
 
 ---
 
-### File 4: Create Admin UI Component `src/components/admin/PipelineQualityCard.tsx` (NEW)
+## Technical Details
 
-Display quality gate results in the Admin Console.
+### APA In-Text Citation Format
 
-**Component Features:**
-- Score breakdown by category (A-E)
-- Hard-fail indicators (red badges)
-- Red-flag warnings (yellow badges)
-- Repair action list with descriptions
-- Overall verdict badge (Pass/Conditional/Fail)
+| Scenario | Input | Output |
+|----------|-------|--------|
+| Author + Year available | `[S0-1]` where source has `authors: "Smith, J.", year: "2024"` | `<a href="#ref-1">(Smith, J., 2024)</a>` |
+| Organisation only | `[S0-2]` where source has `publisher: "ABS", year: "2023"` | `<a href="#ref-2">(ABS, 2023)</a>` |
+| No year | `[S0-3]` where source has `authors: "Jones"` | `<a href="#ref-3">(Jones, n.d.)</a>` |
+| Source not found | `[S0-999]` | `Unknown (no validated source found)` + log to unknowns |
+
+### Forbidden Patterns (Complete List)
 
 ```typescript
-interface PipelineQualityCardProps {
-  result: PipelineQualityResult;
-  onApplyRepairs?: () => void;
-}
-
-export function PipelineQualityCard({ result, onApplyRepairs }: PipelineQualityCardProps) {
-  // Visual representation of quality gate results
-  // Category score bars
-  // Repair action buttons
-}
-```
-
----
-
-### File 5: Update `src/pages/admin/PromptBundleEdit.tsx`
-
-Add quality gate display to the bundle editor.
-
-**Changes:**
-1. Import `PipelineQualityCard` component
-2. Add state for quality results
-3. Calculate quality on bundle load
-4. Display quality card above step list
-
----
-
-## Scoring Logic Detail
-
-### Category A - Structural Completeness (0-20)
-
-**A1. Core steps present and ordered (0-10):**
-- 10: All 11 core steps present, build_source_pack first, report_assembly/finalize_citations last
-- 5: All present but wrong order
-- 0: Any missing
-
-**A2. Archetype modules included (0-10):**
-- 10: Archetype-specific modules mapped to rubric
-- 5: Some modules but not clearly mapped
-- 0: Core-only with no archetype logic
-
-### Category B - Traceability (0-20)
-
-**B1. Rubric coverage guarantee (0-10):**
-- Check if rubric_traceability_matrix prompt explicitly requires:
-  - Every rubric section addressed
-  - Gap handling specified
+const FORBIDDEN_PATTERNS = [
+  // Internal source ID formats
+  /\[S\d+-[A-Z0-9]+\]/gi,           // [S0-1], [S12-3]
+  /\[ARTICLE-\d+\]/gi,              // [ARTICLE-1]
+  /\[SEARCH-\d+\]/gi,               // [SEARCH-1]
+  /\[SOURCE-\d+\]/gi,               // [SOURCE-1]
+  /\[step\d+\]/gi,                  // [step9]
+  /\[Source\d*\]/gi,                // [Source1], [Source]
   
-**B2. Required inputs mapping (0-10):**
-- Check if prompts mandate mapping required input keys to report sections
-
-### Category C - Evidence Auditability (0-20)
-
-**C1. Evidence-type matching (0-7):**
-- Detect keywords: "EVIDENCE-TYPE", "claim category", "allowed sources", "invalidate"
-
-**C2. Source ID integrity (0-7):**
-- Detect keywords: "S#-#", "source_id", "never renumber", "bracket markers"
-
-**C3. Numeric claim discipline (0-6):**
-- Detect keywords: "source_id required", "proxy method", "formula", "sensitivity"
-
-### Category D - Assessor Insight (0-20)
-
-**D1. Assessor intent + failure modes (0-8):**
-- Check assessor_insight_layer for: assessor_intent, failure_modes[], evidence_plan
-
-**D2. Genericness prevention (0-6):**
-- Detect: "rewrite if generic", "quantified", "decision implications"
-
-**D3. Additionality discipline (0-6):**
-- Detect: "counterfactual", "without funding", "additionality_proofs"
-
-### Category E - Commercial Reality (0-20)
-
-**E1. Buyer pathway (0-7):**
-- Detect: "who_pays", "who_decides", "adoption", "procurement", "buyer pathway"
-
-**E2. Pricing anchors (0-7):**
-- Detect: "≥3 pricing anchors", "pricing_anchor", "willingness_to_pay"
-
-**E3. Competitor comparability (0-6):**
-- Detect: "direct/adjacent/enabler", "measurable anchor", "price/revenue/TRL"
-
----
-
-## Forbidden Pattern List (Hard-Fail)
-
-```typescript
-const HARD_FAIL_PATTERNS = [
-  /\{TBD\}/gi,
-  /\{\.\.\.\}/g,
-  /\[Insert[^\]]*\]/gi,
-  /\[PROJECT\s*NAME\]/gi,
-  /\[COMPANY\]/gi,
-  /Hypothetical\s+\w+/gi,
-  /Source\s*[12]\b/gi,
-  /Source1/gi,
-  /\[article\]/gi,
-  /```/g,  // Triple backticks banned
+  // Generic markers
+  /\[article\]/gi,                  // [article]
+  /\[ref\]/gi,                      // [ref]
+  /\[reference\d*\]/gi,             // [reference], [reference1]
+  
+  // Placeholders
+  /\{TBD\}/gi,                      // {TBD}
+  /\[TBD\]/gi,                      // [TBD]
+  /\[Insert[^\]]*\]/gi,             // [Insert...]
+  /\[PROJECT\s*NAME\]/gi,           // [PROJECT NAME]
+  /\[COMPANY\]/gi,                  // [COMPANY]
+  /\$\[[^\]]+\]/g,                  // $[Amount]
+  
+  // Undefined markers
+  /undefined\s*\[/gi,               // undefined [
+  /\]\s*undefined/gi,               // ] undefined
 ];
 ```
 
 ---
 
-## Files Summary
+## Files Changed Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| `src/lib/pipelineQualityGate.ts` | CREATE | Core validation module with rubric scoring |
-| `supabase/functions/process-grant-guidelines/index.ts` | MODIFY | Integrate quality gate after pipeline generation |
-| `src/test/pipelineQualityGate.test.ts` | CREATE | Test suite for quality gate |
-| `src/components/admin/PipelineQualityCard.tsx` | CREATE | Admin UI component for quality display |
-| `src/pages/admin/PromptBundleEdit.tsx` | MODIFY | Add quality card to bundle editor |
+| `src/lib/citationNormalizer.ts` | MODIFY | Add step patterns, APA format conversion, sentence context |
+| `supabase/functions/worker-proxy/index.ts` | MODIFY | Add missing patterns, sentence context in errors |
+| `supabase/functions/process-grant-guidelines/index.ts` | MODIFY | Update assembly prompts with anti-bracket rules |
+| `supabase/functions/recover-finalize-report/index.ts` | MODIFY | Add patterns, "Unknown" replacement for missing sources |
+| `src/test/citationNormalizer.test.ts` | MODIFY | Add tests for step patterns, APA format, sentence context |
 
 ---
 
 ## Acceptance Criteria
 
-1. **Hard-fail gates work:** Missing core steps, short prompts, forbidden patterns all trigger immediate reject
-2. **Scoring is accurate:** Each category scores 0-20 based on keyword/pattern detection
-3. **Red flags trigger repair:** Conditional pass pipelines get auto-repaired
-4. **Admin visibility:** Quality results visible in bundle editor
-5. **Tests pass:** All validation logic has test coverage
+1. Final report contains NO bracketed source markers of any kind
+2. Every numeric claim has an APA in-text citation `(Author, Year)` hyperlinked to references
+3. References list contains only complete APA entries (no malformed stubs)
+4. Missing sources are replaced with "Unknown (no validated source found)" and logged to unknowns
+5. Hard failure gate shows exact token AND surrounding sentence when violations found
+6. All new tests pass
 
