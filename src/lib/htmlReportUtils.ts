@@ -1,14 +1,27 @@
 /**
  * Utilities for handling HTML report content
+ * 
+ * This module handles:
+ * - HTML sanitization for safe rendering
+ * - Legacy report format extraction
+ * - Integration with citationNormalizer for clean output
  */
 import DOMPurify from "dompurify";
+import { 
+  lintBracketTokens, 
+  normalizeReportHtml, 
+  buildSourceMap,
+  type SourceEntry,
+  type LintResult,
+  type UnknownEntry,
+} from "./citationNormalizer";
+
+// Re-export types for convenience
+export type { SourceEntry, LintResult, UnknownEntry };
 
 /**
- * Remove any remaining bracketed internal source IDs from HTML
- * Fallback for reports generated before APA citation cleanup was added
- */
-/**
  * Forbidden patterns that should never appear in final reports
+ * These are checked as a final safety layer after normalization
  */
 const REPORT_FORBIDDEN_PATTERNS = [
   // Internal source ID formats
@@ -26,6 +39,10 @@ const REPORT_FORBIDDEN_PATTERNS = [
   /\[Your\s+[^\]]*\]/gi,                            // [Your Company]
 ];
 
+/**
+ * Strip remaining bracketed source IDs from HTML
+ * This is a fallback safety layer for reports generated before normalization
+ */
 export function stripBracketedSourceIds(html: string): string {
   if (!html) return "";
   
@@ -50,31 +67,25 @@ export function stripBracketedSourceIds(html: string): string {
 
 /**
  * Validate that no internal source IDs or forbidden patterns remain
+ * Uses the new lintBracketTokens for comprehensive checking
  * Returns array of patterns found (empty if clean)
  */
 export function validateNoInternalMarkers(html: string): string[] {
   if (!html) return [];
   
-  const found: string[] = [];
+  // Use the new linter for comprehensive checking
+  const lintResult = lintBracketTokens(html);
   
-  // Check for internal source ID patterns
-  const internalIdPattern = /\[([A-Z][A-Z0-9\-_:]+)\]/g;
-  let match;
-  while ((match = internalIdPattern.exec(html)) !== null) {
-    found.push(`[${match[1]}]`);
+  if (!lintResult.passed) {
+    return lintResult.violations;
   }
   
-  // Check for other forbidden patterns
-  if (/\{TBD\}/i.test(html)) found.push("{TBD}");
-  if (/Source\s*[12]\b/i.test(html)) found.push("Source 1/2");
-  if (/Hypothetical\s+\w+/i.test(html)) found.push("Hypothetical [Entity]");
-  if (/\[Insert/i.test(html)) found.push("[Insert...]");
-  
-  return [...new Set(found)]; // Deduplicate
+  return [];
 }
 
 /**
  * Sanitize HTML content for safe rendering
+ * Also applies citation normalization as a final cleanup
  */
 export function sanitizeHtml(html: string): string {
   if (!html) return "";
@@ -86,7 +97,7 @@ export function sanitizeHtml(html: string): string {
       "ul", "ol", "li",
       "table", "thead", "tbody", "tr", "th", "td",
       "strong", "b", "em", "i", "u", "s",
-      "a", "span", "div",
+      "a", "span", "div", "section",
       "blockquote", "pre", "code",
       "sup", "sub"
     ],
@@ -99,6 +110,44 @@ export function sanitizeHtml(html: string): string {
   
   // Clean any remaining internal source ID markers as fallback
   return stripBracketedSourceIds(purified);
+}
+
+/**
+ * Normalize report with full citation processing
+ * This is the main entry point for client-side report cleaning
+ */
+export function normalizeReportWithCitations(
+  html: string,
+  sources: SourceEntry[],
+  requiredInputs: Record<string, unknown> = {}
+): {
+  html: string;
+  referencesHtml: string;
+  unknowns: UnknownEntry[];
+  lintPassed: boolean;
+} {
+  try {
+    const result = normalizeReportHtml(html, sources, requiredInputs, {
+      appendReferences: true,
+      failOnLintError: false,
+    });
+    
+    return {
+      html: sanitizeHtml(result.html),
+      referencesHtml: result.referencesHtml,
+      unknowns: result.unknowns,
+      lintPassed: result.lintResult.passed,
+    };
+  } catch (error) {
+    console.error("Citation normalization error:", error);
+    // Fallback to basic sanitization
+    return {
+      html: sanitizeHtml(html),
+      referencesHtml: "",
+      unknowns: [],
+      lintPassed: false,
+    };
+  }
 }
 
 /**

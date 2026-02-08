@@ -85,6 +85,124 @@ function extractDataGapsFromStep(outputs: Record<string, unknown>): string[] {
   return [];
 }
 
+// ============ Citation Normalization Functions ============
+
+interface SourceEntry {
+  id: string;
+  title?: string;
+  publisher?: string;
+  authors?: string;
+  author?: string;
+  year?: string;
+  date?: string;
+  url?: string;
+  source?: string;
+}
+
+/**
+ * Build a lookup map from sources array
+ */
+function buildSourceMap(sources: SourceEntry[]): Map<string, SourceEntry> {
+  const map = new Map<string, SourceEntry>();
+  if (!sources || !Array.isArray(sources)) return map;
+  
+  for (const source of sources) {
+    if (source.id) {
+      map.set(source.id.toUpperCase(), source);
+    }
+  }
+  return map;
+}
+
+/**
+ * Normalize citations to numeric linked format and build references
+ */
+function normalizeCitationsInHtml(
+  html: string,
+  sources: SourceEntry[]
+): { html: string; referencesHtml: string; stats: { resolved: number; removed: number } } {
+  const sourceMap = buildSourceMap(sources);
+  const citationOrder = new Map<string, number>();
+  const usedSources = new Set<string>();
+  let nextNum = 1;
+  let resolved = 0;
+  let removed = 0;
+  let normalizedHtml = html;
+
+  // Pattern to match internal markers
+  const markerPattern = /\[([A-Z][A-Z0-9]*-[A-Z0-9]+)\]/gi;
+  const supPattern = /<sup>\s*\[([A-Z][A-Z0-9]*-[A-Z0-9]+)\]\s*<\/sup>/gi;
+
+  // First pass: build citation order
+  let match;
+  while ((match = markerPattern.exec(html)) !== null) {
+    const markerId = match[1].toUpperCase();
+    if (sourceMap.has(markerId) && !citationOrder.has(markerId)) {
+      citationOrder.set(markerId, nextNum++);
+      usedSources.add(markerId);
+    }
+  }
+
+  // Second pass: replace superscript markers
+  normalizedHtml = normalizedHtml.replace(supPattern, (_fullMatch, markerId) => {
+    const id = markerId.toUpperCase();
+    if (citationOrder.has(id)) {
+      const num = citationOrder.get(id)!;
+      resolved++;
+      return `<a href="#ref-${num}" class="citation-link"><sup>[${num}]</sup></a>`;
+    }
+    removed++;
+    return '';
+  });
+
+  // Third pass: replace bracket markers
+  normalizedHtml = normalizedHtml.replace(
+    /\[([A-Z][A-Z0-9]*-[A-Z0-9]+)\]/gi,
+    (_fullMatch, markerId) => {
+      const id = markerId.toUpperCase();
+      if (citationOrder.has(id)) {
+        const num = citationOrder.get(id)!;
+        resolved++;
+        return `<a href="#ref-${num}" class="citation-link">[${num}]</a>`;
+      }
+      removed++;
+      return '';
+    }
+  );
+
+  // Remove other forbidden patterns
+  const forbiddenPatterns = [
+    /\{TBD\}/gi, /\[TBD\]/gi, /\[Insert[^\]]*\]/gi,
+    /\[PROJECT\s*NAME\]/gi, /\[COMPANY\]/gi, /Source\s+[12]\b/gi,
+  ];
+  for (const pattern of forbiddenPatterns) {
+    normalizedHtml = normalizedHtml.replace(pattern, '');
+  }
+
+  // Clean up
+  normalizedHtml = normalizedHtml.replace(/\(\s*\)/g, '').replace(/\s{2,}/g, ' ');
+
+  // Build references section
+  let referencesHtml = '';
+  if (citationOrder.size > 0) {
+    const entries = [...citationOrder.entries()].sort((a, b) => a[1] - b[1]);
+    const listItems = entries.map(([sourceId, num]) => {
+      const source = sourceMap.get(sourceId);
+      if (!source) return '';
+      const author = source.authors || source.author || source.publisher || 'Unknown';
+      const year = source.year || source.date?.match(/\b(19|20)\d{2}\b/)?.[0] || 'n.d.';
+      const title = source.title || source.source || 'Untitled';
+      const url = source.url || '';
+      const urlHtml = url ? ` <a href="${url}" target="_blank">${url}</a>` : '';
+      return `<li id="ref-${num}">${author}. (${year}). <em>${title}</em>.${urlHtml}</li>`;
+    }).filter(Boolean);
+    
+    referencesHtml = `<section class="references-section"><h2>References</h2><ol class="references-list">${listItems.join('\n')}</ol></section>`;
+  }
+
+  return { html: normalizedHtml, referencesHtml, stats: { resolved, removed } };
+}
+
 /**
  * Multi-Strategy Finalization Recovery
  * 
@@ -321,20 +439,31 @@ serve(async (req) => {
     console.log(`[RECOVER] tables keys: ${Object.keys(tables).join(", ")}`);
     console.log(`[RECOVER] sources count: ${allSources.length}`);
 
-    // Append references section if we have sources
-    if (allSources.length > 0) {
+    // ============ CITATION NORMALIZATION ============
+    // Convert internal markers to numeric linked citations
+    console.log("[RECOVER] Running citation normalization...");
+    const normResult = normalizeCitationsInHtml(reportHtml, allSources as SourceEntry[]);
+    reportHtml = normResult.html;
+    console.log(`[RECOVER] Normalization stats: ${normResult.stats.resolved} resolved, ${normResult.stats.removed} removed`);
+
+    // Append references section (using normalized references)
+    if (normResult.referencesHtml) {
+      if (!reportHtml.includes("<h2>References</h2>") && !reportHtml.includes('<section class="references-section">')) {
+        reportHtml += `\n${normResult.referencesHtml}`;
+      }
+    } else if (allSources.length > 0) {
+      // Fallback: simple references if normalization didn't produce any
       const sourcesList = allSources.map((src, idx) => {
         const title = src.title || src.source || `Source ${idx + 1}`;
         const url = src.url || "";
         if (url) {
-          return `<li><a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a></li>`;
+          return `<li id="ref-${idx + 1}"><a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a></li>`;
         }
-        return `<li>${title}</li>`;
+        return `<li id="ref-${idx + 1}">${title}</li>`;
       }).join("\n");
       
-      // Only append if not already in the report
-      if (!reportHtml.includes("<h2>References</h2>") && !reportHtml.includes("<h2>Sources</h2>")) {
-        reportHtml += `\n<h2>References</h2>\n<ul>\n${sourcesList}\n</ul>`;
+      if (!reportHtml.includes("<h2>References</h2>")) {
+        reportHtml += `\n<section class="references-section"><h2>References</h2>\n<ol class="references-list">\n${sourcesList}\n</ol></section>`;
       }
     }
 

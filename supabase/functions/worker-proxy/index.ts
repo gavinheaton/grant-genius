@@ -532,8 +532,105 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
   return jsonResponse({ success: true });
 }
 
+// ============================================
+// CITATION LINT VALIDATION (for save_report)
+// ============================================
+
+// Forbidden patterns that must NEVER appear in final output
+const FORBIDDEN_PATTERNS_LINT = [
+  { pattern: /\[S\d+-[A-Z0-9]+\]/gi, name: 'Internal source ID [S0-1]' },
+  { pattern: /\[ARTICLE-\d+\]/gi, name: 'Article marker [ARTICLE-1]' },
+  { pattern: /\[SEARCH-\d+\]/gi, name: 'Search marker [SEARCH-1]' },
+  { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
+  { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
+  { pattern: /\{TBD\}/gi, name: '{TBD}' },
+  { pattern: /\[TBD\]/gi, name: '[TBD]' },
+  { pattern: /\[\{TBD\}\]/gi, name: '[{TBD}]' },
+  { pattern: /\[Insert[^\]]*\]/gi, name: '[Insert...]' },
+  { pattern: /\[PROJECT\s*NAME\]/gi, name: '[PROJECT NAME]' },
+  { pattern: /\[COMPANY\]/gi, name: '[COMPANY]' },
+  { pattern: /Source\s+[12]\b/gi, name: 'Source 1/2' },
+];
+
+/**
+ * Lint HTML for forbidden bracket tokens
+ * Returns violations array (empty if clean)
+ */
+function lintReportHtml(html: string): string[] {
+  if (!html) return [];
+  
+  const violations: string[] = [];
+  
+  for (const { pattern, name } of FORBIDDEN_PATTERNS_LINT) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(html)) !== null) {
+      violations.push(`${name}: "${match[0]}"`);
+    }
+  }
+  
+  // Check for unlinked bracket tokens (excluding valid linked citations)
+  const bracketPattern = /\[([^\]]+)\]/g;
+  let match;
+  while ((match = bracketPattern.exec(html)) !== null) {
+    const content = match[1];
+    
+    // ALLOWED: Numeric citations that are hyperlinked [1], [2], etc.
+    if (/^\d+$/.test(content)) {
+      const beforeContext = html.substring(Math.max(0, match.index - 100), match.index);
+      if (beforeContext.includes('href="#ref-')) {
+        continue; // Valid linked citation
+      }
+    }
+    
+    // Check if it looks like an internal marker (starts with letter, contains number)
+    if (/^[A-Z]/.test(content) && /\d/.test(content)) {
+      const alreadyCounted = violations.some(v => v.includes(match![0]));
+      if (!alreadyCounted) {
+        violations.push(`Bracket token: "${match[0]}"`);
+      }
+    }
+  }
+  
+  return [...new Set(violations)]; // Dedupe
+}
+
+/**
+ * Extract report_html from content_json for linting
+ */
+function extractReportHtmlForLint(content: Record<string, unknown>): string | null {
+  // Check assembledReport.report_html
+  if (content.assembledReport && typeof content.assembledReport === "object") {
+    const assembled = content.assembledReport as Record<string, unknown>;
+    if (assembled.report_html && typeof assembled.report_html === "string") {
+      return assembled.report_html;
+    }
+  }
+  
+  // Check step-based format (finalize_report_html, etc.)
+  const stepKeys = ['finalize_report_html', 'assemble_sections_html', 'build_tables_sources_html'];
+  for (const key of stepKeys) {
+    if (content[key]) {
+      let stepData = content[key];
+      if (typeof stepData === 'string') {
+        try {
+          stepData = JSON.parse(stepData);
+        } catch {
+          continue;
+        }
+      }
+      const stepObj = stepData as Record<string, unknown>;
+      if (stepObj.report_html && typeof stepObj.report_html === 'string') {
+        return stepObj.report_html;
+      }
+    }
+  }
+  
+  return null;
+}
+
 async function handleSaveReport(supabase: any, params: Record<string, unknown>) {
-  const { report_run_id, content_json, citations_json } = params;
+  const { report_run_id, content_json, citations_json, skip_lint } = params;
 
   // DIAGNOSTIC LOGGING
   console.log(`[DIAG] save_report called for run: ${report_run_id}`);
@@ -578,6 +675,34 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
   }
   if (!content_json) {
     return errorResponse("content_json is required");
+  }
+
+  // CITATION LINT VALIDATION GATE
+  // Check for forbidden bracket tokens before saving
+  if (!skip_lint) {
+    const contentObj = content_json as Record<string, unknown>;
+    const reportHtml = extractReportHtmlForLint(contentObj);
+    
+    if (reportHtml) {
+      const violations = lintReportHtml(reportHtml);
+      
+      if (violations.length > 0) {
+        console.warn(`[LINT] save_report blocked: ${violations.length} violations found`);
+        console.warn(`[LINT] First 5 violations: ${violations.slice(0, 5).join('; ')}`);
+        
+        return jsonResponse({
+          error: "Citation lint failed",
+          message: "Report contains forbidden bracket tokens that must be removed before saving",
+          violations: violations.slice(0, 10),
+          violation_count: violations.length,
+          hint: "The external worker should run citation normalization before calling save_report"
+        }, 400);
+      }
+      
+      console.log("[LINT] Citation lint passed - no forbidden tokens found");
+    }
+  } else {
+    console.log("[LINT] Skipping lint validation (skip_lint=true)");
   }
 
   // Fetch the run to get application details
