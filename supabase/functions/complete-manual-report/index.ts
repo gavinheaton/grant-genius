@@ -168,42 +168,72 @@ serve(async (req) => {
       })
       .eq("id", application_id);
 
-    // Generate PDF
+    // Generate PDF inline using PDFShift API (bypasses RLS issues)
     let pdfBase64: string | null = null;
     let pdfPath: string | null = null;
-    try {
-      const pdfResponse = await fetch(`${supabaseUrl}/functions/v1/generate-pdf`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-        body: JSON.stringify({
-          reportId,
-          htmlContent: report_html,
-        }),
-      });
+    const pdfshiftApiKey = Deno.env.get("PDFSHIFT_API_KEY");
+    
+    if (pdfshiftApiKey) {
+      try {
+        // Build full HTML document for PDF generation
+        const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+    h1, h2, h3 { color: #1f2937; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
+    th { background-color: #f3f4f6; }
+  </style>
+</head>
+<body>
+${report_html}
+</body>
+</html>`;
 
-      if (pdfResponse.ok) {
-        const pdfData = await pdfResponse.json();
-        pdfPath = pdfData.path;
-        
-        // Download the PDF for email attachment
-        if (pdfPath) {
-          const { data: pdfFile } = await serviceClient.storage
+        const pdfResponse = await fetch("https://api.pdfshift.io/v3/convert/pdf", {
+          method: "POST",
+          headers: {
+            "Authorization": `Basic ${btoa(`api:${pdfshiftApiKey}`)}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            source: fullHtml,
+            format: "A4",
+            margin: "20mm",
+          }),
+        });
+
+        if (pdfResponse.ok) {
+          const pdfArrayBuffer = await pdfResponse.arrayBuffer();
+          const pdfBytes = new Uint8Array(pdfArrayBuffer);
+          pdfBase64 = btoa(String.fromCharCode(...pdfBytes));
+          
+          // Upload to storage using service role
+          const fileName = `${application_id}/${reportId}.pdf`;
+          const { error: uploadError } = await serviceClient.storage
             .from("reports")
-            .download(pdfPath);
-          if (pdfFile) {
-            const arrayBuffer = await pdfFile.arrayBuffer();
-            pdfBase64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+            .upload(fileName, pdfBytes, {
+              contentType: "application/pdf",
+              upsert: true,
+            });
+          
+          if (!uploadError) {
+            pdfPath = fileName;
+          } else {
+            console.error("PDF upload failed:", uploadError);
           }
+        } else {
+          console.error("PDFShift API failed:", await pdfResponse.text());
         }
+      } catch (e) {
+        console.error("PDF generation failed:", e);
       }
-    } catch (e) {
-      console.error("PDF generation failed:", e);
     }
 
-    // Generate DOCX
+    // Generate DOCX using the generate-docx function with service role auth
     let docxBase64: string | null = null;
     let docxPath: string | null = null;
     try {
@@ -211,7 +241,7 @@ serve(async (req) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: authHeader,
+          Authorization: `Bearer ${supabaseServiceKey}`,
         },
         body: JSON.stringify({
           reportId,
@@ -233,6 +263,8 @@ serve(async (req) => {
             docxBase64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
           }
         }
+      } else {
+        console.error("DOCX generation failed:", await docxResponse.text());
       }
     } catch (e) {
       console.error("DOCX generation failed:", e);
@@ -283,7 +315,7 @@ serve(async (req) => {
       }
 
       const emailPayload: any = {
-        sender: { name: "Grant Genius", email: "noreply@grantgenius.ai" },
+        sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
         to: [{ email: userProfile.email, name: userProfile.full_name || undefined }],
         subject: `Your Report is Ready: ${application.title || grant?.name}`,
         htmlContent: emailHtml,

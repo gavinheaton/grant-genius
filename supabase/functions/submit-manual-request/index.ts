@@ -128,7 +128,7 @@ serve(async (req) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sender: { name: "Grant Genius", email: "noreply@grantgenius.ai" },
+          sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
           to: [{ email: adminEmail }],
           subject: `New Manual Report Request: ${application.title || "Untitled"} from ${profile?.email}`,
           htmlContent: emailHtml,
