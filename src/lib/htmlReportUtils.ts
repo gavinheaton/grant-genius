@@ -289,6 +289,28 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
 
   const content = contentJson as Record<string, unknown>;
   
+  // Case -1: Manual report HTML - check for manual_report_html field first
+  if (content.manual_report_html && typeof content.manual_report_html === "string") {
+    return {
+      html: content.manual_report_html,
+      tables: undefined,
+      sources: undefined,
+      dataGaps: undefined,
+      isLegacy: false,
+    };
+  }
+  
+  // Also check inside report_html for manual reports stored as { report_html: "..." }
+  if (content.report_html && typeof content.report_html === "string") {
+    return {
+      html: content.report_html,
+      tables: undefined,
+      sources: undefined,
+      dataGaps: undefined,
+      isLegacy: false,
+    };
+  }
+  
   // Case 0: Step-based format (from Cloud Run worker) - finalize_report_html, assemble_sections_html as top keys
   const stepKeys = ['finalize_report_html', 'assemble_sections_html', 'build_tables_sources_html'];
   for (const key of stepKeys) {
