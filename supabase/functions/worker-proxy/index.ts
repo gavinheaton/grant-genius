@@ -77,32 +77,40 @@ function errorResponse(message: string, status = 400) {
 }
 
 // Map Lovable AI models to Replit-compatible Gemini models
+// Worker defaults to Gemini 3 Pro when empty/null is passed
 function mapToReplitModel(lovableModel: string | null | undefined): string {
   if (!lovableModel) {
-    return "gemini-2.0-flash"; // Default
+    return ""; // Empty = use worker default (Gemini 3 Pro)
   }
   
   // Direct mapping from Lovable AI identifiers to Replit-supported models
   const mapping: Record<string, string> = {
-    // Pro tier → gemini-1.5-pro
-    "google/gemini-3-pro-preview": "gemini-1.5-pro",
-    "google/gemini-2.5-pro": "gemini-1.5-pro",
-    // Flash tier → gemini-2.0-flash (latest)
+    // Pro tier → gemini-3-pro-preview (new worker default)
+    "google/gemini-3-pro-preview": "gemini-3-pro-preview",
+    "google/gemini-2.5-pro": "gemini-3-pro-preview",
+    // Flash tier → gemini-2.0-flash (balanced)
     "google/gemini-3-flash-preview": "gemini-2.0-flash",
     "google/gemini-2.5-flash": "gemini-2.0-flash",
     // Lite/fast tier → gemini-1.5-flash (cheaper/faster)
     "google/gemini-2.5-flash-lite": "gemini-1.5-flash",
   };
   
-  return mapping[lovableModel] || "gemini-2.0-flash";
+  return mapping[lovableModel] || ""; // Empty = worker default
 }
 
-// Get default Lovable model based on step number (from UI logic in PromptStepEditor)
+// Get default Lovable model based on step number
+// Heavy steps (2, 6-8, 11+) use Pro; others use Flash/Lite
 function getDefaultModelForStep(stepNumber: number): string {
-  if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
-  if (stepNumber <= 7) return "google/gemini-3-flash-preview";
-  if (stepNumber === 11) return "google/gemini-3-pro-preview";
-  return "google/gemini-2.5-flash-lite";
+  // Step 2: Competitor Research - benefits from Pro reasoning
+  if (stepNumber === 2) return "google/gemini-3-pro-preview";
+  // Steps 6-8: TAM/SAM/SOM - complex market calculations
+  if (stepNumber >= 6 && stepNumber <= 8) return "google/gemini-3-pro-preview";
+  // Steps 11+: Assembly and finalization
+  if (stepNumber >= 11) return "google/gemini-3-pro-preview";
+  // Early steps: use balanced Flash
+  if (stepNumber <= 5) return "google/gemini-3-flash-preview";
+  // Default fallback
+  return "google/gemini-3-flash-preview";
 }
 
 serve(async (req) => {
