@@ -111,6 +111,9 @@ function createValidPipeline(): PipelineStep[] {
     let prompt = createMinimalPrompt(stepName);
     
     // Add specific content based on step to meet validation requirements
+    if (stepName === 'market_basis_selection_and_scope') {
+      prompt += `\n\nMARKET BASIS SELECTION: Determine correct parent market based on buyer/payer pathway, modality/class, and geography with justification. Do NOT use generic parent markets like "global medtech" - must be specific to buyer's mental category.`;
+    }
     if (stepName === 'rubric_traceability_matrix') {
       prompt += `\n\nMANDATORY: Ensure EVERY rubric section is addressed. Handle gaps and missing sections explicitly. Map all required inputs to report sections.`;
     }
@@ -124,13 +127,13 @@ function createValidPipeline(): PipelineStep[] {
       prompt += `\n\nMUST identify ≥5 named entities. Include buyer pathway, who_pays, who_decides, pricing_anchor, willingness_to_pay. Group as direct/adjacent/enabler with measurable anchors.`;
     }
     if (stepName === 'finalize_citations') {
-      prompt += `\n\nCITATION SANITIZER REQUIRED: Validate every citation maps to reference. Strip all bracket markers including [...], {...}. Remove forbidden patterns. Sanitize output to remove internal IDs.`;
+      prompt += `\n\nCITATION SANITIZER REQUIRED: Validate every citation maps to reference. Strip all bracket markers including [...], {...}. Remove forbidden patterns. Sanitize output to remove internal IDs. BIDIRECTIONAL: every in-text citation must map to reference, orphan references removed.`;
     }
     if (stepName === 'report_assembly') {
       prompt += `\n\nGRANT-WRITER VOICE: Write like a professional grant writer for expert assessors. Map content to rubric titles explicitly.`;
     }
     if (stepName === 'tam_sam_som_dual_methodology') {
-      prompt += `\n\nDUAL METHODOLOGY REQUIRED: Output BOTH top-down (parent market × segment share) AND bottom-up (units × price × penetration). Include assumptions_register with assumption_id, confidence_label, defensibility_note. Sensitivity analysis: base/low/high. Sanity checks: pricing consistency, penetration, spend ceiling. Reconciliation required if divergence >30%.`;
+      prompt += `\n\nDUAL METHODOLOGY REQUIRED: Output BOTH top-down (parent market × segment share) AND bottom-up (units × price × penetration). 3x RECONCILIATION RULE: If methods differ by >3x, must revise or explain. ARITHMETIC SANITY CHECK: (eligible_population × price × penetration) = bottom_up_som_value. SCOPE CONSISTENCY: TAM/SAM/SOM must refer to same product and buyer. Include assumptions_register with assumption_id, confidence, one_line_defensibility. Sensitivity analysis: base/low/high. Include defensibility_notes explaining why parent market is correct.`;
     }
     
     steps.push({
@@ -141,9 +144,9 @@ function createValidPipeline(): PipelineStep[] {
     });
   }
   
-  // Add one extra step to meet minimum (13 required now, 12 core)
+  // Add one extra step to meet minimum (14 required now)
   steps.push({
-    step_number: 12,
+    step_number: CORE_STEP_NAMES.length,
     step_name: 'qa_validation',
     step_description: 'Quality assurance validation',
     prompt_template: createMinimalPrompt('qa_validation'),

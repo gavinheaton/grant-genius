@@ -2121,10 +2121,17 @@ when the archetype/rubric demands them:
    - differentiators must be measurable outcomes (not adjectives)
 
 5. tam_sam_som_dual_methodology
+   - REQUIRES: market_basis from market_basis_selection_and_scope step
    - top_down: { value, method: "Parent market × segment share", inputs[], source_ids[] }
-   - bottom_up: { value, method: "Incidence × treatable pop × price × penetration", inputs[], source_ids[] }
-   - reconciliation: explanation of differences if methods diverge
-   - sensitivity: { low, mid, high } with confidence labels
+   - bottom_up: { value, method: "(eligible_population) × (price) × (penetration)", inputs[], source_ids[] }
+   - 3x RECONCILIATION RULE: If methods diverge by >3x (300%), MUST revise or explain
+   - sensitivity: { low, base, high } for each of TAM/SAM/SOM
+   - MANDATORY SANITY CHECKS:
+     - ARITHMETIC: pop × price × penetration = bottom_up_som (within ±5%)
+     - SCOPE: TAM/SAM/SOM refer to same product and buyer
+     - PRICING: implied price within ±30% of anchors
+   - defensibility_notes: why parent market correct, why assumptions reasonable, top 3 drivers
+   - source_ids_used[]: aggregated list of all sources cited
 
 6. delivery_risk_mitigations
    - risk_register[]: { risk, likelihood, impact, mitigation, owner, evidence_of_precedent }
@@ -2145,7 +2152,13 @@ Step 0: build_source_pack (always first)
 
 Core Steps (must always exist, names must match exactly):
 
-Step 1: rubric_traceability_matrix
+Step 1: market_basis_selection_and_scope
+  - Determine correct parent market based on buyer, modality, geography
+  - Output: market_basis object with market_type, parent_market_name, buyer_persona, etc.
+  - HARD RULE: No generic parent markets (e.g., "global medtech") without justification
+  - Must identify: who pays, who decides, what category the buyer mentally uses
+
+Step 2: rubric_traceability_matrix
   - Map each rubric criterion → required evidence types → where it will be addressed in the report.
   - Output: rubric_mapping[], required_inputs_mapping[], gaps[], mitigations[]
 
