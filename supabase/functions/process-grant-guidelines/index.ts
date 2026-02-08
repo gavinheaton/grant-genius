@@ -72,6 +72,74 @@ OUTPUT CONSTRAINTS:
 `;
 
 // ============================================================================
+// ASSESSOR INSIGHT CONTRACT (injected into all prompts for quality assurance)
+// ============================================================================
+
+const ASSESSOR_INSIGHT_CONTRACT = `
+=== ASSESSOR INSIGHT CONTRACT ===
+
+EVIDENCE-TYPE MATCHING RULE (Non-Negotiable):
+
+| Claim Category | ALLOWED Sources | NEVER Use |
+|----------------|-----------------|-----------|
+| Market size / market growth / revenue / pricing | Market research firms, industry reports, procurement datasets, official spending stats (PBS/MBS/AIHW), ABS industry accounts, company annual reports, regulator price lists | Epidemiology studies, disease burden papers |
+| Disease burden / incidence / mortality / prevalence | Government health statistics, AIHW, Cancer Australia, WHO, peer-reviewed epidemiology, clinical registries | Market reports, company financials |
+| Regulatory pathway / approval / reimbursement | TGA/FDA/EMA guidance, PBS/HTA documents, standards bodies, official policy docs | General news, press releases |
+| Competitor status / product claims | Company filings, regulator databases (ARTG, FDA 510k), clinical trial registries (ANZCTR, ClinicalTrials.gov), official product pages, peer-reviewed publications | Wikipedia, blog posts, undated sources |
+
+If no valid evidence exists for a claim, output exactly:
+"Unknown (no validated source found)" + add to unknowns array with:
+- what_is_missing: description of the data gap
+- what_would_validate: specific source types that would provide validation
+- proxy_attempted: true/false + method if attempted
+
+ASSUMPTION DISCIPLINE (all assumptions must be readable + checkable):
+- confidence_label: "High" | "Medium" | "Low"
+- one_line_justification: Brief explanation of why this confidence level
+- replicable_method: Equation or steps that can be verified
+
+PROXY ESTIMATE REQUIREMENTS (when direct data unavailable):
+{
+  "value": number,
+  "currency": "AUD|USD",
+  "year": 2024,
+  "method": "Description of calculation approach",
+  "inputs": [
+    {"description": "Input 1", "value": X, "source_id": "S0-X"},
+    {"description": "Input 2", "value": Y, "source_id": "S0-Y|ESTIMATE"}
+  ],
+  "sensitivity": {"low": number, "high": number},
+  "confidence": "high|medium|low"
+}
+
+COMMERCIAL REALITY LAYER (fill the "researcher gap"):
+Every pipeline must produce evidence for:
+- Who pays / who decides / adoption pathway
+- Pricing anchors (direct, adjacent, or proxy with methodology)
+- Implementation friction + enabling partners
+- Regulatory and reimbursement gating steps (where applicable)
+- Measurable success outcomes (assessor lens)
+
+COMPETITOR COMPARABILITY FRAMEWORK:
+Group competitors as:
+- Direct: Same buyer + same use case + same modality/class
+- Adjacent: Same buyer OR same use case OR similar modality
+- Enablers: Platforms, diagnostics, manufacturing, distribution, integrators
+
+Each competitor entry must include at least ONE of:
+- price/pricing_anchor, revenue, TRL/stage, trial_stage, approval_status, reimbursement_status
+If not available: mark "Unknown" + list validation sources needed.
+
+ADDITIONALITY + JURISDICTION BENEFIT (universal):
+Every report must state:
+- Why funding is needed (counterfactual: what will NOT happen otherwise)
+- Benefit to jurisdiction (AU jobs, sovereign capability, exports, equity outcomes)
+Both must be evidence-supported OR clearly labeled as assumption.
+
+=== END ASSESSOR INSIGHT CONTRACT ===
+`;
+
+// ============================================================================
 // ARCHETYPE CLASSIFIER
 // ============================================================================
 
@@ -231,9 +299,20 @@ function calculateQualityScore(prompt: string): {
   level: 'good' | 'warning' | 'poor'; 
   forbiddenPatterns: string[];
   hasProxyProtocol: boolean;
+  hasEvidenceTypeCheck: boolean;
+  hasAssessorInsight: boolean;
+  hasSensitivityRange: boolean;
 } {
   if (!prompt || typeof prompt !== 'string') {
-    return { total: 0, level: 'poor', forbiddenPatterns: [], hasProxyProtocol: false };
+    return { 
+      total: 0, 
+      level: 'poor', 
+      forbiddenPatterns: [], 
+      hasProxyProtocol: false,
+      hasEvidenceTypeCheck: false,
+      hasAssessorInsight: false,
+      hasSensitivityRange: false
+    };
   }
 
   // Detect forbidden patterns
@@ -243,6 +322,18 @@ function calculateQualityScore(prompt: string): {
   // Check for proxy protocol language (good practice)
   const hasProxyProtocol = /proxy.*estimate|proxy.*calculation|if.*unavailable.*calculate|conservative.*proxy|PROXY PROTOCOL/i.test(prompt);
   const proxyBonus = hasProxyProtocol ? 10 : 0;
+
+  // NEW: Evidence-type compliance check
+  const hasEvidenceTypeCheck = /EVIDENCE.TYPE.*MATCHING|EVIDENCE.TYPE.*CHECK|claim.*uses.*correct.*evidence|ALLOWED.*Sources/i.test(prompt);
+  const evidenceTypeBonus = hasEvidenceTypeCheck ? 10 : 0;
+
+  // NEW: Assessor insight check
+  const hasAssessorInsight = /ASSESSOR.*INSIGHT|COMMERCIAL.*REALITY|decision.*pathway|buyer.*persona|pricing.*anchor|ASSESSOR INSIGHT CONTRACT/i.test(prompt);
+  const assessorInsightBonus = hasAssessorInsight ? 10 : 0;
+
+  // NEW: Sensitivity range check
+  const hasSensitivityRange = /sensitivity.*range|sensitivity.*\{.*low.*high|confidence.*label|low.*mid.*high/i.test(prompt);
+  const sensitivityBonus = hasSensitivityRange ? 5 : 0;
 
   const scores = {
     contextHeader: /STEP\s*\d|INPUTS?:/i.test(prompt) ? 15 : 0,
@@ -255,10 +346,20 @@ function calculateQualityScore(prompt: string): {
   };
 
   const baseTotal = Object.values(scores).reduce((a, b) => a + b, 0);
-  const total = Math.max(0, baseTotal - forbiddenPenalty + proxyBonus);
-  const level = total >= 70 ? 'good' : total >= 40 ? 'warning' : 'poor';
+  const total = Math.max(0, baseTotal - forbiddenPenalty + proxyBonus + evidenceTypeBonus + assessorInsightBonus + sensitivityBonus);
   
-  return { total: Math.round(total), level, forbiddenPatterns, hasProxyProtocol };
+  // Raise threshold for 'good' to 75 (from 70) to enforce higher standards
+  const level = total >= 75 ? 'good' : total >= 45 ? 'warning' : 'poor';
+  
+  return { 
+    total: Math.round(total), 
+    level, 
+    forbiddenPatterns, 
+    hasProxyProtocol,
+    hasEvidenceTypeCheck,
+    hasAssessorInsight,
+    hasSensitivityRange
+  };
 }
 
 // ============================================================================
@@ -1133,11 +1234,13 @@ INPUTS:
 - {{step${maxAIStep + 1}}}: sections_html containing internal citation markers
 - {{step${maxAIStep + 2}}}: tables and all_sources array
 
-INTERNAL MARKER PATTERNS TO REMOVE:
+INTERNAL MARKER PATTERNS TO REMOVE (strengthened):
+The following patterns must NEVER appear in sections_html_cleaned or tables_cleaned:
 - [S0-1], [S0-A1], [S1-2] (step-source format)
 - [ARTICLE-1], [SEARCH-2], [SOURCE-12] (type-number format)  
-- [TBD], [{TBD}], any bracketed ALLCAPS/ID token
+- [TBD], [{TBD}], [Insert...], {value}
 - <sup>[S0-1]</sup> (superscript-wrapped markers)
+- Source 1, Source 2 (numeric source placeholders)
 
 HARD RULES:
 1. NEVER output any bracketed internal source IDs in the cleaned HTML
@@ -1147,6 +1250,11 @@ HARD RULES:
    remove the marker completely OR label as "Unknown (no validated source)"
 5. No malformed or duplicate references
 6. Hyperlink citations and reference URLs where available
+
+If a claim has an internal marker that cannot be resolved to an APA citation:
+- Remove the marker completely (leave no trace)
+- If the claim is numeric, add note: "(Estimate - requires validation)"
+- Add to unknowns with what_would_validate guidance
 
 TRANSFORMATION PROCESS:
 
@@ -1165,7 +1273,7 @@ B) Clean the report body (sections_html from Step ${maxAIStep + 1}):
    
    IF NOT resolvable:
    - Remove the bracket token completely (leave no trace)
-   - Add to unknowns array: { "marker": "...", "location": "section name", "needed": "source metadata" }
+   - Add to unknowns array: { "marker": "...", "location": "section name", "needed": "source metadata", "what_would_validate": "..." }
 
 C) Clean tables (from Step ${maxAIStep + 2}):
    Apply same replacement rules inside every table cell
@@ -1179,6 +1287,23 @@ D) Build APA References section:
    - Each entry must be hyperlinked to its URL
    - NO internal IDs in the References list
    - Sort alphabetically by author/organisation name
+
+CITATION AUDIT REQUIREMENT (new):
+Your output must include a "citations_audit" object:
+{
+  "citations_audit": {
+    "total_citations_found": number,
+    "citations_resolved": number,
+    "citations_removed": number,
+    "evidence_type_compliant": [
+      { "source_id": "S0-1", "claim_category": "market_size", "source_type": "market_report", "compliant": true }
+    ],
+    "non_compliant_citations": [
+      { "source_id": "S0-5", "claim_category": "market_size", "source_type": "epidemiology", "issue": "Wrong evidence type" }
+    ],
+    "references_list_complete": true/false
+  }
+}
 
 OUTPUT REQUIREMENTS (CRITICAL):
 1. Return ONLY valid JSON - no code fences, no markdown
@@ -1194,13 +1319,21 @@ OUTPUT JSON SCHEMA:
     "partners": "cleaned table HTML"
   },
   "references_html": "<h2>References</h2><div class='references'><ul><li><a href='URL'>Author. (Year). Title. Publisher.</a></li>...</ul></div>",
+  "citations_audit": {
+    "total_citations_found": 0,
+    "citations_resolved": 0,
+    "citations_removed": 0,
+    "evidence_type_compliant": [],
+    "non_compliant_citations": [],
+    "references_list_complete": true
+  },
   "metadata": {
     "cited_source_ids": ["S0-1", "S0-2"],
     "unresolved_markers_count": 0,
     "removed_internal_markers_count": 5
   },
   "unknowns": [
-    { "marker": "[ARTICLE-99]", "location": "Section 3", "needed": "source metadata" }
+    { "marker": "[ARTICLE-99]", "location": "Section 3", "needed": "source metadata", "what_would_validate": "..." }
   ]
 }
 
@@ -1232,6 +1365,7 @@ Step ${maxAIStep + 3} data ({{step${maxAIStep + 3}}}):
 - "sections_html_cleaned": The complete narrative HTML with APA citations (NO internal IDs)
 - "tables_cleaned": object with keys "competitors", "market_sizing", "partners" - cleaned HTML tables
 - "references_html": Pre-built APA References section with hyperlinks
+- "citations_audit": Citation transformation audit object
 - "metadata": Citation transformation statistics
 - "unknowns": Unresolved markers array
 
@@ -1244,6 +1378,23 @@ YOUR TASK:
 3. Append the references_html from Step ${maxAIStep + 3} at the end of the document
 4. Combine data_gaps from Step ${maxAIStep + 1} with unknowns from Step ${maxAIStep + 3}
 
+DATA GAP PRESENTATION (new):
+If any unknowns exist from previous steps, include a "Data Gaps & Validation Needs" 
+section before References with format:
+- Gap description
+- What would validate it
+- Current proxy estimate (if any)
+
+FINAL VALIDATION LINT (strengthened):
+Before outputting, scan report_html for these patterns and REMOVE if found:
+- Regex: /\\[S\\d+-\\w*\\d*\\]/g (internal source markers)
+- Regex: /\\[ARTICLE-\\d+\\]/g
+- Regex: /\\[SEARCH-\\d+\\]/g
+- Regex: /\\{TBD\\}|\\[TBD\\]|\\[Insert[^\\]]*\\]/gi
+- Regex: /Source\\s+[12]\\b/gi
+
+If removal leaves orphan parentheses or broken sentences, clean them up.
+
 VALIDATION (CRITICAL - must pass before output):
 The final report_html must NOT contain any of these patterns:
 - [S0-1], [S1-2], [S0-A1] or any [S followed by numbers/letters
@@ -1251,6 +1402,7 @@ The final report_html must NOT contain any of these patterns:
 - [SEARCH-1], [SEARCH-2] or any [SEARCH-*
 - [TBD], [{TBD}], or any bracketed placeholder tokens
 - <sup>[S0-1]</sup> or similar superscript-wrapped internal IDs
+- Source 1, Source 2 (numeric source placeholders)
 
 If ANY of these patterns remain, you MUST remove them before outputting.
 
@@ -1258,12 +1410,14 @@ CRITICAL OUTPUT REQUIREMENTS:
 1. Return ONLY valid JSON - NO code fences
 2. First character must be { and last must be }
 3. The "report_html" field MUST contain the complete merged HTML document with NO internal IDs
+4. Include citations_audit from Step ${maxAIStep + 3} in output
 
 OUTPUT JSON SCHEMA:
 {
   "title": "Grant Report: [Project Title]",
-  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with APA citations and tables]...<h2>References</h2>...",
+  "report_html": "<h2>Executive Summary</h2>...[full merged HTML with APA citations and tables]...<h2>Data Gaps & Validation Needs</h2>...<h2>References</h2>...",
   "all_sources": [{"id": "S0-1", "apa_citation": "Author. (Year). Title. Publisher. URL", "url": "..."}],
+  "citations_audit": { ...from Step ${maxAIStep + 3}... },
   "data_gaps": ["gap1", "gap2"],
   "tables": {"competitors": "...", "market_sizing": "...", "partners": "..."}
 }`
@@ -1632,6 +1786,52 @@ OUTPUT RULES:
 2. First character must be { and last character must be }.
 3. Do not include \`\`\` anywhere.
 
+========== ASSESSOR INSIGHT CONTRACT (MANDATORY FOR ALL STEPS) ==========
+
+EVIDENCE-TYPE MATCHING RULE (Non-Negotiable):
+
+| Claim Category | ALLOWED Sources | NEVER Use |
+|----------------|-----------------|-----------|
+| Market size / market growth / revenue / pricing | Market research firms, industry reports, procurement datasets, official spending stats (PBS/MBS/AIHW), ABS industry accounts, company annual reports, regulator price lists | Epidemiology studies, disease burden papers |
+| Disease burden / incidence / mortality / prevalence | Government health statistics, AIHW, Cancer Australia, WHO, peer-reviewed epidemiology, clinical registries | Market reports, company financials |
+| Regulatory pathway / approval / reimbursement | TGA/FDA/EMA guidance, PBS/HTA documents, standards bodies, official policy docs | General news, press releases |
+| Competitor status / product claims | Company filings, regulator databases (ARTG, FDA 510k), clinical trial registries (ANZCTR, ClinicalTrials.gov), official product pages, peer-reviewed publications | Wikipedia, blog posts, undated sources |
+
+If no valid evidence exists for a claim, output exactly:
+"Unknown (no validated source found)" + add to unknowns array with:
+- what_is_missing: description of the data gap
+- what_would_validate: specific source types that would provide validation
+- proxy_attempted: true/false + method if attempted
+
+ASSUMPTION DISCIPLINE (all assumptions must be readable + checkable):
+- confidence_label: "High" | "Medium" | "Low"
+- one_line_justification: Brief explanation of why this confidence level
+- replicable_method: Equation or steps that can be verified
+
+COMMERCIAL REALITY LAYER (fill the "researcher gap"):
+Every pipeline must produce evidence for:
+- Who pays / who decides / adoption pathway (buyer persona)
+- Pricing anchors (direct, adjacent, or proxy with methodology)
+- Implementation friction + enabling partners
+- Regulatory and reimbursement gating steps (where applicable)
+- Measurable success outcomes (assessor lens)
+
+COMPETITOR COMPARABILITY FRAMEWORK:
+Group competitors as:
+- Direct: Same buyer + same use case + same modality/class
+- Adjacent: Same buyer OR same use case OR similar modality
+- Enablers: Platforms, diagnostics, manufacturing, distribution, integrators
+
+Each competitor entry must include at least ONE of:
+- price/pricing_anchor, revenue, TRL/stage, trial_stage, approval_status, reimbursement_status
+If not available: mark "Unknown" + list validation sources needed.
+
+ADDITIONALITY + JURISDICTION BENEFIT (universal):
+Every report must state:
+- Why funding is needed (counterfactual: what will NOT happen otherwise)
+- Benefit to jurisdiction (AU jobs, sovereign capability, exports, equity outcomes)
+Both must be evidence-supported OR clearly labeled as assumption.
+
 ========== FORBIDDEN OUTPUT PATTERNS (HARD BAN) ==========
 
 The following patterns must NEVER appear in ANY step's outputs:
@@ -1669,6 +1869,52 @@ When market sizing data is not directly available, steps MUST use this structure
 }
 
 NEVER output "Unknown" for TAM/SAM/SOM without attempting a proxy calculation using available data.
+
+========== ASSESSOR-GRADE EVIDENCE MODULES (include where relevant) ==========
+
+In addition to the Grant Writer Core steps, include these assessor-grade modules
+when the archetype/rubric demands them:
+
+1. market_definition_buyer_pathway
+   - buyer_persona: payer / decision-maker / user
+   - buying_triggers: what events trigger purchase consideration
+   - procurement_path: public tender / direct purchase / reimbursement
+   - adoption_constraints: clinical evidence, training, integration
+   - implementation_friction: barriers to adoption
+
+2. pricing_willingness_to_pay
+   - price_anchors[]: At least 3 (direct, adjacent, or proxy)
+   - each anchor: { product/service, price, currency, year, source_id, relevance }
+   - proxy_method (if no direct pricing): reimbursement schedules, procurement listings, adjacent categories
+   - willingness_to_pay_signals: value-based evidence
+
+3. regulatory_reimbursement_gates (for Health/Clinical/Defence archetypes)
+   - pathway_table: stage → evidence_required → typical_time_range → typical_cost_range → source_id
+   - adoption_evidence_required: what clinicians/buyers need to see
+   - standards_compliance: applicable standards (ISO, TGA, FDA)
+
+4. competitive_landscape_comparability
+   - direct_competitors[]: Same buyer + use case + modality
+   - adjacent_competitors[]: Overlapping markets
+   - enablers[]: Platforms, diagnostics, manufacturing partners
+   - each entry must include: { name, url, one_measurable (price/revenue/TRL/trial_stage/approval_status), source_id, differentiator }
+   - differentiators must be measurable outcomes (not adjectives)
+
+5. tam_sam_som_dual_methodology
+   - top_down: { value, method: "Parent market × segment share", inputs[], source_ids[] }
+   - bottom_up: { value, method: "Incidence × treatable pop × price × penetration", inputs[], source_ids[] }
+   - reconciliation: explanation of differences if methods diverge
+   - sensitivity: { low, mid, high } with confidence labels
+
+6. delivery_risk_mitigations
+   - risk_register[]: { risk, likelihood, impact, mitigation, owner, evidence_of_precedent }
+   - align risks to rubric sections
+   - mitigations must reference partners, standards, or precedent pathways
+
+7. partner_mapping_with_evidence
+   - partners[]: { name, role_in_delivery, url, validating_source_id, capability_gap_filled }
+   - each partner must have at least one validating source OR be marked "Unknown (validation needed)"
+   - capability_gaps: what partners are missing
 
 ========== MANDATORY PIPELINE DESIGN (applies to ALL grants) ==========
 
@@ -1761,6 +2007,27 @@ Each step's prompt_template MUST be at least 1,500 characters and include ALL of
 6. Include UNKNOWN HANDLING protocol (unknowns array + what's needed to validate).
 
 7. Include OUTPUT JSON SCHEMA with exact fields, types, and constraints.
+
+8. EVIDENCE-TYPE CHECK (add before OUTPUT SCHEMA):
+   "Before writing, verify each claim uses the correct evidence type per the 
+    Evidence-Type Matching Rule. If evidence type mismatch is detected 
+    (e.g., using epidemiology for market sizing), replace the claim with 
+    'Unknown (evidence type mismatch)' and log it to unknowns[]."
+
+9. ASSESSOR INSIGHT OUTPUT CHECK (add at end):
+   "Before finalizing output, verify it does NOT read like a generic summary. 
+    If output is generic, rewrite to include:
+    - Decision implications (who decides, why, when)
+    - Quantified constraints (not vague qualifiers)
+    - Validated anchors with source_ids
+    - Explicit unknowns with proxy methods where attempted"
+
+10. SOURCE ID RULES (strengthen existing):
+   "Internal placeholders like [article], [Source1], {TBD}, [ARTICLE-1], or 
+    bracketed source markers are FORBIDDEN in outputs.
+    Only use source IDs from the Source Pack format S#-# (e.g., S0-1, S0-2).
+    NEVER invent source IDs. If a source_id cannot be found, use 'Unknown (no source)' 
+    and add to unknowns[]."
 
 ========== APPROVED VARIABLES ==========
 Only these variables may appear in prompt_template INPUTS/HARD RULES:
@@ -1972,6 +2239,55 @@ CRITICAL REQUIREMENTS:
 - Template variables {{...}} are ONLY for INPUTS or HARD RULES sections
 - NEVER include {{variable}} inside OUTPUT SCHEMA field descriptions
 - Follow the exact structure from the REFERENCE EXAMPLE
+
+========== ENHANCED QUALITY SCORING (must pass before output is considered 'good') ==========
+
+1. EVIDENCE-TYPE COMPLIANCE SCORE (new):
+   - Detect if market sizing references contain epidemiology paper citations (penalty: -15)
+   - Detect if numeric claims lack source_ids (penalty: -5 per missing)
+   - Detect if competitor entries lack measurable data points (penalty: -3 per entry)
+   Formula: 100 - sum(penalties), minimum 0
+
+2. ASSESSOR INSIGHT SCORE (new):
+   Requires at least:
+   - 1 decision-pathway artifact (buyer persona, procurement path, regulatory gate)
+   - 1 sensitivity range for numeric estimates
+   - 1 explicit unknown with "what_would_validate" guidance
+   
+   If missing any, auto-enhancement MUST rewrite the prompt to force:
+   - Add DECISION PATHWAY section requiring buyer/procurement artifacts
+   - Add SENSITIVITY ANALYSIS section for numeric outputs
+   - Add VALIDATION GAPS section for unknowns with next steps
+
+3. GENERICNESS PENALTY (new):
+   Detect these generic patterns and penalize:
+   - "significant market opportunity" without numbers (-5)
+   - "growing demand" without CAGR/source (-5)
+   - "competitive advantage" without measurable differentiator (-5)
+   - Adjective-only competitor descriptions (-3 per entry)
+
+4. FORBIDDEN PATTERN CHECK (existing, strengthened):
+   - {TBD}, [Insert...], [PROJECT NAME], Hypothetical [Entity] → -10 each
+   - [S0-1], [ARTICLE-1] in final OUTPUT SCHEMA descriptions → -10 each
+   - "Source 1", "Source 2" → -10 each
+   - Evidence type mismatch (epi → market) → -15 each
+
+ENHANCEMENT INSTRUCTIONS (if score < 70):
+
+For prompts failing EVIDENCE-TYPE COMPLIANCE:
+- Add explicit "EVIDENCE-TYPE MATCHING" section with the claim-source mapping table
+- Add instruction: "Cross-check every market/revenue claim against source type before output"
+
+For prompts failing ASSESSOR INSIGHT SCORE:
+- Add "COMMERCIAL REALITY REQUIREMENTS" section mandating buyer pathway and pricing anchors
+- Add "SENSITIVITY RANGE REQUIREMENT" for all numeric estimates
+- Add "UNKNOWN DOCUMENTATION" section with what_is_missing + what_would_validate format
+
+For prompts failing GENERICNESS check:
+- Add "ANTI-GENERICNESS RULES" section:
+  * Replace "significant" with specific numbers or ranges
+  * Replace "growing" with CAGR % and source
+  * Replace adjective-based differentiators with measurable outcomes
 
 FORBIDDEN OUTPUT PATTERNS (these must be explicitly banned in HARD RULES):
 - {TBD} or any {bracketed_placeholder}
