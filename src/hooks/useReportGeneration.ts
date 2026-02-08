@@ -435,7 +435,7 @@ export function useReportGeneration(
 
       toast({
         title: "Report generation started",
-        description: "This typically takes 2-3 minutes. You'll see progress updates below.",
+        description: "This typically takes around 15 minutes. You'll see progress updates below.",
       });
 
       // Start polling for updates
