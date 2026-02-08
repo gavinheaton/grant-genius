@@ -1666,16 +1666,113 @@ Return ONLY valid JSON matching the schema.`;
     const extractionResult = await extractionResponse.json();
     let suggestions;
     
-    const toolCall = extractionResult.choices?.[0]?.message?.tool_calls?.[0];
-    if (toolCall?.function?.arguments) {
-      suggestions = JSON.parse(toolCall.function.arguments);
-    } else {
-      const content = extractionResult.choices?.[0]?.message?.content;
+    // Log response structure for debugging
+    console.log("Extraction response structure:", JSON.stringify({
+      hasChoices: !!extractionResult.choices,
+      choiceCount: extractionResult.choices?.length,
+      hasMessage: !!extractionResult.choices?.[0]?.message,
+      hasToolCalls: !!extractionResult.choices?.[0]?.message?.tool_calls,
+      toolCallCount: extractionResult.choices?.[0]?.message?.tool_calls?.length,
+      hasFunctionCall: !!extractionResult.choices?.[0]?.message?.function_call,
+      contentLength: extractionResult.choices?.[0]?.message?.content?.length,
+      finishReason: extractionResult.choices?.[0]?.finish_reason,
+    }, null, 2));
+    
+    const message = extractionResult.choices?.[0]?.message;
+    
+    // Try standard OpenAI format (tool_calls[0].function.arguments)
+    if (message?.tool_calls?.[0]?.function?.arguments) {
+      try {
+        suggestions = JSON.parse(message.tool_calls[0].function.arguments);
+        console.log("Successfully parsed tool call arguments");
+      } catch (parseError) {
+        console.error("Failed to parse tool call arguments:", parseError);
+        console.error("Raw arguments (first 1000 chars):", message.tool_calls[0].function.arguments.substring(0, 1000));
+      }
+    }
+    
+    // Try legacy function_call format
+    if (!suggestions && message?.function_call?.arguments) {
+      try {
+        suggestions = JSON.parse(message.function_call.arguments);
+        console.log("Successfully parsed function_call arguments");
+      } catch (parseError) {
+        console.error("Failed to parse function_call arguments:", parseError);
+        console.error("Raw function_call (first 1000 chars):", message.function_call.arguments.substring(0, 1000));
+      }
+    }
+    
+    // Try Gemini's direct args format (not stringified)
+    if (!suggestions && message?.tool_calls?.[0]?.args) {
+      suggestions = message.tool_calls[0].args;
+      console.log("Used direct args from tool_calls (Gemini format)");
+    }
+    
+    // Fallback: try to extract JSON from content
+    if (!suggestions) {
+      const content = message?.content;
       if (content) {
+        console.log("Attempting content fallback, content length:", content.length);
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          suggestions = JSON.parse(jsonMatch[0]);
+          try {
+            suggestions = JSON.parse(jsonMatch[0]);
+            console.log("Successfully parsed from content fallback");
+          } catch (parseError) {
+            console.error("Failed to parse content JSON:", parseError);
+            console.error("Raw match (first 1000 chars):", jsonMatch[0].substring(0, 1000));
+          }
+        } else {
+          console.error("No JSON object found in content");
+          console.error("Content preview (first 500 chars):", content.substring(0, 500));
         }
+      } else {
+        console.error("No content in response message");
+      }
+    }
+    
+    // Retry with stable model if initial parse failed
+    if (!suggestions) {
+      console.log("Initial extraction failed, retrying with gemini-2.5-flash...");
+      
+      const retryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [
+            { role: "system", content: extractionPrompt },
+            { role: "user", content: `Analyze these grant guidelines and extract the Grant DNA Pack. Return ONLY valid JSON:\n\n${guidelines_text.substring(0, 60000)}` },
+          ],
+        }),
+      });
+      
+      if (retryResponse.ok) {
+        const retryResult = await retryResponse.json();
+        console.log("Retry response structure:", JSON.stringify({
+          hasChoices: !!retryResult.choices,
+          hasContent: !!retryResult.choices?.[0]?.message?.content,
+          contentLength: retryResult.choices?.[0]?.message?.content?.length,
+        }, null, 2));
+        
+        const retryContent = retryResult.choices?.[0]?.message?.content;
+        if (retryContent) {
+          const jsonMatch = retryContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            try {
+              suggestions = JSON.parse(jsonMatch[0]);
+              console.log("Successfully parsed from retry response");
+            } catch (parseError) {
+              console.error("Failed to parse retry JSON:", parseError);
+              console.error("Retry raw match (first 1000 chars):", jsonMatch[0].substring(0, 1000));
+            }
+          }
+        }
+      } else {
+        console.error("Retry request failed:", retryResponse.status);
       }
     }
 
@@ -1684,7 +1781,7 @@ Return ONLY valid JSON matching the schema.`;
         .from("grant_versions")
         .update({ ai_analysis_status: "failed" })
         .eq("id", grant_version_id);
-      throw new Error("Failed to parse extraction response");
+      throw new Error("Failed to parse extraction response after all attempts");
     }
 
     console.log("Step 2: Classifying grant archetype...");
