@@ -1381,21 +1381,94 @@ export function createHtmlAssemblySteps(maxAIStep: number) {
   const stepRefs = Array.from({ length: maxAIStep + 1 }, (_, i) => `{{step${i}}}`).join(", ");
 
   return [
+    // NEW: Pre-Assembly Sanitiser - scans all outputs for forbidden tokens
+    {
+      step_name: "pre_assembly_sanitiser",
+      step_description: "Scan all step outputs for forbidden tokens and produce clean versions for assembly",
+      phase: "assembly" as const,
+      model_tier: "lite" as const,
+      prompt_template: `STEP ${maxAIStep + 1} — Pre-Assembly Sanitiser
+
+${generateWriterStancePreamble()}
+
+PURPOSE:
+Scan ALL previous step outputs for forbidden tokens, internal markers, and placeholders.
+Produce clean_step_outputs that report_assembly will use.
+
+INPUTS:
+- All prior step outputs: ${stepRefs}
+- Source Pack: {{step0}}
+
+FORBIDDEN TOKENS TO DETECT AND REMOVE:
+1. Internal source IDs: [S0-1], [ARTICLE-1], [SEARCH-1], [SOURCE-1], [step9]
+2. Naked source IDs: S0-1, S1-3 (without brackets)
+3. Placeholders: {TBD}, [TBD], [Insert...], [PROJECT NAME], [COMPANY]
+4. Budget placeholders: $[Amount], $[...], $Z
+5. Single-letter stand-ins: A%, B%, C%, "B additional jobs", "X million"
+6. Generic markers: [article], [Source1], Source 1, Source 2
+7. Undefined markers: undefined [, ] undefined
+
+FOR EACH FORBIDDEN TOKEN FOUND:
+1. Log to issues_found[] with:
+   - location: step name + field path (e.g., "step3.market_sizing.tam")
+   - offending_text: the exact forbidden text
+   - token_type: category of violation
+   - sentence_context: surrounding sentence
+
+2. Apply fix based on type:
+   - Internal source ID → Look up in Source Pack, convert to (Author, Year)
+   - If source not found → "Unknown (no validated source found)"
+   - Number placeholder ($Z, A%) → Apply proxy protocol OR mark as "Unknown (calculation required)"
+   - Evidence type mismatch → "Unknown (evidence type mismatch)"
+
+EVIDENCE-TYPE VALIDATION:
+Before passing through any claim:
+- Market size/pricing claims must NOT cite epidemiology/disease burden papers
+- Disease burden claims must NOT cite market reports
+- If mismatch detected: replace with "Unknown (evidence type mismatch)" + log to unknowns[]
+
+OUTPUT JSON SCHEMA:
+{
+  "clean_step_outputs": {
+    "step0": { /* sanitized version of step0 */ },
+    "step1": { /* sanitized version of step1 */ }
+  },
+  "issues_found": [
+    {
+      "location": "step3.tam.value",
+      "offending_text": "$Z million",
+      "token_type": "single_letter_standin",
+      "sentence_context": "The TAM is estimated at $Z million based on...",
+      "fix_applied": "replaced_with_unknown"
+    }
+  ],
+  "unknowns": [
+    {
+      "type": "calculation_required",
+      "original_token": "$Z million",
+      "what_is_missing": "Actual TAM value",
+      "what_would_validate": "Market research report with AU market size"
+    }
+  ]
+}`
+    },
     {
       step_name: "assemble_sections_html",
       step_description: "Generate report sections as clean HTML narrative",
       phase: "assembly" as const,
       model_tier: "balanced" as const,
-      prompt_template: `STEP ${maxAIStep + 1} — Assemble Sections as HTML
+      prompt_template: `STEP ${maxAIStep + 2} — Assemble Sections as HTML
 
 ${generateWriterStancePreamble()}
 
 INPUTS (from previous steps):
 - All prior step outputs: ${stepRefs}
+- Pre-Assembly Sanitiser output: {{step${maxAIStep + 1}}}
 - Grant: {{grantName}} ({{grantVersionLabel}})
 
 PURPOSE:
 Transform research findings into a cohesive HTML narrative report for grant assessors.
+Use the clean_step_outputs from the Pre-Assembly Sanitiser step.
 
 OUTPUT REQUIREMENTS (CRITICAL):
 1. Return ONLY valid JSON with a single top-level object
@@ -1409,7 +1482,13 @@ REQUIRED SECTIONS:
 3. Unmet Need and Australian Relevance
 4. Commercialisation Pathways (if applicable)
 5. Competitive Landscape
-6. Market Sizing (TAM/SAM/SOM)
+6. Market Sizing (TAM/SAM/SOM) with:
+   - BOTH top-down and bottom-up methodologies presented
+   - Assumptions register as a table with columns: ID, Description, Value, Confidence, Defensibility, Source
+   - Sensitivity summary as a table showing base/low/high for TAM/SAM/SOM
+   - Reconciliation explanation in assessor language
+   - Sanity check results (passed/failed with notes)
+   - Why assumptions are conservative / audit-ready
 7. IP and Regulatory Pathway
 8. Economic Impact
 9. Stakeholders and Partners
@@ -1420,6 +1499,13 @@ HTML FORMATTING:
 - Use <p> for paragraphs, <ul><li> for lists
 - Citation markers: <sup>[S0-1]</sup>
 - Table anchors: <!-- TABLE:competitors -->, <!-- TABLE:market_sizing -->, <!-- TABLE:partners -->
+
+FORBIDDEN (Hard Fail):
+- NO [...] bracket markers with internal IDs
+- NO {...} curly placeholders
+- NO "undefined" anywhere
+- NO $Z, A%, B%, C% single-letter stand-ins
+- NO "B additional jobs" or similar single-letter quantities
 
 OUTPUT JSON SCHEMA:
 {
@@ -1432,35 +1518,40 @@ OUTPUT JSON SCHEMA:
       step_description: "Build HTML tables and deduplicated source list",
       phase: "assembly" as const,
       model_tier: "balanced" as const,
-      prompt_template: `STEP ${maxAIStep + 2} — Build Tables and Sources (HTML)
+      prompt_template: `STEP ${maxAIStep + 3} — Build Tables and Sources (HTML)
 
 ${generateWriterStancePreamble()}
 
 INPUTS:
 - All prior step outputs: ${stepRefs}
+- Pre-Assembly Sanitiser output: {{step${maxAIStep + 1}}}
 
 PURPOSE:
 Compile comparison tables and consolidated citations from all research steps.
 
 TABLES TO CREATE:
 1. Competitor comparison (features, pricing, market position)
-2. TAM/SAM/SOM summary with calculations
-3. Partner capability matrix
-4. Any other tabular data from research
+2. TAM/SAM/SOM summary with calculations (MUST include both top-down and bottom-up)
+3. Assumptions register table (ID, Description, Value, Confidence, Defensibility, Source)
+4. Partner capability matrix
+5. Any other tabular data from research
 
 SOURCE CONSOLIDATION:
 Compile ALL citations from all steps into a single deduplicated list.
+Convert all [S0-#] markers to APA format: (Author, Year)
 
 OUTPUT REQUIREMENTS:
 1. Return ONLY valid JSON - no code fences
 2. First character must be {, last must be }
 3. Tables must be valid HTML <table> elements
+4. NO forbidden tokens in any table content
 
 OUTPUT JSON SCHEMA:
 {
   "tables": {
     "competitors": "<table class=\\"data-table\\">...</table>",
     "market_sizing": "<table class=\\"data-table\\">...</table>",
+    "assumptions_register": "<table class=\\"data-table\\">...</table>",
     "partners": "<table class=\\"data-table\\">...</table>"
   },
   "all_sources": [
@@ -1473,28 +1564,36 @@ OUTPUT JSON SCHEMA:
       step_description: "Merge sections, tables, and sources into final report_html",
       phase: "render" as const,
       model_tier: "balanced" as const,
-      prompt_template: `STEP ${maxAIStep + 3} — Finalize Report (HTML)
+      prompt_template: `STEP ${maxAIStep + 4} — Finalize Report (HTML)
 
 ${generateWriterStancePreamble()}
 
 INPUT DATA:
-- Step ${maxAIStep + 1} ({{step${maxAIStep + 1}}}): Contains "sections_html" and "data_gaps"
-- Step ${maxAIStep + 2} ({{step${maxAIStep + 2}}}): Contains "tables" and "all_sources"
+- Step ${maxAIStep + 2} ({{step${maxAIStep + 2}}}): Contains "sections_html" and "data_gaps"
+- Step ${maxAIStep + 3} ({{step${maxAIStep + 3}}}): Contains "tables" and "all_sources"
 
 YOUR TASK:
 1. PARSE the JSON from both steps
-2. Get "sections_html" from Step ${maxAIStep + 1}
-3. Replace table anchors with tables from Step ${maxAIStep + 2}:
+2. Get "sections_html" from Step ${maxAIStep + 2}
+3. Replace table anchors with tables from Step ${maxAIStep + 3}:
    - <!-- TABLE:competitors --> → tables.competitors
    - <!-- TABLE:market_sizing --> → tables.market_sizing
+   - <!-- TABLE:assumptions_register --> → tables.assumptions_register
    - <!-- TABLE:partners --> → tables.partners
-4. Append References section with formatted citations
+4. Append References section with formatted APA citations
 5. Combine data_gaps from both steps
 
 CRITICAL OUTPUT REQUIREMENTS:
 1. Return ONLY valid JSON - NO code fences
 2. First character must be {, last must be }
 3. "report_html" MUST contain complete merged HTML
+
+FORBIDDEN (Hard Fail - Reject if present):
+- [S0-1], [ARTICLE-1], [step9], [Source1] or any bracketed internal markers
+- {TBD}, $[Amount] or any curly/budget placeholders
+- $Z, A%, B%, C% or any single-letter stand-ins
+- "B additional jobs", "X million" or single-letter quantities
+- "undefined" anywhere in the output
 
 OUTPUT JSON SCHEMA:
 {
@@ -1503,6 +1602,60 @@ OUTPUT JSON SCHEMA:
   "all_sources": [{"id": "S0-1", "mla_citation": "...", "url": "..."}],
   "data_gaps": ["gap1", "gap2"],
   "tables": {"competitors": "...", "market_sizing": "...", "partners": "..."}
+}`
+    },
+    {
+      step_name: "finalize_citations",
+      step_description: "Final citation validation gate and APA normalization",
+      phase: "render" as const,
+      model_tier: "lite" as const,
+      prompt_template: `STEP ${maxAIStep + 5} — Finalize Citations (Validation Gate)
+
+${generateWriterStancePreamble()}
+
+INPUT DATA:
+- Step ${maxAIStep + 4} ({{step${maxAIStep + 4}}}): Contains "report_html" and "all_sources"
+
+YOUR TASK:
+Perform final citation validation and produce clean APA-formatted report.
+
+BIDIRECTIONAL VALIDATION (Mandatory):
+1. Every in-text citation MUST map to exactly one References entry
+2. Every References entry MUST be cited at least once OR removed
+3. No orphan citations (cited but no reference)
+4. No orphan references (reference but never cited)
+5. No malformed "n.d." citations unless genuinely no date (add retrieval date if so)
+
+FINAL FORBIDDEN TOKEN SCAN:
+Scan the entire report_html for ANY remaining forbidden tokens:
+- [S0-1], [ARTICLE-1], [step9], [Source1] - internal markers
+- {TBD}, $[Amount] - placeholders
+- $Z, A%, B%, C% - single-letter stand-ins
+- "undefined" adjacent to markers
+
+If ANY forbidden token found:
+- Remove it and log to violations[]
+- If removal breaks sentence meaning: replace with "(citation unavailable)"
+
+CITATION FORMAT:
+All citations must be APA in-text format: (Author, Year)
+Linked to references section: <a href="#ref-N">(Author, Year)</a>
+
+OUTPUT JSON SCHEMA:
+{
+  "report_html": "<h2>Executive Summary</h2>...[final clean HTML]...",
+  "references_html": "<section class=\\"references-section\\"><h2>References</h2><ol>...</ol></section>",
+  "citation_audit": {
+    "total_citations": 0,
+    "citations_resolved": 0,
+    "orphan_citations_removed": 0,
+    "orphan_references_removed": 0,
+    "malformed_dates_fixed": 0
+  },
+  "violations": [
+    { "token": "[S0-1]", "location": "paragraph 3", "action": "removed" }
+  ],
+  "unknowns": []
 }`
     }
   ];

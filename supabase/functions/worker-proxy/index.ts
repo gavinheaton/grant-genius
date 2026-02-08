@@ -545,6 +545,9 @@ const FORBIDDEN_PATTERNS_LINT = [
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
   
+  // Naked source IDs (without brackets)
+  { pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked source ID S0-1' },
+  
   // Step reference patterns
   { pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
   { pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
@@ -572,6 +575,17 @@ const FORBIDDEN_PATTERNS_LINT = [
   { pattern: /\{TBD\}/gi, name: '{TBD}' },
   { pattern: /\{value\}/gi, name: '{value}' },
   { pattern: /\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, name: 'Curly placeholder {name}' },
+  
+  // Single-letter quantity placeholders (assessor-grade requirement)
+  { pattern: /\$Z\b/gi, name: '$Z placeholder' },
+  { pattern: /\bA%\b/g, name: 'A% placeholder' },
+  { pattern: /\bB%\b/g, name: 'B% placeholder' },
+  { pattern: /\bC%\b/g, name: 'C% placeholder' },
+  
+  // Single-letter stand-ins in context
+  { pattern: /\b[A-Z]\s+(?:additional|new|total)\s+(?:jobs?|employees?|FTEs?)/gi, name: 'Single-letter job placeholder' },
+  { pattern: /\$[A-Z]\s+(?:million|billion)/gi, name: 'Single-letter currency' },
+  { pattern: /\b[XYZ]\s+(?:million|billion|percent)/gi, name: 'X/Y/Z placeholder' },
   
   // "undefined" adjacent to brackets or source markers (HARD FAILURE)
   { pattern: /undefined\s*\[/gi, name: 'undefined before bracket' },

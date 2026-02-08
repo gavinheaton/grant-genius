@@ -71,6 +71,7 @@ export const CORE_STEP_NAMES = [
   'commercialisation_logic',
   'risk_register_and_governance',
   'budget_logic_and_value_for_money',
+  'pre_assembly_sanitiser',  // Scans all outputs for forbidden tokens before assembly
   'report_assembly',
   'finalize_citations',
 ] as const;
@@ -100,7 +101,7 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
 ];
 
 const MINIMUM_PROMPT_LENGTH = 1500;
-const MINIMUM_TOTAL_STEPS = 12;
+const MINIMUM_TOTAL_STEPS = 13;  // Updated to include pre_assembly_sanitiser
 
 // ============================================================================
 // HARD-FAIL VALIDATION
@@ -543,6 +544,45 @@ export function detectRedFlags(steps: PipelineStep[]): string[] {
     
     if (!hasSanitizer) {
       flags.push('finalize_citations lacks bracket sanitizer rule');
+    }
+    
+    // Check for bidirectional citation validation requirement
+    const hasBidirectional = 
+      prompt.includes('bidirectional') ||
+      (prompt.includes('every') && prompt.includes('citation') && prompt.includes('reference')) ||
+      (prompt.includes('orphan') && (prompt.includes('citation') || prompt.includes('reference')));
+    
+    if (!hasBidirectional) {
+      flags.push('finalize_citations lacks bidirectional citation validation requirement');
+    }
+  }
+  
+  // 5. Pre-assembly sanitiser validation
+  const sanitiserStep = steps.find(s => s.step_name === 'pre_assembly_sanitiser');
+  if (sanitiserStep) {
+    const prompt = sanitiserStep.prompt_template.toLowerCase();
+    
+    const hasForbiddenTokenScan = 
+      prompt.includes('forbidden') || 
+      prompt.includes('scan') ||
+      prompt.includes('detect');
+    const hasIssuesOutput = 
+      prompt.includes('issues_found') || 
+      prompt.includes('issues[]') ||
+      prompt.includes('issues:');
+    const hasCleanOutput = 
+      prompt.includes('clean_step_outputs') || 
+      prompt.includes('clean_outputs') ||
+      prompt.includes('sanitized');
+    
+    if (!hasForbiddenTokenScan) {
+      flags.push('pre_assembly_sanitiser lacks forbidden token scan requirement');
+    }
+    if (!hasIssuesOutput) {
+      flags.push('pre_assembly_sanitiser lacks issues_found output requirement');
+    }
+    if (!hasCleanOutput) {
+      flags.push('pre_assembly_sanitiser lacks clean_step_outputs requirement');
     }
   }
 

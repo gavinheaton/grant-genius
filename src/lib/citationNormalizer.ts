@@ -120,7 +120,10 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
   
-  // Step reference patterns (new)
+  // Naked source IDs (without brackets)
+  { pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked source ID S0-1' },
+  
+  // Step reference patterns
   { pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
   { pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
   
@@ -147,6 +150,17 @@ const FORBIDDEN_PATTERNS: { pattern: RegExp; name: string }[] = [
   
   // Curly brace placeholders (exclude valid style/class attributes)
   { pattern: /\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, name: 'Curly placeholder {name}' },
+  
+  // Single-letter quantity placeholders (assessor-grade requirement)
+  { pattern: /\$Z\b/gi, name: '$Z placeholder' },
+  { pattern: /(?<![A-Za-z])A%(?![A-Za-z])/g, name: 'A% placeholder' },
+  { pattern: /(?<![A-Za-z])B%(?![A-Za-z])/g, name: 'B% placeholder' },
+  { pattern: /(?<![A-Za-z])C%(?![A-Za-z])/g, name: 'C% placeholder' },
+  
+  // Single-letter stand-in quantities in sentences
+  { pattern: /\b[A-Z]\s+(?:additional|new|total|more)\s+(?:jobs?|employees?|FTEs?|staff|positions?)/gi, name: 'Single-letter job count placeholder' },
+  { pattern: /\$[A-Z]\s+(?:million|billion|thousand|AUD|USD)/gi, name: 'Single-letter currency placeholder' },
+  { pattern: /\b[XYZ]\s+(?:million|billion|percent|%)/gi, name: 'X/Y/Z placeholder' },
   
   // "undefined" adjacent to brackets or source markers
   { pattern: /undefined\s*\[/gi, name: 'undefined before bracket' },
@@ -1064,5 +1078,226 @@ export function normalizeReportHtml(
     unknowns: result.unknowns,
     stats: result.stats,
     lintResult,
+  };
+}
+
+// ============================================================================
+// SANITIZATION ISSUE TYPE
+// ============================================================================
+
+export interface SanitizationIssue {
+  location: string;           // e.g., "step3.market_sizing.tam"
+  offending_text: string;     // e.g., "B additional jobs"
+  token_type: 'internal_source_id' | 'placeholder' | 'single_letter_standin' | 'evidence_mismatch';
+  sentence_context: string;   // Surrounding text
+  fix_applied: 'removed' | 'replaced_with_unknown' | 'proxy_applied' | 'pending';
+}
+
+// ============================================================================
+// SCAN FOR FORBIDDEN TOKENS
+// ============================================================================
+
+/**
+ * Scan content (string or object) for forbidden tokens
+ * Returns structured issues_found array with location, offending text, and token type
+ */
+export function scanForForbiddenTokens(
+  content: string | Record<string, unknown>,
+  locationPrefix: string = ''
+): SanitizationIssue[] {
+  const issues: SanitizationIssue[] = [];
+  
+  if (typeof content === 'string') {
+    // Scan string content
+    for (const { pattern, name } of FORBIDDEN_PATTERNS) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(content)) !== null) {
+        let tokenType: SanitizationIssue['token_type'] = 'placeholder';
+        if (name.includes('source ID') || name.includes('ARTICLE') || name.includes('SEARCH')) {
+          tokenType = 'internal_source_id';
+        } else if (name.includes('single-letter') || name.includes('$Z') || name.includes('%')) {
+          tokenType = 'single_letter_standin';
+        }
+        
+        issues.push({
+          location: locationPrefix,
+          offending_text: match[0],
+          token_type: tokenType,
+          sentence_context: extractSentenceContext(content, match.index, match[0].length),
+          fix_applied: 'pending'
+        });
+      }
+    }
+  } else if (typeof content === 'object' && content !== null) {
+    // Recursively scan object properties
+    for (const [key, value] of Object.entries(content)) {
+      const newPrefix = locationPrefix ? `${locationPrefix}.${key}` : key;
+      if (typeof value === 'string') {
+        issues.push(...scanForForbiddenTokens(value, newPrefix));
+      } else if (typeof value === 'object' && value !== null) {
+        issues.push(...scanForForbiddenTokens(value as Record<string, unknown>, newPrefix));
+      }
+    }
+  }
+  
+  return issues;
+}
+
+// ============================================================================
+// SANITIZE STEP OUTPUTS
+// ============================================================================
+
+export interface CleanStepOutputs {
+  clean_outputs: Record<string, unknown>;
+  issues_found: SanitizationIssue[];
+  unknowns: UnknownEntry[];
+}
+
+/**
+ * Process all step outputs and return clean versions for assembly
+ */
+export function sanitizeStepOutputs(
+  stepOutputs: Record<string, unknown>,
+  sourceMap: Map<string, SourceEntry>
+): CleanStepOutputs {
+  const issues_found: SanitizationIssue[] = [];
+  const unknowns: UnknownEntry[] = [];
+  
+  function cleanValue(value: unknown, location: string): unknown {
+    if (typeof value === 'string') {
+      let cleaned = value;
+      
+      // Scan for issues first
+      const stringIssues = scanForForbiddenTokens(value, location);
+      for (const issue of stringIssues) {
+        issue.fix_applied = 'removed';
+        issues_found.push(issue);
+      }
+      
+      // Apply forbidden pattern removal
+      for (const { pattern, name } of FORBIDDEN_PATTERNS) {
+        pattern.lastIndex = 0;
+        cleaned = cleaned.replace(pattern, (match) => {
+          unknowns.push({
+            type: 'citation_unresolved',
+            original_token: match,
+            location_hint: location,
+            what_is_missing: `Unresolved ${name}`,
+            what_would_validate: 'Valid source in source pack or applicant input'
+          });
+          return '';
+        });
+      }
+      
+      // Clean up orphan artifacts
+      cleaned = cleaned.replace(/\(\s*\)/g, '');
+      cleaned = cleaned.replace(/\s{2,}/g, ' ');
+      
+      return cleaned;
+    } else if (Array.isArray(value)) {
+      return value.map((item, idx) => cleanValue(item, `${location}[${idx}]`));
+    } else if (typeof value === 'object' && value !== null) {
+      const result: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        result[key] = cleanValue(val, `${location}.${key}`);
+      }
+      return result;
+    }
+    return value;
+  }
+  
+  const clean_outputs: Record<string, unknown> = {};
+  for (const [stepKey, stepValue] of Object.entries(stepOutputs)) {
+    clean_outputs[stepKey] = cleanValue(stepValue, stepKey);
+  }
+  
+  return { clean_outputs, issues_found, unknowns };
+}
+
+// ============================================================================
+// BIDIRECTIONAL CITATION VALIDATION
+// ============================================================================
+
+export interface CitationValidationResult {
+  passed: boolean;
+  orphan_citations: string[];      // In-text citations with no reference
+  orphan_references: string[];     // References never cited
+  malformed_dates: string[];       // "n.d." without retrieval date
+  fix_actions: string[];           // What was fixed
+}
+
+/**
+ * Validate that every in-text citation maps to a reference and vice versa
+ */
+export function validateCitationBidirectional(
+  reportHtml: string,
+  referencesHtml: string
+): CitationValidationResult {
+  const orphan_citations: string[] = [];
+  const orphan_references: string[] = [];
+  const malformed_dates: string[] = [];
+  const fix_actions: string[] = [];
+  
+  // Extract all in-text citation references (href="#ref-N")
+  const citationPattern = /href="#ref-(\d+)"/gi;
+  const citedRefs = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = citationPattern.exec(reportHtml)) !== null) {
+    citedRefs.add(`ref-${match[1]}`);
+  }
+  
+  // Extract all reference IDs from the references section
+  const refIdPattern = /id="(ref-\d+)"/gi;
+  const definedRefs = new Set<string>();
+  while ((match = refIdPattern.exec(referencesHtml)) !== null) {
+    definedRefs.add(match[1]);
+  }
+  
+  // Check for orphan citations (cited but no reference defined)
+  for (const cited of citedRefs) {
+    if (!definedRefs.has(cited)) {
+      orphan_citations.push(cited);
+    }
+  }
+  
+  // Check for orphan references (defined but never cited)
+  for (const defined of definedRefs) {
+    if (!citedRefs.has(defined)) {
+      orphan_references.push(defined);
+    }
+  }
+  
+  // Check for malformed "n.d." without retrieval date
+  const ndPattern = /\(n\.d\.\)/gi;
+  const ndMatches = referencesHtml.match(ndPattern);
+  if (ndMatches) {
+    for (const ndMatch of ndMatches) {
+      // Check if there's a "Retrieved" near this n.d.
+      const ndIdx = referencesHtml.indexOf(ndMatch);
+      const contextAfter = referencesHtml.substring(ndIdx, ndIdx + 150);
+      if (!contextAfter.toLowerCase().includes('retrieved')) {
+        malformed_dates.push('n.d. citation without retrieval date');
+      }
+    }
+  }
+  
+  // Log fix actions for orphans
+  if (orphan_references.length > 0) {
+    fix_actions.push(`Remove ${orphan_references.length} orphan reference(s)`);
+  }
+  if (orphan_citations.length > 0) {
+    fix_actions.push(`Flag ${orphan_citations.length} orphan citation(s) for review`);
+  }
+  if (malformed_dates.length > 0) {
+    fix_actions.push(`Add retrieval date to ${malformed_dates.length} n.d. citation(s)`);
+  }
+  
+  return {
+    passed: orphan_citations.length === 0 && orphan_references.length === 0 && malformed_dates.length === 0,
+    orphan_citations,
+    orphan_references,
+    malformed_dates,
+    fix_actions
   };
 }
