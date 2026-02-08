@@ -4,37 +4,190 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ChevronDown, ChevronUp, HelpCircle } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
-interface ApplicationInputs {
-  publicArticleUrl: string;
-  summary: string;
-  trl: string;
-  ipStatus: string;
+// Schema for grant-specific required inputs
+export interface RequiredInput {
+  key: string;
+  label: string;
+  type: 'text' | 'textarea' | 'select' | 'url' | 'number';
+  required: boolean;
+  help_text?: string;
+  max_length?: number;
+  max_words?: number;
+  options?: string[];
+  placeholder?: string;
 }
 
+// Base fields that are always collected (canonical)
+const BASE_FIELDS: RequiredInput[] = [
+  {
+    key: 'publicArticleUrl',
+    label: 'Public Article URL',
+    type: 'url',
+    required: true,
+    help_text: 'Link to a published article or preprint describing your research',
+    placeholder: 'https://doi.org/...'
+  },
+  {
+    key: 'summary',
+    label: '100-Word Summary',
+    type: 'textarea',
+    required: true,
+    max_words: 100,
+    placeholder: 'Write a concise summary of your research and its commercialization potential...'
+  }
+];
+
+// Optional fields that are always shown
+const OPTIONAL_BASE_FIELDS: RequiredInput[] = [
+  {
+    key: 'trl',
+    label: 'Technology Readiness Level (TRL)',
+    type: 'text',
+    required: false,
+    placeholder: 'e.g., TRL 4'
+  },
+  {
+    key: 'ipStatus',
+    label: 'IP Status',
+    type: 'text',
+    required: false,
+    placeholder: 'e.g., Patent pending'
+  }
+];
+
 interface ReportInputsProps {
-  inputs: ApplicationInputs;
-  onInputChange: (field: keyof ApplicationInputs, value: string) => void;
+  inputs: Record<string, string>;
+  onInputChange: (key: string, value: string) => void;
   disabled?: boolean;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   projectName?: string;
   onProjectNameChange?: (value: string) => void;
+  requiredInputs?: RequiredInput[];
 }
 
-export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = false, onToggleCollapse, projectName, onProjectNameChange }: ReportInputsProps) {
-  const wordCount = inputs.summary.trim().split(/\s+/).filter(Boolean).length;
+// Filter out base fields from grant-specific inputs to avoid duplication
+function getGrantSpecificFields(requiredInputs: RequiredInput[]): RequiredInput[] {
+  const baseKeys = [...BASE_FIELDS, ...OPTIONAL_BASE_FIELDS].map(f => f.key);
+  // Also filter out semantic equivalents of base fields
+  const semanticEquivalents = [
+    'project_summary', 'research_summary', 'project_description', 'executive_summary',
+    'article_url', 'technology_readiness_level', 'ip_status_description', 'project_title'
+  ];
+  const excludeKeys = [...baseKeys, ...semanticEquivalents];
+  
+  return requiredInputs.filter(input => !excludeKeys.includes(input.key));
+}
+
+export function ReportInputs({ 
+  inputs, 
+  onInputChange, 
+  disabled, 
+  isCollapsed = false, 
+  onToggleCollapse, 
+  projectName, 
+  onProjectNameChange,
+  requiredInputs = []
+}: ReportInputsProps) {
+  const summary = inputs.summary || '';
+  const wordCount = summary.trim().split(/\s+/).filter(Boolean).length;
+
+  // Get grant-specific fields (excluding base fields)
+  const grantSpecificFields = getGrantSpecificFields(requiredInputs);
 
   // Truncate URL for collapsed display
-  const truncatedUrl = inputs.publicArticleUrl.length > 40 
-    ? inputs.publicArticleUrl.substring(0, 40) + "..." 
-    : inputs.publicArticleUrl;
+  const publicArticleUrl = inputs.publicArticleUrl || '';
+  const truncatedUrl = publicArticleUrl.length > 40 
+    ? publicArticleUrl.substring(0, 40) + "..." 
+    : publicArticleUrl;
   
   // Truncate project name for collapsed display
   const truncatedProjectName = projectName && projectName.length > 30 
     ? projectName.substring(0, 30) + "..." 
     : projectName;
+
+  // Render a dynamic field based on its type
+  const renderField = (field: RequiredInput) => {
+    const value = inputs[field.key] || '';
+    const fieldWordCount = field.max_words ? value.trim().split(/\s+/).filter(Boolean).length : 0;
+    
+    return (
+      <div key={field.key} className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <Label htmlFor={field.key}>
+              {field.label} {field.required && <span className="text-destructive">*</span>}
+            </Label>
+            {field.help_text && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    <p className="text-xs">{field.help_text}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
+          </div>
+          {field.max_words && (
+            <span className={`text-xs ${fieldWordCount > field.max_words ? "text-destructive" : "text-muted-foreground"}`}>
+              {fieldWordCount}/{field.max_words} words
+            </span>
+          )}
+        </div>
+        
+        {field.type === 'textarea' ? (
+          <Textarea
+            id={field.key}
+            placeholder={field.placeholder}
+            value={value}
+            onChange={(e) => onInputChange(field.key, e.target.value)}
+            rows={4}
+            className="resize-none"
+            disabled={disabled}
+            maxLength={field.max_length}
+          />
+        ) : field.type === 'select' && field.options ? (
+          <Select
+            value={value}
+            onValueChange={(val) => onInputChange(field.key, val)}
+            disabled={disabled}
+          >
+            <SelectTrigger id={field.key}>
+              <SelectValue placeholder={field.placeholder || `Select ${field.label.toLowerCase()}`} />
+            </SelectTrigger>
+            <SelectContent>
+              {field.options.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            id={field.key}
+            type={field.type === 'url' ? 'url' : field.type === 'number' ? 'number' : 'text'}
+            placeholder={field.placeholder}
+            value={value}
+            onChange={(e) => onInputChange(field.key, e.target.value)}
+            disabled={disabled}
+            maxLength={field.max_length}
+          />
+        )}
+        
+        {field.help_text && field.type !== 'select' && (
+          <p className="text-xs text-muted-foreground">{field.help_text}</p>
+        )}
+      </div>
+    );
+  };
 
   return (
     <Card className="shadow-card">
@@ -58,7 +211,7 @@ export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = fa
         </CardHeader>
         <CollapsibleContent className="animate-accordion-down data-[state=closed]:animate-accordion-up">
           <CardContent className="space-y-6 pt-0">
-            {/* Project Name */}
+            {/* Project Name - Always first */}
             <div className="space-y-2">
               <Label htmlFor="projectName">Project Name</Label>
               <Input
@@ -73,67 +226,33 @@ export function ReportInputs({ inputs, onInputChange, disabled, isCollapsed = fa
               </p>
             </div>
 
-            {/* Public Article URL */}
-            <div className="space-y-2">
-              <Label htmlFor="publicArticleUrl">
-                Public Article URL <span className="text-destructive">*</span>
-              </Label>
-              <Input
-                id="publicArticleUrl"
-                type="url"
-                placeholder="https://doi.org/..."
-                value={inputs.publicArticleUrl}
-                onChange={(e) => onInputChange("publicArticleUrl", e.target.value)}
-                disabled={disabled}
-              />
-              <p className="text-xs text-muted-foreground">
-                Link to a published article or preprint describing your research
-              </p>
-            </div>
+            {/* Base Required Fields */}
+            {BASE_FIELDS.map(renderField)}
 
-            {/* 100-word Summary */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="summary">
-                  100-Word Summary <span className="text-destructive">*</span>
-                </Label>
-                <span className={`text-xs ${wordCount > 100 ? "text-destructive" : "text-muted-foreground"}`}>
-                  {wordCount}/100 words
-                </span>
+            {/* Grant-Specific Dynamic Fields */}
+            {grantSpecificFields.length > 0 && (
+              <div className="space-y-6 pt-2 border-t">
+                <p className="text-sm font-medium text-muted-foreground pt-4">
+                  Grant-Specific Information
+                </p>
+                {grantSpecificFields.map(renderField)}
               </div>
-              <Textarea
-                id="summary"
-                placeholder="Write a concise summary of your research and its commercialization potential..."
-                value={inputs.summary}
-                onChange={(e) => onInputChange("summary", e.target.value)}
-                rows={4}
-                className="resize-none"
-                disabled={disabled}
-              />
-            </div>
+            )}
 
-            {/* Optional Fields */}
+            {/* Optional Base Fields */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="trl">Technology Readiness Level (TRL)</Label>
-                <Input
-                  id="trl"
-                  placeholder="e.g., TRL 4"
-                  value={inputs.trl}
-                  onChange={(e) => onInputChange("trl", e.target.value)}
-                  disabled={disabled}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="ipStatus">IP Status</Label>
-                <Input
-                  id="ipStatus"
-                  placeholder="e.g., Patent pending"
-                  value={inputs.ipStatus}
-                  onChange={(e) => onInputChange("ipStatus", e.target.value)}
-                  disabled={disabled}
-                />
-              </div>
+              {OPTIONAL_BASE_FIELDS.map(field => (
+                <div key={field.key} className="space-y-2">
+                  <Label htmlFor={field.key}>{field.label}</Label>
+                  <Input
+                    id={field.key}
+                    placeholder={field.placeholder}
+                    value={inputs[field.key] || ''}
+                    onChange={(e) => onInputChange(field.key, e.target.value)}
+                    disabled={disabled}
+                  />
+                </div>
+              ))}
             </div>
           </CardContent>
         </CollapsibleContent>
