@@ -1,150 +1,223 @@
 
 
-# Add Credit Consumption for Manual Reports
+# Create Consolidated Pipeline Generator Prompt Documentation
 
-## Problem
+## Overview
 
-Currently, manual reports do not consume credits. The frontend checks for available credits before allowing submission, but neither the `submit-manual-request` nor `complete-manual-report` Edge Functions actually consume the entitlement.
-
-**Current Flow (Manual Reports):**
-1. User clicks "Submit for Review"
-2. Frontend checks `hasAvailableReport` (correct)
-3. `submit-manual-request` updates application status (no credit consumption)
-4. Admin completes report via `complete-manual-report` (no credit consumption)
-5. User receives report without paying
-
-**Comparison with Regular Reports:**
-- Regular reports consume credits in `generate-report` at the start of processing
-- A consumption record is created and linked to the report run
-- If the report fails, credits are refunded
+This plan creates a single markdown document that captures all the prompts and contracts used by the Pipeline Generator system (`process-grant-guidelines`). The document will serve as a reference for reviewing, auditing, and iterating on the prompt architecture.
 
 ---
 
-## Solution
+## Document Structure
 
-Add credit consumption to the `submit-manual-request` function, matching the pattern used in `generate-report`. This ensures:
+The consolidated document will be organized into these sections:
 
-1. Credits are consumed when the user submits (upfront payment)
-2. A consumption record links the entitlement to the eventual report
-3. Prevents users from submitting multiple requests without credits
-
----
-
-## Implementation Details
-
-### File: `supabase/functions/submit-manual-request/index.ts`
-
-Add the following logic after verifying the application but before updating the status:
-
-| Step | Description |
-|------|-------------|
-| 1 | Query user's entitlements for `REPORT_ONE_OFF` type |
-| 2 | Find an entitlement with available credits (not expired, `quantity > used_quantity`) |
-| 3 | If no credits available, return 402 error with appropriate message |
-| 4 | Increment `used_quantity` on the entitlement |
-| 5 | Create `entitlement_consumptions` record (without `report_id` for now) |
-| 6 | Store the `consumption_id` in the application for linking later |
-
-### File: `supabase/functions/complete-manual-report/index.ts`
-
-Add logic to link the consumption record to the report:
-
-| Step | Description |
-|------|-------------|
-| 1 | After creating the report, find the consumption record for this application |
-| 2 | Update the consumption record with the `report_id` |
+| Section | Content |
+|---------|---------|
+| 1. Core Contracts | Writer Stance and Assessor Insight contracts injected into all prompts |
+| 2. Grant Archetypes | Classification system and module library |
+| 3. AI Call #1 | Grant DNA Pack extraction prompt |
+| 4. AI Call #2 | Research pipeline generation meta-prompt |
+| 5. Grant Writer Core Steps | Default templates for mandatory research steps |
+| 6. Assembly Steps | HTML assembly and citation cleaning prompts |
+| 7. QA Gates | Validation step template |
+| 8. Quality Enhancement | Auto-enhancement prompts for low-quality steps |
+| 9. Validation Rules | Forbidden patterns, quality scoring, variable flow |
 
 ---
 
-## Database Consideration
+## File Location
 
-The `entitlement_consumptions` table has `report_id` and `report_run_id` columns. For manual reports:
-- `report_run_id` will link to the placeholder manual run
-- `report_id` will be updated when the report is completed
+```text
+docs/pipeline-generator-prompts.md
+```
 
-We may need to add an `application_id` to `entitlement_consumptions` to track manual submissions before the report exists, OR store the `entitlement_consumption_id` on the application.
-
-**Recommended approach:** Store `entitlement_consumption_id` on the `applications` table to track which consumption record is associated with a manual submission. This allows `complete-manual-report` to easily update the consumption when the report is created.
+This keeps documentation separate from source code while being accessible for review.
 
 ---
 
-## Changes Summary
+## Content Summary
 
-| File | Changes |
-|------|---------|
-| Database migration | Add `entitlement_consumption_id` column to `applications` table |
-| `supabase/functions/submit-manual-request/index.ts` | Add entitlement check, consumption logic, and store consumption ID |
-| `supabase/functions/complete-manual-report/index.ts` | Link consumption record to report when created |
+### 1. Core Contracts
+
+**Writer Stance Contract** (~25 lines)
+- Professional grant writer persona
+- Tone rules: no hype, confidence labels, additionality, jurisdiction benefit
+- Evidence rules: source_ids, no placeholders, proxy estimates
+- Output constraints: valid JSON only
+
+**Assessor Insight Contract** (~60 lines)
+- Evidence-type matching table (market vs epidemiology sources)
+- Assumption discipline format
+- Proxy estimate requirements with sensitivity
+- Commercial reality layer (buyer pathway, pricing anchors)
+- Competitor comparability framework
+- Additionality and jurisdiction benefit requirements
 
 ---
 
-## Edge Cases
+### 2. Grant Archetypes
 
-1. **User has no credits**: Return 402 error, frontend already handles this by showing purchase modal
-2. **User cancels before completion**: May need a separate "cancel manual request" flow to refund (future enhancement)
-3. **Admin never completes**: Credits remain consumed (same as regular reports that fail permanently)
+**10 archetypes defined:**
+- Commercialisation/Innovation
+- R&D/Research
+- Infrastructure/Capability
+- Social Impact/Community
+- Export/Trade
+- Climate/Environment
+- Health/Clinical Translation
+- Defence/Sovereign Capability
+- Arts/Culture
+- Education/Workforce
+
+**Module Library:** 8 modules with archetype-conditional inclusion
+
+---
+
+### 3. AI Call #1: Extract Grant DNA Pack
+
+**Purpose:** Analyze guidelines PDF and extract structured metadata
+
+**Tool function:** `extract_grant_dna_pack`
+
+**Extracts:**
+- Required inputs (form fields)
+- Rubric/assessment criteria with weights
+- Grant summary
+- Program profile (jurisdiction, applicant types, funding type)
+- Compliance rules (mandatory sections, forbidden claims)
+
+---
+
+### 4. AI Call #2: Generate Research Pipeline
+
+**Purpose:** Design a bespoke research pipeline based on extracted metadata
+
+**Tool function:** `create_pipeline`
+
+**Mega-prompt components (~600 lines):**
+- Authoritative inputs injection (rubric JSON, required inputs JSON, guidelines)
+- Archetype and selected modules context
+- Writer Stance Contract (full)
+- Assessor Insight Contract (full)
+- Evidence-type validation gate
+- Commercial reality layer requirements
+- Forbidden output patterns
+- Mandatory proxy protocol for TAM/SAM/SOM
+- Grant Writer Core step structure (9 mandatory steps)
+- Assembly step requirements
+- Self-validation instructions
+
+---
+
+### 5. Grant Writer Core Step Templates
+
+**9 mandatory steps with full prompt templates:**
+
+| Step | Name | Purpose |
+|------|------|---------|
+| 0 | build_source_pack | Curate 12-25 evidence sources |
+| 1 | rubric_mapping_matrix | Map criteria to evidence types |
+| 2 | required_inputs_coverage_map | Checklist of application inputs |
+| 3 | assumptions_register | Structured assumptions with confidence |
+| 4 | tam_sam_som_dual_methodology | Market sizing with top-down + bottom-up |
+| 5 | additionality_and_benefit_case | Counterfactual and jurisdiction benefit |
+| 6 | delivery_plan_and_milestones | Timeline, TRL progression, validation |
+| 7 | risk_register_and_governance | Risks, mitigations, compliance |
+| 8 | budget_logic_and_value_for_money | Cost categories, co-contribution, VFM |
+
+Each template includes:
+- INPUTS section with variable references
+- HARD RULES section (5+ constraints)
+- UNKNOWN HANDLING protocol
+- OUTPUT JSON SCHEMA with field definitions
+
+---
+
+### 6. Assembly Steps
+
+**4 HTML assembly steps:**
+
+| Step | Name | Purpose |
+|------|------|---------|
+| N+1 | assemble_sections_html | Transform research into narrative HTML |
+| N+2 | build_tables_sources_html | Generate data tables and source list |
+| N+3 | clean_citations_apa | Convert internal IDs to numbered links |
+| N+4 | finalize_report_html | Merge sections, tables, citations, data gaps |
+
+---
+
+### 7. QA Gates Step
+
+**Validation step with 3 gates:**
+- Gate 1: Citation Integrity (source_id validation)
+- Gate 2: Criteria Coverage (rubric mapping check)
+- Gate 3: Assessor Readiness (narrative spine, additionality, evidence quality)
+
+---
+
+### 8. Quality Enhancement Prompt
+
+**Auto-enhancement for prompts scoring below threshold:**
+- Adds missing sections (HARD RULES, FORBIDDEN PATTERNS, PROXY PROTOCOL)
+- Expands prompts to 1,500+ characters
+- Removes forbidden patterns
+- Adds evidence-type compliance checks
+- Adds assessor insight requirements
+- Adds anti-genericness rules
+
+---
+
+### 9. Validation Rules
+
+**Forbidden Patterns** (14 patterns):
+```text
+{TBD}, [Insert...], Hypothetical [X], [PROJECT NAME], [COMPANY], 
+{value}, Source 1/2, [Your..., {}, [TBD], $Z, A%, B%, C%
+```
+
+**Quality Scoring Rubric** (100 points):
+- Context header: 15 pts
+- Hard rules section: 20 pts
+- Output schema: 20 pts
+- URL validation: 15 pts
+- Unknown handling: 15 pts
+- Placeholder prohibition: 10 pts
+- Adequate length (1500+ chars): 5 pts
+- Proxy protocol bonus: +10 pts
+- Evidence-type check bonus: +10 pts
+- Assessor insight bonus: +10 pts
+- Sensitivity range bonus: +5 pts
+- Forbidden pattern penalty: -5 pts each
+
+**Variable Flow Validation:**
+- Base variables: summary, publicArticleUrl, articleContent, trl, ipStatus, grant context, etc.
+- Dynamic input keys from required_inputs_json
+- Step references: {{step0}} through {{stepN-1}}
+- Forward references blocked
+- Unresolved variables auto-fixed
 
 ---
 
 ## Technical Details
 
-### submit-manual-request changes:
+### File Creation
 
-```typescript
-// Check for available entitlement
-const { data: entitlements } = await serviceClient
-  .from("entitlements")
-  .select("id, quantity, used_quantity, expires_at")
-  .eq("user_id", user.id)
-  .eq("entitlement_type", "REPORT_ONE_OFF");
+Create a new markdown file at `docs/pipeline-generator-prompts.md` containing:
 
-const now = new Date();
-const availableEntitlement = (entitlements || []).find((ent) => {
-  if (ent.expires_at && new Date(ent.expires_at) < now) return false;
-  return ent.quantity > ent.used_quantity;
-});
+1. All contract text (Writer Stance, Assessor Insight)
+2. All step templates (9 core + 4 assembly + 1 QA)
+3. All AI call prompts (extraction + pipeline generation)
+4. All validation rules and scoring logic
+5. Variable reference documentation
 
-if (!availableEntitlement) {
-  return new Response(
-    JSON.stringify({ error: "No report credits available. Please purchase a report." }),
-    { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
-}
+### Document Size
 
-// Consume entitlement
-await serviceClient
-  .from("entitlements")
-  .update({ used_quantity: availableEntitlement.used_quantity + 1 })
-  .eq("id", availableEntitlement.id);
+Estimated ~3,000 lines of documentation covering the complete prompt architecture.
 
-// Create consumption record
-const { data: consumption } = await serviceClient
-  .from("entitlement_consumptions")
-  .insert({
-    entitlement_id: availableEntitlement.id,
-    report_id: null, // Will be updated when report is created
-  })
-  .select("id")
-  .single();
-```
+---
 
-### complete-manual-report changes:
+## Summary
 
-```typescript
-// After creating the report, link the consumption record
-const { data: consumption } = await serviceClient
-  .from("entitlement_consumptions")
-  .select("id")
-  .eq("entitlement_id", /* from application */)
-  .is("report_id", null)
-  .limit(1)
-  .single();
-
-if (consumption) {
-  await serviceClient
-    .from("entitlement_consumptions")
-    .update({ report_id: reportId, report_run_id: reportRun.id })
-    .eq("id", consumption.id);
-}
-```
+A single comprehensive markdown document will be created containing all prompts, contracts, and validation rules used by the Pipeline Generator. This provides a complete reference for the ~3,000 line `process-grant-guidelines` Edge Function's AI interaction layer.
 
