@@ -287,6 +287,11 @@ const FORBIDDEN_PATTERNS = [
   { regex: /\[Your\s+/gi, name: "[Your..." },
   { regex: /\{\s*\}/g, name: "{}" },
   { regex: /\[TBD\]/gi, name: "[TBD]" },
+  // Market sizing placeholder patterns (assessor-grade TAM/SAM/SOM requirement)
+  { regex: /\$Z\b/gi, name: "$Z placeholder" },
+  { regex: /\bA%\b/g, name: "A% placeholder" },
+  { regex: /\bB%\b/g, name: "B% placeholder" },
+  { regex: /\bC%\b/g, name: "C% placeholder" },
 ];
 
 function detectForbiddenPatterns(text: string): string[] {
@@ -813,7 +818,48 @@ OUTPUT JSON SCHEMA:
   "unknowns": ["No validated data on competitor pricing in AU market"]
 }`,
 
-    additionality_and_benefit_case: `STEP 4 — Additionality and Benefit Case
+    tam_sam_som_dual_methodology: `STEP 4 — TAM/SAM/SOM Dual Methodology (Assessor-Grade)
+
+${WRITER_STANCE_PREAMBLE}
+
+${ASSESSOR_INSIGHT_CONTRACT}
+
+PURPOSE: Produce market sizing with BOTH top-down and bottom-up methodologies, transparent assumptions, sensitivity analysis, and sanity checks.
+
+INPUTS:
+- {{step0}}: Source pack
+- {{step3}}: Assumptions register
+
+DUAL METHODOLOGY REQUIREMENT (Non-Negotiable):
+A) TOP-DOWN: Parent market × segment share (formula + inputs + source_ids)
+B) BOTTOM-UP: Units × price × penetration (formula + inputs + source_ids)
+Then RECONCILE if divergence >30%.
+
+ASSUMPTIONS REGISTER (Every input decomposed):
+- assumption_id, description, value, confidence_label, defensibility_note, source_id, validation_source_type
+
+FORBIDDEN PLACEHOLDERS: $Z, A%, B%, C%, [Insert], {TBD}
+
+SENSITIVITY ANALYSIS: base/low/high for TAM, SAM, SOM + sensitivity_drivers[]
+
+SANITY CHECKS: pricing consistency, penetration realism, spend ceiling
+
+EVIDENCE-TYPE: Market sizing must cite market research, NOT epidemiology.
+
+OUTPUT JSON SCHEMA:
+{
+  "market_definition": { "product_category": "string", "buyer": {}, "geographies": [], "time_horizon_years": 5 },
+  "pricing_anchors": [{ "anchor_name": "string", "price": 0, "currency": "AUD", "year": 2024, "source_id": "S0-#", "relevance": "string" }],
+  "top_down": { "tam": { "value": 0, "formula": "string", "inputs": [], "sensitivity": {}, "confidence": "medium" }, "sam": {}, "som": {} },
+  "bottom_up": { "tam": {}, "sam": {}, "som": {} },
+  "reconciliation": { "explanation": "string", "preferred_method": "blended", "blended_value": {} },
+  "assumptions_register": [{ "assumption_id": "A1", "description": "string", "value": "string", "confidence_label": "High|Medium|Low", "defensibility_note": "string", "source_id": "S0-#|ESTIMATE", "validation_source_type": "string" }],
+  "sensitivity_summary": { "tam": { "base": 0, "low": 0, "high": 0 }, "sam": {}, "som": {}, "sensitivity_drivers": [] },
+  "sanity_checks": [{ "check": "string", "status": "pass|fail", "note": "string", "fix_applied": "none" }],
+  "unknowns": [{ "what_is_missing": "string", "what_would_validate": "string", "proxy_attempted": true, "method": "string" }]
+}`,
+
+    additionality_and_benefit_case: `STEP 5 — Additionality and Benefit Case
 
 ${WRITER_STANCE_PREAMBLE}
 
@@ -821,6 +867,7 @@ INPUTS:
 - {{step0}}: Source pack
 - {{step1}}: Rubric mapping matrix  
 - {{step3}}: Assumptions register
+- {{step4}}: TAM/SAM/SOM dual methodology
 - {{grantRubric}}: Assessment criteria
 
 PURPOSE:
@@ -828,40 +875,21 @@ Produce the counterfactual, need for funding, and jurisdiction benefit logic ali
 
 HARD RULES:
 1. Always address additionality: what happens WITHOUT funding vs WITH funding
-2. Jurisdiction benefits must be specific to Australia: jobs, exports, productivity, sovereign capability, regional impact, health outcomes, emissions reduction
+2. Jurisdiction benefits must be specific to Australia
 3. All numeric claims must have source_id
-4. NEVER use placeholder tokens like [Company] or {value}
-5. Counterfactual must be realistic, not exaggerated
-6. Benefits must be quantified where possible, with methodology shown
-7. Link benefits to rubric criteria weights
-8. Conservative estimates preferred over optimistic projections
-
-UNKNOWN HANDLING:
-- If benefit cannot be quantified, provide qualitative assessment with confidence level
-- Use proxy estimates with methodology shown for missing data
-- Include unknowns array for benefits that need validation
+4. NEVER use placeholder tokens
+5. Conservative estimates preferred
 
 OUTPUT JSON SCHEMA:
 {
   "counterfactual": {
-    "without_funding": "Project delayed 2-3 years; may not proceed due to capital constraints",
-    "with_funding": "Accelerated development enabling market entry within 18 months",
+    "without_funding": "Project delayed 2-3 years",
+    "with_funding": "Accelerated development",
     "additionality_clear": true
   },
-  "jurisdiction_benefits": [
-    {
-      "benefit_type": "jobs",
-      "estimate": "15-25 direct FTEs by Year 3",
-      "methodology": "Based on similar commercialisation projects (source: S0-5)",
-      "source_id": "S0-5",
-      "confidence": "medium"
-    }
-  ],
-  "rubric_alignment": {
-    "impact": {"weight": 35, "benefits_addressed": ["jobs", "exports", "productivity"]},
-    "innovation": {"weight": 30, "benefits_addressed": ["sovereign_capability"]}
-  },
-  "unknowns": ["Regional job distribution not determined"]
+  "jurisdiction_benefits": [{ "benefit_type": "jobs", "estimate": "15-25 FTEs", "methodology": "string", "source_id": "S0-5", "confidence": "medium" }],
+  "rubric_alignment": { "impact": {"weight": 35, "benefits_addressed": []} },
+  "unknowns": []
 }`,
 
     delivery_plan_and_milestones: `STEP 5 — Delivery Plan and Milestones

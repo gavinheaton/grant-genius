@@ -468,71 +468,257 @@ OUTPUT JSON SCHEMA:
 
   // === COMMERCIALISATION/INNOVATION MODULES ===
   {
-    module_name: "market_sizing",
-    when_to_include: ["Commercialisation/Innovation", "Export/Trade", "Health/Clinical Translation"],
-    always_include: false,
-    provides_outputs: ["tam_global", "tam_au", "sam_au", "som", "methodology"],
+    module_name: "tam_sam_som_dual_methodology",
+    when_to_include: [...GRANT_ARCHETYPES], // Universal - all archetypes need market sizing
+    always_include: true,
+    provides_outputs: [
+      "market_definition",
+      "pricing_anchors",
+      "top_down",
+      "bottom_up",
+      "reconciliation",
+      "assumptions_register",
+      "sensitivity_summary",
+      "sanity_checks",
+      "unknowns"
+    ],
     depends_on: ["evidence_source_pack"],
     step_template: {
-      role_name: "calculate_market_sizing",
-      role_goal: "Calculate TAM/SAM/SOM with transparent methodology and Australian focus",
+      role_name: "tam_sam_som_dual_methodology",
+      role_goal: "Produce assessor-grade TAM/SAM/SOM with dual methodology, transparent assumptions, sensitivity analysis, and sanity checks",
       phase: "research",
-      inputs: ["{{sources}}", "{{step0}}"],
+      inputs: ["{{sources}}", "{{step0}}", "{{grantName}}"],
       outputs_schema: {
-        tam_global: { value_usd: "number", year: "number", source_id: "string" },
-        tam_au: { value_aud: "number", methodology: "string", source_ids: ["string"] },
-        sam_au: { value_aud: "number", methodology: "string", source_ids: ["string"] },
-        som: { year_1: "number", year_3: "number", year_5: "number", methodology: "string" },
-        market_growth_cagr: { percentage: "number", source_id: "string" },
-        market_drivers: ["string"],
-        market_barriers: ["string"]
+        market_definition: {
+          product_category: "string",
+          buyer: { payer: "string", decision_maker: "string", user: "string" },
+          geographies: ["Australia", "Global"],
+          time_horizon_years: "number"
+        },
+        pricing_anchors: [{
+          anchor_name: "string",
+          price: "number",
+          currency: "AUD|USD",
+          year: "number",
+          source_id: "S0-# or ESTIMATE",
+          relevance: "string"
+        }],
+        top_down: {
+          tam: { value: "number", currency: "AUD|USD", year: "number", formula: "string", inputs: [{ label: "string", value: "number", source_id: "S0-#|ESTIMATE" }], sensitivity: { low: "number", high: "number" }, confidence: "high|medium|low" },
+          sam: "same structure",
+          som: "same structure"
+        },
+        bottom_up: {
+          tam: "same structure as top_down.tam",
+          sam: "same structure",
+          som: "same structure"
+        },
+        reconciliation: {
+          explanation: "string",
+          preferred_method: "top_down|bottom_up|blended",
+          blended_value: { tam: "number", sam: "number", som: "number", currency: "AUD|USD", year: "number" }
+        },
+        assumptions_register: [{
+          assumption_id: "A1",
+          description: "string",
+          value: "number|percent",
+          confidence_label: "High|Medium|Low",
+          defensibility_note: "string",
+          source_id: "S0-#|ESTIMATE",
+          validation_source_type: "string"
+        }],
+        sensitivity_summary: {
+          tam: { base: "number", low: "number", high: "number" },
+          sam: { base: "number", low: "number", high: "number" },
+          som: { base: "number", low: "number", high: "number" },
+          sensitivity_drivers: ["A1", "A3", "A7"]
+        },
+        sanity_checks: [{
+          check: "string",
+          status: "pass|fail",
+          note: "string",
+          fix_applied: "string|none"
+        }],
+        unknowns: [{
+          what_is_missing: "string",
+          what_would_validate: "string",
+          proxy_attempted: "boolean",
+          method: "string"
+        }]
       },
       hard_rules: [
-        "TAM AU must be calculated from global TAM with explicit methodology shown",
-        "SAM must apply realistic segment filters with rationale",
-        "SOM must use conservative adoption assumptions (3-15x growth multipliers max)",
-        "All values MUST have source_ids—no unsourced numbers",
-        "If specific data unavailable, use proxy calculation with methodology shown",
-        "NEVER output 'Unknown'—provide conservative estimate instead"
+        "MUST output BOTH top-down AND bottom-up methodologies",
+        "Every assumption must have assumption_id, confidence_label, defensibility_note",
+        "NEVER use placeholders: $Z, A%, B%, C%, PROXY (without method)",
+        "Sensitivity analysis REQUIRED: base/low/high for TAM, SAM, SOM",
+        "Sanity checks MUST pass before output (pricing, penetration, spend ceiling)",
+        "Evidence-type matching: market sizing must NOT cite epidemiology papers",
+        "If direct data unavailable, use proxy with methodology shown",
+        "Include ≥3 pricing anchors with source_ids"
       ],
-      prompt_template: `STEP N — Calculate Market Sizing (TAM/SAM/SOM)
+      prompt_template: `STEP N — TAM/SAM/SOM Dual Methodology (Assessor-Grade Market Sizing)
 
 {{WRITER_STANCE_PREAMBLE}}
 
+You are producing assessor-grade market sizing that will withstand expert scrutiny. 
+Assessors expect to see: (1) method, (2) assumptions, (3) sensitivity, and (4) why assumptions are defensible.
+
 INPUTS:
-- Source pack with market research: {{step0}}
+- Source pack: {{step0}}
+- Grant: {{grantName}}
 
-YOUR TASK:
-Calculate Total Addressable Market, Serviceable Addressable Market, and Serviceable Obtainable Market with full methodology transparency.
+DUAL METHODOLOGY REQUIREMENT (Non-Negotiable):
+You MUST output BOTH:
+A) TOP-DOWN SIZING: Parent market × segment share
+   - Start with global/regional market size from authoritative source
+   - Apply filters: geography (AU = ~1.6% GDP ratio), segment, capability
+   - Show formula and each input with source_id
 
-HARD RULES:
-- TAM AU calculated from global TAM: show AU population/GDP ratio methodology
-- SAM applies realistic segment filters (geography, capability, regulatory access)
-- SOM uses conservative adoption: 3-15x growth multipliers maximum
-- All values MUST have source_ids
-- If specific data unavailable, use proxy: "Global TAM × AU GDP ratio (1.6%) = AU TAM"
-- NEVER output "Unknown"—provide conservative estimate instead
+B) BOTTOM-UP SIZING: Units × price × penetration
+   - Estimate addressable units (customers, procedures, devices, etc.)
+   - Apply realistic price point (from pricing anchors)
+   - Apply conservative penetration rates (Year 1: 0.1-1%, Year 3: 1-5%, Year 5: 3-10%)
+   - Show formula and each input with source_id
 
-CALCULATION APPROACH:
-1. Global TAM: Find authoritative market size (prefer IBISWorld, Statista, industry reports)
-2. AU TAM: Apply GDP ratio (1.6%) or population ratio (0.3%) to global
-3. AU SAM: Apply segment filters (typically 15-40% of TAM)
-4. SOM: Year 1 (0.1-1%), Year 3 (1-5%), Year 5 (3-10%) of SAM
+Then RECONCILE the two methods:
+- If divergence >30%, explain why and state preferred method
+- If within 30%, use blended average
+- Always prefer conservative (lower) estimate when uncertain
+
+ASSUMPTIONS REGISTER REQUIREMENT (Every Input Must Be Decomposed):
+Each assumption in your calculations MUST include:
+- assumption_id: Sequential ID (A1, A2, A3...)
+- description: What this assumption represents
+- value: Actual number or percentage (NEVER use "A%" or "20%" without decomposition)
+- confidence_label: "High" | "Medium" | "Low"
+- defensibility_note: Why this is reasonable (based on evidence or conservative proxy)
+- validation_source_type: What source type would validate this best
+- source_id: "S0-#" from source pack, OR "ESTIMATE" (only with defensibility_note + method)
+
+FORBIDDEN PLACEHOLDERS (hard failure if present):
+- $Z, A%, B%, C%, PROXY (without methodology)
+- [Insert...], {TBD}, [Unknown]
+- Any unexplained percentage without decomposition
+
+SENSITIVITY ANALYSIS (Mandatory for Each Metric):
+For each of TAM, SAM, SOM output:
+- base_case: Your central estimate
+- low_case: Conservative bound (~20-30% lower)
+- high_case: Optimistic bound (~20-30% higher)
+- sensitivity_drivers[]: Top 3 assumption_ids that move the result most
+- why_low_high_bounds_are_defensible: Brief rationale
+
+SANITY CHECKS (Must All Pass Before Output):
+1. PRICING CHECK: Implied unit price consistent with pricing_anchors (within ±30%)
+   - If fails: revise price assumption OR document why deviation is justified
+2. PENETRATION CHECK: Implied adoption rate consistent with industry comparables
+   - Typical new entrant: <1% Year 1, <5% Year 3, <10% Year 5
+   - If fails: revise penetration OR document exceptional justification
+3. SPEND CEILING CHECK: Implied market spend does not exceed known category budget
+   - Cross-reference with government expenditure data (PBS, MBS, AIHW)
+   - If fails: revise or explain why your market is a new budget category
+
+For each sanity check, output:
+- check: Description of what was validated
+- status: "pass" or "fail"
+- note: Details on the validation
+- fix_applied: "none" if passed, or description of adjustment made
+
+EVIDENCE-TYPE ENFORCEMENT (Critical):
+Market size/growth/pricing MUST cite:
+- Market research firms (IBISWorld, Frost & Sullivan, GlobalData)
+- Industry reports and peak body publications
+- Procurement datasets, PBS/MBS/AIHW spending data
+- ABS industry accounts, company annual reports
+
+Market sizing must NEVER cite:
+- Epidemiology studies or disease burden papers
+- Clinical trial data (for market claims)
+- Wikipedia, blog posts, undated sources
+
+If evidence-type mismatch detected:
+- Replace claim with: "Unknown (evidence type mismatch)"
+- Log to unknowns[]: what_is_missing, what_would_validate, proxy_attempted: false
+
+PRICING ANCHORS REQUIREMENT:
+Include ≥3 pricing anchors from the source pack:
+- anchor_name: Competitor or comparable product name
+- price: Actual price point
+- currency: AUD or USD
+- year: Year of price data
+- source_id: Source reference
+- relevance: Why this is a valid anchor (direct competitor, adjacent market, etc.)
 
 OUTPUT JSON SCHEMA:
 {
-  "tam_global": {"value_usd": 0, "year": 2024, "source_id": "S0-N"},
-  "tam_au": {"value_aud": 0, "methodology": "Global TAM × 1.6% AU GDP ratio", "source_ids": ["S0-N"]},
-  "sam_au": {"value_aud": 0, "methodology": "TAM AU × segment filters...", "source_ids": ["S0-N"]},
-  "som": {
-    "year_1": 0,
-    "year_3": 0,
-    "year_5": 0,
-    "methodology": "Conservative adoption curve: 0.5% → 2% → 5% of SAM"
+  "market_definition": {
+    "product_category": "string",
+    "buyer": { "payer": "string", "decision_maker": "string", "user": "string" },
+    "geographies": ["Australia", "Global"],
+    "time_horizon_years": 5
   },
-  "market_growth_cagr": {"percentage": 0, "source_id": "S0-N"},
-  "market_drivers": ["string"],
-  "market_barriers": ["string"]
+  "pricing_anchors": [
+    { "anchor_name": "Comparable A", "price": 50000, "currency": "AUD", "year": 2024,
+      "source_id": "S0-3", "relevance": "Direct competitor in AU market" }
+  ],
+  "top_down": {
+    "tam": { "value": 5000000000, "currency": "AUD", "year": 2024,
+             "formula": "Global market $X × AU GDP share (1.6%)",
+             "inputs": [{ "label": "Global market", "value": 312500000000, "source_id": "S0-1" }],
+             "sensitivity": { "low": 4000000000, "high": 6000000000 },
+             "confidence": "medium" },
+    "sam": { "value": 1000000000, "currency": "AUD", "year": 2024,
+             "formula": "TAM × segment filter (20%)",
+             "inputs": [{ "label": "Segment share", "value": 0.2, "source_id": "ESTIMATE" }],
+             "sensitivity": { "low": 800000000, "high": 1200000000 },
+             "confidence": "medium" },
+    "som": { "value": 50000000, "currency": "AUD", "year": 2029,
+             "formula": "SAM × 5% penetration (Year 5)",
+             "inputs": [{ "label": "Penetration Y5", "value": 0.05, "source_id": "ESTIMATE" }],
+             "sensitivity": { "low": 30000000, "high": 70000000 },
+             "confidence": "low" }
+  },
+  "bottom_up": {
+    "tam": { "value": 4500000000, "currency": "AUD", "year": 2024,
+             "formula": "Addressable units × average price",
+             "inputs": [
+               { "label": "Addressable units", "value": 90000, "source_id": "S0-4" },
+               { "label": "Average price", "value": 50000, "source_id": "S0-3" }
+             ],
+             "sensitivity": { "low": 3600000000, "high": 5400000000 },
+             "confidence": "medium" },
+    "sam": { "... same structure ..." },
+    "som": { "... same structure ..." }
+  },
+  "reconciliation": {
+    "explanation": "Top-down yields $5B, bottom-up yields $4.5B (10% difference). Using blended average as methods converge.",
+    "preferred_method": "blended",
+    "blended_value": { "tam": 4750000000, "sam": 950000000, "som": 47500000, "currency": "AUD", "year": 2024 }
+  },
+  "assumptions_register": [
+    { "assumption_id": "A1", "description": "AU represents 1.6% of global market",
+      "value": "1.6%", "confidence_label": "High",
+      "defensibility_note": "Based on AU GDP share in World Bank data (2023)",
+      "source_id": "S0-5", "validation_source_type": "World Bank GDP statistics" },
+    { "assumption_id": "A2", "description": "Year 5 penetration rate",
+      "value": "5%", "confidence_label": "Low",
+      "defensibility_note": "Conservative estimate below industry average of 8% for similar technologies",
+      "source_id": "ESTIMATE", "validation_source_type": "Industry adoption benchmarks" }
+  ],
+  "sensitivity_summary": {
+    "tam": { "base": 4750000000, "low": 3800000000, "high": 5700000000 },
+    "sam": { "base": 950000000, "low": 760000000, "high": 1140000000 },
+    "som": { "base": 47500000, "low": 28500000, "high": 66500000 },
+    "sensitivity_drivers": ["A2", "A3", "A5"]
+  },
+  "sanity_checks": [
+    { "check": "Implied unit price within ±30% of pricing anchors", "status": "pass", "note": "$50k vs anchors $45-55k range", "fix_applied": "none" },
+    { "check": "Year 1 penetration below 1%", "status": "pass", "note": "0.5% assumed", "fix_applied": "none" },
+    { "check": "Total spend within AU health tech category ceiling", "status": "pass", "note": "SOM < 5% of AIHW category spend", "fix_applied": "none" }
+  ],
+  "unknowns": [
+    { "what_is_missing": "Direct AU market sizing report for this niche", "what_would_validate": "IBISWorld AU industry report", "proxy_attempted": true, "method": "Used Global × GDP ratio" }
+  ]
 }`,
       model_tier: "balanced"
     }
