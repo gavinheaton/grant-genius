@@ -133,21 +133,55 @@ export default function GrantEdit() {
 
       return grantData;
     },
-    refetchInterval: (query) => {
-      // Poll every 3 seconds if processing
-      const data = query.state.data as any;
-      const selectedVer = data?.grant_versions?.find((v: any) => v.id === selectedVersionId);
-      if (selectedVer) {
-        const isProcessing = 
-          selectedVer.ai_analysis_status === "analyzing" || 
-          selectedVer.pipeline_generation_status === "generating";
-        return isProcessing ? 3000 : false;
-      }
-      return false;
-    },
+    // Removed polling - using Supabase Realtime subscription instead
   });
 
-  // Update local state when grant data changes (for polling updates)
+  // Realtime subscription for instant status updates during guidelines processing
+  useEffect(() => {
+    if (!selectedVersionId) return;
+
+    const channel = supabase
+      .channel(`grant-version-${selectedVersionId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'grant_versions',
+          filter: `id=eq.${selectedVersionId}`,
+        },
+        (payload) => {
+          const newData = payload.new as any;
+          console.log('[Realtime] grant_versions update:', newData.ai_analysis_status, newData.pipeline_generation_status);
+          
+          // Update local state immediately
+          setAiAnalysisStatus(newData.ai_analysis_status || "pending");
+          setPipelineStatus(newData.pipeline_generation_status || "none");
+          setPromptBundleId(newData.prompt_bundle_id || null);
+          setAiSuggestions(newData.ai_suggestions_json || null);
+          setGuidelinesRawText(newData.guidelines_raw_text || null);
+          setGuidelinesPath(newData.guidelines_source_path || null);
+          
+          // Also update inputs/rubric if they changed
+          if (newData.required_inputs_json) {
+            setVersionInputs(JSON.stringify(newData.required_inputs_json, null, 2));
+          }
+          if (newData.rubric_json) {
+            setVersionRubric(JSON.stringify(newData.rubric_json, null, 2));
+          }
+          
+          // Invalidate query to sync full data
+          queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedVersionId, id, queryClient]);
+
+  // Sync local state when grant data changes or version is selected
   useEffect(() => {
     if (grant && selectedVersionId) {
       const version = grant.grant_versions?.find((v: any) => v.id === selectedVersionId);
