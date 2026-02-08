@@ -11,13 +11,17 @@ import {
   lintBracketTokens, 
   normalizeReportHtml, 
   buildSourceMap,
+  sanitizeFinalReport,
+  validateFinalReport,
   type SourceEntry,
   type LintResult,
   type UnknownEntry,
+  type SanitizationResult,
 } from "./citationNormalizer";
 
-// Re-export types for convenience
-export type { SourceEntry, LintResult, UnknownEntry };
+// Re-export types and functions for convenience
+export type { SourceEntry, LintResult, UnknownEntry, SanitizationResult };
+export { sanitizeFinalReport, validateFinalReport };
 
 /**
  * Forbidden patterns that should never appear in final reports
@@ -125,6 +129,7 @@ export function normalizeReportWithCitations(
   referencesHtml: string;
   unknowns: UnknownEntry[];
   lintPassed: boolean;
+  sanitizationStats?: { tokensRemoved: number; tokensReplaced: number };
 } {
   try {
     const result = normalizeReportHtml(html, sources, requiredInputs, {
@@ -132,20 +137,32 @@ export function normalizeReportWithCitations(
       failOnLintError: false,
     });
     
+    // Run final sanitizer pass to catch any remaining forbidden tokens
+    const sanitized = sanitizeFinalReport(result.html, {
+      preserveContext: false,  // Remove tokens rather than replace
+      failOnViolations: false, // Client-side shouldn't throw
+    });
+    
+    // Combine unknowns from both normalization and sanitization
+    const allUnknowns = [...result.unknowns, ...sanitized.removedTokens];
+    
     return {
-      html: sanitizeHtml(result.html),
+      html: sanitizeHtml(sanitized.html),
       referencesHtml: result.referencesHtml,
-      unknowns: result.unknowns,
-      lintPassed: result.lintResult.passed,
+      unknowns: allUnknowns,
+      lintPassed: result.lintResult.passed && sanitized.removedTokens.length === 0,
+      sanitizationStats: sanitized.stats,
     };
   } catch (error) {
     console.error("Citation normalization error:", error);
-    // Fallback to basic sanitization
+    // Fallback to basic sanitization with final sanitizer
+    const sanitized = sanitizeFinalReport(html, { preserveContext: false });
     return {
-      html: sanitizeHtml(html),
+      html: sanitizeHtml(sanitized.html),
       referencesHtml: "",
-      unknowns: [],
+      unknowns: sanitized.removedTokens,
       lintPassed: false,
+      sanitizationStats: sanitized.stats,
     };
   }
 }

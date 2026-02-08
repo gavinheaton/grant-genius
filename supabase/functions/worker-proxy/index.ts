@@ -538,18 +538,42 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
 
 // Forbidden patterns that must NEVER appear in final output
 const FORBIDDEN_PATTERNS_LINT = [
+  // Internal source ID formats
   { pattern: /\[S\d+-[A-Z0-9]+\]/gi, name: 'Internal source ID [S0-1]' },
   { pattern: /\[ARTICLE-\d+\]/gi, name: 'Article marker [ARTICLE-1]' },
   { pattern: /\[SEARCH-\d+\]/gi, name: 'Search marker [SEARCH-1]' },
   { pattern: /\[SOURCE-\d+\]/gi, name: 'Source marker [SOURCE-1]' },
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
+  
+  // Generic single-word markers
+  { pattern: /\[article\]/gi, name: '[article]' },
+  { pattern: /\[ref\]/gi, name: '[ref]' },
+  { pattern: /\[source\d*\]/gi, name: '[source] or [source1]' },
+  { pattern: /\[reference\d*\]/gi, name: '[reference]' },
+  
+  // Placeholder patterns
   { pattern: /\{TBD\}/gi, name: '{TBD}' },
   { pattern: /\[TBD\]/gi, name: '[TBD]' },
   { pattern: /\[\{TBD\}\]/gi, name: '[{TBD}]' },
   { pattern: /\[Insert[^\]]*\]/gi, name: '[Insert...]' },
   { pattern: /\[PROJECT\s*NAME\]/gi, name: '[PROJECT NAME]' },
   { pattern: /\[COMPANY\]/gi, name: '[COMPANY]' },
+  { pattern: /\[Your\s+[^\]]*\]/gi, name: '[Your...]' },
   { pattern: /Source\s+[12]\b/gi, name: 'Source 1/2' },
+  { pattern: /Hypothetical\s+\w+/gi, name: 'Hypothetical [Entity]' },
+  
+  // Budget placeholders: $[Amount], $[...]
+  { pattern: /\$\[[^\]]+\]/g, name: 'Budget placeholder $[...]' },
+  
+  // Curly brace placeholders
+  { pattern: /\{TBD\}/gi, name: '{TBD}' },
+  { pattern: /\{value\}/gi, name: '{value}' },
+  { pattern: /\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, name: 'Curly placeholder {name}' },
+  
+  // "undefined" adjacent to brackets or source markers (HARD FAILURE)
+  { pattern: /undefined\s*\[/gi, name: 'undefined before bracket' },
+  { pattern: /\]\s*undefined/gi, name: 'undefined after bracket' },
+  { pattern: /\bundefined\b(?=\s*(?:S\d|Source|ref|ARTICLE))/gi, name: 'undefined near source ref' },
 ];
 
 /**
@@ -581,10 +605,13 @@ function lintReportHtml(html: string): string[] {
       if (beforeContext.includes('href="#ref-')) {
         continue; // Valid linked citation
       }
+      // Unlinked numeric - still a violation
+      violations.push(`Unlinked citation: "${match[0]}"`);
+      continue;
     }
     
     // Check if it looks like an internal marker (starts with letter, contains number)
-    if (/^[A-Z]/.test(content) && /\d/.test(content)) {
+    if (/^[A-Z]/i.test(content) && /\d/.test(content)) {
       const alreadyCounted = violations.some(v => v.includes(match![0]));
       if (!alreadyCounted) {
         violations.push(`Bracket token: "${match[0]}"`);
@@ -677,13 +704,39 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     return errorResponse("content_json is required");
   }
 
-  // CITATION LINT VALIDATION GATE
+  // CITATION LINT VALIDATION GATE (HARD FAILURE)
   // Check for forbidden bracket tokens before saving
   if (!skip_lint) {
     const contentObj = content_json as Record<string, unknown>;
     const reportHtml = extractReportHtmlForLint(contentObj);
     
     if (reportHtml) {
+      // HARD FAILURE: Check for "undefined" adjacent to markers
+      const undefinedPattern = /undefined\s*\[|\]\s*undefined|\bundefined\b(?=\s*S\d)/gi;
+      if (undefinedPattern.test(reportHtml)) {
+        console.error(`[HARD_FAIL] 'undefined' found adjacent to source markers`);
+        return jsonResponse({
+          error: "Hard failure: 'undefined' found adjacent to source markers",
+          message: "Internal citation markers leaked into final report",
+          violations: ["undefined adjacent to marker detected"],
+          hint: "The external worker must resolve all source references before saving"
+        }, 400);
+      }
+      
+      // HARD FAILURE: Check for budget placeholders $[...]
+      const budgetPlaceholderPattern = /\$\[[^\]]+\]/g;
+      const budgetMatches = reportHtml.match(budgetPlaceholderPattern);
+      if (budgetMatches && budgetMatches.length > 0) {
+        console.error(`[HARD_FAIL] Budget placeholders found: ${budgetMatches.slice(0, 5).join(', ')}`);
+        return jsonResponse({
+          error: "Hard failure: Budget placeholders found",
+          message: "Internal citation markers leaked into final report",
+          violations: budgetMatches.slice(0, 10).map(m => `Budget placeholder: "${m}"`),
+          hint: "Replace $[Amount] placeholders with actual values or remove them"
+        }, 400);
+      }
+      
+      // Standard lint check
       const violations = lintReportHtml(reportHtml);
       
       if (violations.length > 0) {
@@ -692,7 +745,7 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
         
         return jsonResponse({
           error: "Citation lint failed",
-          message: "Report contains forbidden bracket tokens that must be removed before saving",
+          message: "Internal citation markers leaked into final report",
           violations: violations.slice(0, 10),
           violation_count: violations.length,
           hint: "The external worker should run citation normalization before calling save_report"
