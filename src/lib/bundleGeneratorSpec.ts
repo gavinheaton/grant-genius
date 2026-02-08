@@ -119,6 +119,52 @@ export const DEFAULT_WRITER_STANCE_CONTRACT: WriterStanceContract = {
   ]
 };
 
+// ============================================================================
+// ASSESSOR INSIGHT CONTRACT (for assessor-ready, commercially insightful reports)
+// ============================================================================
+
+export const ASSESSOR_INSIGHT_CONTRACT = {
+  evidence_type_matching: {
+    description: "Non-negotiable rule mapping claim categories to allowed source types",
+    rules: {
+      market_data: {
+        allowed: ["Market research firms", "Industry reports", "Procurement datasets", "PBS/MBS/AIHW spending", "ABS industry accounts", "Annual reports"],
+        never_use: ["Epidemiology studies", "Disease burden papers"]
+      },
+      disease_burden: {
+        allowed: ["Government health statistics", "AIHW", "Cancer Australia", "WHO", "Peer-reviewed epidemiology"],
+        never_use: ["Market reports", "Company financials"]
+      },
+      regulatory: {
+        allowed: ["TGA/FDA/EMA guidance", "PBS/HTA documents", "Standards bodies", "Official policy docs"],
+        never_use: ["General news", "Press releases"]
+      },
+      competitor_status: {
+        allowed: ["Company filings", "Regulator databases", "Clinical trial registries", "Official product pages"],
+        never_use: ["Wikipedia", "Blog posts", "Undated sources"]
+      }
+    }
+  },
+  assumption_discipline: {
+    required_fields: ["confidence_label", "one_line_justification", "replicable_method"]
+  },
+  proxy_estimate_format: {
+    required_fields: ["value", "currency", "year", "method", "inputs", "sensitivity", "confidence"]
+  },
+  commercial_reality_layer: [
+    "Who pays / who decides / adoption pathway",
+    "Pricing anchors (direct, adjacent, or proxy)",
+    "Implementation friction + enabling partners",
+    "Regulatory and reimbursement gating steps",
+    "Measurable success outcomes"
+  ],
+  competitor_comparability_framework: {
+    direct: "Same buyer + same use case + same modality/class",
+    adjacent: "Same buyer OR same use case OR similar modality",
+    enablers: "Platforms, diagnostics, manufacturing, distribution, integrators"
+  }
+};
+
 export function generateWriterStancePreamble(wsc: WriterStanceContract = DEFAULT_WRITER_STANCE_CONTRACT): string {
   return `
 === WRITER STANCE CONTRACT ===
