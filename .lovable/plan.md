@@ -1,113 +1,205 @@
 
 
-# Fix Citation Lint False Positives for Numeric References
+# Enable PDF Table of Contents + Add DOCX Native ToC
 
-## Problem
+## Summary
 
-The worker-proxy citation lint is incorrectly rejecting valid final-format numeric citations like `[13, 14, 15]` as "Unlinked citations." 
+Implement Table of Contents support for both PDF and DOCX exports. The PDF ToC toggle already exists in the admin UI and backend - we just need to verify it works correctly. For DOCX, we need to add native Word TableOfContents generation using the `docx` library's built-in class.
 
-**Error observed:**
-```json
-{
-  "error": "Citation lint failed",
-  "violations": [{
-    "token": "[1]",
-    "pattern": "Unlinked citation",
-    "context": "...ovarian cancer [13, 14, 15]."
-  }]
-}
-```
+## Current State Analysis
 
-## Root Cause
+| Feature | Current State | Required Action |
+|---------|---------------|-----------------|
+| PDF ToC Admin Toggle | Exists in UI (lines 600-611 of PDFTemplateForm.tsx) | Already working - just needs enabling |
+| PDF ToC Generation | Implemented in generate-pdf (lines 188-198) | Already working |
+| DOCX ToC | Not implemented | Add `TableOfContents` class |
 
-The lint logic at lines 651-683 in `worker-proxy/index.ts` has two issues:
+## Implementation Plan
 
-1. **Single-number only check**: The regex `^\d+$` only matches single numbers like `[1]`, but not comma-separated groups like `[13, 14, 15]`
-2. **Wrong anchor detection**: It looks for `href="#ref-"` in the 100 chars **before** the bracket, but anchors typically **wrap** the citation: `<a href="#ref-N">[N]</a>`
+### Option A: PDF Table of Contents (Already Available)
 
-## Solution
+**Status: DONE** - The PDF ToC is already fully implemented:
 
-Update the lint logic to properly handle:
-1. Comma-separated numeric citations: `[1, 2, 3]` 
-2. Correct anchor tag detection (check if inside `<a>...</a>`)
-3. Allow valid numeric citations that reasonably map to a References section
+1. **Admin Toggle**: In `PDFTemplateForm.tsx` lines 600-611 under "Layout Options" section
+   - Switch for "Include Table of Contents"
+   - Description: "Auto-generate TOC from sections"
+
+2. **Backend Generation**: In `generate-pdf/index.ts` lines 188-198
+   - Builds TOC HTML from sections array
+   - Includes numbered links to each section
+   - Adds page break after TOC
+
+**To Enable**: Go to Admin → PDF Templates → Layout Options → Toggle "Include Table of Contents" ON
 
 ---
 
-## Implementation
+### Option C: DOCX Native Table of Contents
 
-### File: `supabase/functions/worker-proxy/index.ts`
+**File: `supabase/functions/generate-docx/index.ts`**
 
-**Update the unlinked citation check (lines 651-683):**
+#### Step 1: Import TableOfContents from docx library
+
+Add to existing imports (line 3-19):
 
 ```typescript
-// Check for unlinked bracket tokens (excluding valid linked citations)
-const bracketPattern = /\[([^\]]+)\]/g;
-let match;
-while ((match = bracketPattern.exec(html)) !== null) {
-  const content = match[1];
-  
-  // ALLOWED: Numeric citations (single or comma-separated)
-  // Examples: [1], [13], [13, 14], [13, 14, 15]
-  if (/^[\d,\s]+$/.test(content)) {
-    const nums = content.split(/\s*,\s*/).map(s => s.trim());
-    const allNumeric = nums.every(n => /^\d+$/.test(n));
-    
-    if (allNumeric) {
-      // Check if this citation is inside an anchor tag
-      // Look for <a...> before and </a> after (within reasonable distance)
-      const startIdx = Math.max(0, match.index - 50);
-      const endIdx = Math.min(html.length, match.index + match[0].length + 20);
-      const beforeContext = html.substring(startIdx, match.index);
-      const afterContext = html.substring(match.index + match[0].length, endIdx);
-      
-      // Either it's hyperlinked (has <a> wrapper)
-      // OR it's a valid-looking reference number (we allow unlinked [1], [2] in final output)
-      // as they map to the References section at the bottom
-      const isInsideAnchor = beforeContext.includes('<a') && afterContext.includes('</a>');
-      const isValidRefNumber = nums.every(n => parseInt(n, 10) > 0 && parseInt(n, 10) <= 999);
-      
-      if (isInsideAnchor || isValidRefNumber) {
-        continue; // Valid numeric citation - allow it
-      }
-    }
-  }
-  
-  // Check if it looks like an internal marker (starts with letter, contains number)
-  if (/^[A-Z]/i.test(content) && /\d/.test(content)) {
-    const alreadyCounted = violations.some(v => v.token === match![0]);
-    if (!alreadyCounted) {
-      violations.push({
-        token: match[0],
-        pattern: 'Bracket token',
-        context: extractSentenceContext(html, match.index, match[0].length)
-      });
-    }
-  }
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  HeadingLevel,
+  Table,
+  TableRow,
+  TableCell,
+  WidthType,
+  AlignmentType,
+  PageBreak,
+  BorderStyle,
+  convertInchesToTwip,
+  LevelFormat,
+  ILevelsOptions,
+  ShadingType,
+  TableOfContents,  // ADD THIS
+} from "https://esm.sh/docx@8.5.0";
+```
+
+#### Step 2: Add ToC generation function
+
+Add new function after `buildDataGaps` (around line 673):
+
+```typescript
+// Build Table of Contents for Word document
+function buildTableOfContents(): (Paragraph | TableOfContents)[] {
+  const elements: (Paragraph | TableOfContents)[] = [];
+
+  // Title for the TOC page
+  elements.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Table of Contents",
+          bold: true,
+          size: STYLES.fontSize.h1,
+          color: STYLES.primaryColor,
+        }),
+      ],
+      spacing: { before: 200, after: 400 },
+    })
+  );
+
+  // Native Word Table of Contents field
+  // This creates a TOC that Word can update automatically
+  elements.push(
+    new TableOfContents("Table of Contents", {
+      hyperlink: true,
+      headingStyleRange: "1-3",  // Include H1, H2, H3
+      stylesWithLevels: [
+        { styleName: "Heading1", level: 1 },
+        { styleName: "Heading2", level: 2 },
+        { styleName: "Heading3", level: 3 },
+      ],
+    })
+  );
+
+  // Instruction paragraph
+  elements.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Right-click and select 'Update Field' to refresh page numbers",
+          size: STYLES.fontSize.body - 2,
+          color: "888888",
+          italics: true,
+        }),
+      ],
+      spacing: { before: 200, after: 200 },
+    })
+  );
+
+  // Page break after TOC
+  elements.push(new Paragraph({ children: [new PageBreak()] }));
+
+  return elements;
 }
 ```
 
-**Key changes:**
+#### Step 3: Update buildDocument function to include ToC
 
-1. **Allow comma-separated numbers**: `[13, 14, 15]` now passes the `^[\d,\s]+$` check
-2. **Better anchor detection**: Check for `<a` before AND `</a>` after the bracket
-3. **Allow valid reference numbers**: If the numbers are reasonable (1-999), allow them as they're legitimate numeric citations mapping to a References section
-4. **Remove the "Unlinked citation" violation**: Numeric citations like `[1]` are valid final-format references
+Modify the `buildDocument` function (around line 858-905) to insert ToC after cover page:
+
+```typescript
+// Before: (around line 903-904)
+// Page break after cover
+children.push(new Paragraph({ children: [new PageBreak()] }));
+
+// After:
+// Page break after cover
+children.push(new Paragraph({ children: [new PageBreak()] }));
+
+// Add Table of Contents
+children.push(...buildTableOfContents());
+```
+
+#### Step 4: Ensure heading styles are set correctly
+
+The existing code already uses `HeadingLevel.HEADING_1`, `HEADING_2`, `HEADING_3` (lines 914-919), which the ToC will pick up automatically.
 
 ---
 
-## Files Changed
+## Technical Details
+
+### How Word ToC Works
+
+The `docx` library's `TableOfContents` creates a native Word TOC field that:
+1. **Hyperlinks**: Each entry links to the section in the document
+2. **Auto-detection**: Scans for Heading1, Heading2, Heading3 styles
+3. **Updatable**: User can right-click → Update Field to refresh page numbers
+4. **Native formatting**: Uses Word's built-in TOC styling
+
+### Configuration Options
+
+```typescript
+new TableOfContents("Table of Contents", {
+  hyperlink: true,              // Make entries clickable
+  headingStyleRange: "1-3",     // Include heading levels 1-3
+  stylesWithLevels: [           // Map styles to TOC levels
+    { styleName: "Heading1", level: 1 },
+    { styleName: "Heading2", level: 2 },
+    { styleName: "Heading3", level: 3 },
+  ],
+})
+```
+
+---
+
+## Files Changed Summary
 
 | File | Action | Description |
 |------|--------|-------------|
-| `supabase/functions/worker-proxy/index.ts` | MODIFY | Update bracket check to allow comma-separated numeric citations and improve anchor detection |
+| `supabase/functions/generate-docx/index.ts` | MODIFY | Import TableOfContents, add buildTableOfContents function, insert ToC after cover page |
+
+---
+
+## User Experience
+
+### PDF Export
+1. Admin enables ToC in Admin → PDF Templates → Layout Options
+2. Users download PDF with automatic Table of Contents after cover page
+3. Each section is numbered and hyperlinked
+
+### DOCX Export  
+1. User downloads DOCX file
+2. Table of Contents appears after cover page
+3. In Microsoft Word, user can right-click ToC → "Update Field" to populate page numbers
+4. Entries are hyperlinked to sections
 
 ---
 
 ## Acceptance Criteria
 
-1. Reports with `[1]`, `[13]`, `[13, 14, 15]` style citations pass lint validation
-2. Reports with internal markers like `[S0-1]`, `[ARTICLE-1]` are still blocked
-3. Reports with placeholders like `{TBD}`, `$Z`, `[Insert...]` are still blocked
-4. Hyperlinked citations `<a href="#ref-1">[1]</a>` continue to pass
+1. **PDF ToC**: When enabled in admin, PDF exports include a Table of Contents after the cover page
+2. **DOCX ToC**: All DOCX exports include a native Word Table of Contents
+3. **ToC entries**: Both ToC types include all major report sections (H1, H2, H3)
+4. **Hyperlinks**: Entries are clickable and navigate to the section
+5. **Page numbers**: DOCX ToC shows "right-click to update" hint; Word populates page numbers on update
 
