@@ -1,193 +1,142 @@
 
-# Fix: Cancel Button Reliability
+# Fix: Process Grant Guidelines Parsing Error
 
 ## Problem Summary
 
-The Cancel button doesn't work reliably because:
-
-1. **No loading state** - Users can click multiple times while the request is pending
-2. **Silent failures** - If the cancel request fails, users see a vague "Failed to cancel" toast
-3. **Race condition with Realtime** - The UI updates before the cancel completes, making the button disappear
-4. **Status check fails on retry** - After the first cancel attempt changes status to "failed", subsequent clicks get rejected with a 400 error
+The `process-grant-guidelines` edge function fails with "Failed to parse extraction response" at the Step 1 extraction phase. The code doesn't log the actual AI response, making debugging impossible.
 
 ## Root Cause Analysis
 
+The parsing logic has several weaknesses:
+
+1. **No logging of AI response** - When parsing fails, we don't know what was received
+2. **Silent JSON.parse failures** - If `JSON.parse()` throws, it propagates up without context
+3. **Gemini-3 response format** - The tool call response structure may differ from expected
+
 ```text
-User clicks Cancel
+Step 1: Extracting Grant DNA Pack...
         │
-        ├─── Request sent to cancel-report-run
-        │              │
-        │              ├─── SUCCESS: Status → "failed", activeRun → null
-        │              │
-        │              └─── SLOW/FAIL: Button still visible, user clicks again
-        │                              │
-        │                              └─── 400 error: "already completed or failed"
-        │                                              (because first click worked)
+        ├── AI returns response
+        │           │
+        │           ├── toolCall?.function?.arguments exists?
+        │           │           │
+        │           │           ├── YES → JSON.parse(arguments)
+        │           │           │              └── May throw SyntaxError (no catch)
+        │           │           │
+        │           │           └── NO → Check content for JSON
+        │           │                          └── May also fail to parse
+        │           │
+        │           └── suggestions is undefined → throw "Failed to parse"
         │
-        └─── Realtime picks up "failed" status
-                       │
-                       └─── isInProgress becomes false
-                                      │
-                                      └─── Cancel button section doesn't render
-                                           (user thinks nothing happened)
+        └── No log of what AI actually returned
 ```
 
 ## Solution
 
-### 1. Add Loading State to Cancel Operation
+### 1. Add Comprehensive Logging
 
-**File: `src/hooks/useReportGeneration.ts`**
-
-Add a new `isCancelling` state and expose it, then use it to disable the button during the operation:
+Log the full AI response structure before parsing so we can see what's happening:
 
 ```typescript
-const [isCancelling, setIsCancelling] = useState(false);
-
-const cancelRun = useCallback(async (runId: string) => {
-  if (isCancelling) return; // Prevent double-clicks
-  
-  setIsCancelling(true);
-  try {
-    const { error } = await supabase.functions.invoke("cancel-report-run", {
-      body: { reportRunId: runId },
-    });
-
-    if (error) {
-      throw error;
-    }
-
-    setActiveRun(null);
-    setIsGenerating(false);
-    setSteps([]);
-    toast({
-      title: "Generation cancelled",
-      description: "Your credit has been refunded. You can try again when ready.",
-    });
-  } catch (error) {
-    console.error("Error cancelling run:", error);
-    
-    // Check if error is "already completed or failed" - this means cancel worked
-    const errorMessage = error instanceof Error ? error.message : "";
-    if (errorMessage.includes("already completed") || errorMessage.includes("already failed")) {
-      // This is actually success - the run was cancelled
-      setActiveRun(null);
-      setIsGenerating(false);
-      setSteps([]);
-      toast({
-        title: "Generation cancelled",
-        description: "You can try again when ready.",
-      });
-    } else {
-      toast({
-        title: "Failed to cancel",
-        description: "Please try again or contact support.",
-        variant: "destructive",
-      });
-    }
-  } finally {
-    setIsCancelling(false);
-  }
-}, [toast, isCancelling]);
-
-// Return isCancelling in the hook's return object
-return {
-  // ... existing returns
-  isCancelling,
-  cancelRun,
-};
+console.log("Extraction response structure:", JSON.stringify({
+  hasChoices: !!extractionResult.choices,
+  choiceCount: extractionResult.choices?.length,
+  hasMessage: !!extractionResult.choices?.[0]?.message,
+  hasToolCalls: !!extractionResult.choices?.[0]?.message?.tool_calls,
+  toolCallCount: extractionResult.choices?.[0]?.message?.tool_calls?.length,
+  contentLength: extractionResult.choices?.[0]?.message?.content?.length,
+  finishReason: extractionResult.choices?.[0]?.finish_reason,
+}, null, 2));
 ```
 
-### 2. Update GenerationProgress to Accept Loading State
+### 2. Wrap JSON.parse in Try-Catch
 
-**File: `src/components/workspace/GenerationProgress.tsx`**
-
-Add `isCancelling` prop and disable the button when cancelling:
+Add proper error handling around JSON parsing with detailed error messages:
 
 ```typescript
-interface GenerationProgressProps {
-  // ... existing props
-  isCancelling?: boolean;
+const toolCall = extractionResult.choices?.[0]?.message?.tool_calls?.[0];
+if (toolCall?.function?.arguments) {
+  try {
+    suggestions = JSON.parse(toolCall.function.arguments);
+    console.log("Successfully parsed tool call arguments");
+  } catch (parseError) {
+    console.error("Failed to parse tool call arguments:", parseError);
+    console.error("Raw arguments (first 1000 chars):", toolCall.function.arguments.substring(0, 1000));
+  }
 }
 
-// In the component body, update both cancel buttons:
-
-{/* Cancel button for in-progress runs */}
-{onCancel && (
-  <Button 
-    variant="ghost" 
-    size="sm" 
-    onClick={onCancel}
-    disabled={isCancelling}
-    className="gap-2 text-muted-foreground hover:text-destructive"
-  >
-    {isCancelling ? (
-      <Loader2 className="h-4 w-4 animate-spin" />
-    ) : (
-      <XCircle className="h-4 w-4" />
-    )}
-    {isCancelling ? "Cancelling..." : "Cancel Generation"}
-  </Button>
-)}
-
-// Also update the "Cancel & Start Over" button in the stalled section:
-{onCancel && (
-  <Button 
-    variant="outline" 
-    size="sm" 
-    onClick={onCancel}
-    disabled={isCancelling}
-    className="gap-2"
-  >
-    {isCancelling ? (
-      <Loader2 className="h-4 w-4 animate-spin" />
-    ) : (
-      <XCircle className="h-4 w-4" />
-    )}
-    {isCancelling ? "Cancelling..." : "Cancel & Start Over"}
-  </Button>
-)}
+if (!suggestions) {
+  const content = extractionResult.choices?.[0]?.message?.content;
+  if (content) {
+    console.log("Attempting content fallback, content length:", content.length);
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        suggestions = JSON.parse(jsonMatch[0]);
+        console.log("Successfully parsed from content fallback");
+      } catch (parseError) {
+        console.error("Failed to parse content JSON:", parseError);
+        console.error("Raw match (first 1000 chars):", jsonMatch[0].substring(0, 1000));
+      }
+    } else {
+      console.error("No JSON object found in content");
+    }
+  } else {
+    console.error("No content in response");
+  }
+}
 ```
 
-### 3. Pass isCancelling to GenerationProgress
+### 3. Handle Gemini-3 Specific Response Formats
 
-**File: `src/pages/ApplicationWorkspace.tsx`**
-
-Update the destructuring and prop passing:
+Gemini models sometimes return tool calls in a slightly different structure. Add additional fallback paths:
 
 ```typescript
-const { 
-  // ... existing destructuring
-  isCancelling,
-  cancelRun,
-} = useReportGeneration(id, { onNoCredits: handleNoCredits });
+// Some models use tool_calls, others use function_call
+const message = extractionResult.choices?.[0]?.message;
+let toolCallArgs: string | undefined;
 
-// In the GenerationProgress component:
-<GenerationProgress
-  // ... existing props
-  isCancelling={isCancelling}
-  onCancel={() => cancelRun(activeRun.id)}
-/>
+// Try standard OpenAI format
+if (message?.tool_calls?.[0]?.function?.arguments) {
+  toolCallArgs = message.tool_calls[0].function.arguments;
+}
+// Try older function_call format
+else if (message?.function_call?.arguments) {
+  toolCallArgs = message.function_call.arguments;
+}
+// Try Gemini's grounding structure
+else if (message?.tool_calls?.[0]?.args) {
+  // Gemini sometimes puts args directly, not as string
+  suggestions = message.tool_calls[0].args;
+}
 ```
 
-### 4. Fix Edge Function Status Check
+### 4. Fallback to Simpler Model
 
-**File: `supabase/functions/cancel-report-run/index.ts`**
-
-Make the status check more lenient - if already failed, return success instead of error:
+If Gemini-3-Flash-Preview is having issues, add a retry with a known-stable model:
 
 ```typescript
-// Only allow cancelling pending or running reports
-// If already failed/completed, treat as success (idempotent)
-if (reportRun.status !== "pending" && reportRun.status !== "running") {
-  console.log(`Report run ${reportRunId} already in status ${reportRun.status}, treating as cancelled`);
-  return new Response(
-    JSON.stringify({ 
-      success: true, 
-      message: "Report generation already stopped",
-      alreadyStopped: true
+// After first attempt fails, retry with stable model
+if (!suggestions) {
+  console.log("Retrying extraction with gemini-2.5-flash...");
+  
+  const retryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: extractionPrompt },
+        { role: "user", content: `Analyze these grant guidelines and extract the Grant DNA Pack. Return ONLY valid JSON:\n\n${guidelines_text.substring(0, 60000)}` },
+      ],
+      // Note: Skip tool_choice for simpler response
     }),
-    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-  );
+  });
+  
+  // Parse retry response...
 }
 ```
 
@@ -195,24 +144,29 @@ if (reportRun.status !== "pending" && reportRun.status !== "running") {
 
 | File | Change |
 |------|--------|
-| `src/hooks/useReportGeneration.ts` | Add `isCancelling` state, improve error handling |
-| `src/components/workspace/GenerationProgress.tsx` | Add `isCancelling` prop, disable button + show spinner |
-| `src/pages/ApplicationWorkspace.tsx` | Pass `isCancelling` prop |
-| `supabase/functions/cancel-report-run/index.ts` | Make idempotent (return success if already stopped) |
+| `supabase/functions/process-grant-guidelines/index.ts` | Add logging, error handling, fallback parsing, and retry logic |
 
-## Expected Behavior After Fix
+## Implementation Details
 
-1. User clicks "Cancel Generation"
-2. Button shows spinner and "Cancelling..." text
-3. Button is disabled - no double-clicks possible
-4. Request completes (or fails with "already stopped")
-5. Toast confirms cancellation
-6. UI resets to allow new generation
+### Location: Lines 1666-1688
+
+Replace the current parsing block with enhanced version that:
+1. Logs the response structure before parsing
+2. Wraps each JSON.parse in try-catch
+3. Logs what was attempted and what failed
+4. Handles multiple possible response formats
+5. Adds a retry with simpler model if first attempt fails
 
 ## Testing Checklist
 
-1. [ ] Click Cancel once - verify spinner appears immediately
-2. [ ] Click Cancel rapidly - verify only one request sent
-3. [ ] Cancel a running report - verify credit refunded
-4. [ ] Cancel a stalled report - verify UI resets
-5. [ ] Verify toast message appears after successful cancel
+1. [ ] Upload a grant guidelines PDF
+2. [ ] Check edge function logs for response structure
+3. [ ] Verify parsing succeeds or provides actionable error
+4. [ ] If retry kicks in, verify it uses stable model
+5. [ ] Confirm pipeline generation completes
+
+## Expected Outcome
+
+After this fix, either:
+- **Success**: The parsing works with proper format handling
+- **Debugging**: Logs show exactly what the AI returned so we can fix the prompt/model
