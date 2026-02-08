@@ -16,7 +16,7 @@ import { useEntitlements } from "@/hooks/useEntitlements";
 import { useReportGeneration } from "@/hooks/useReportGeneration";
 import { useAuth } from "@/hooks/useAuth";
 import { PurchaseModal } from "@/components/PurchaseModal";
-import { ReportInputs, RequiredInput } from "@/components/workspace/ReportInputs";
+import { ReportInputs } from "@/components/workspace/ReportInputs";
 import { GenerationProgress } from "@/components/workspace/GenerationProgress";
 import { ReportsList } from "@/components/workspace/ReportsList";
 
@@ -26,7 +26,6 @@ interface ApplicationData {
   status: string;
   inputs_json: Record<string, string>;
   grant_version: {
-    required_inputs_json: RequiredInput[] | null;
     grant: {
       name: string;
     };
@@ -103,7 +102,6 @@ export default function ApplicationWorkspace() {
           status,
           inputs_json,
           grant_version:grant_versions!inner(
-            required_inputs_json,
             grant:grants!inner(name)
           )
         `)
@@ -139,15 +137,10 @@ export default function ApplicationWorkspace() {
         if (!normalizedInputs.trl) normalizedInputs.trl = "";
         if (!normalizedInputs.ipStatus) normalizedInputs.ipStatus = "";
         
-        // Parse required_inputs_json from grant version
+        // Extract grant name from grant version
         const grantVersionData = data.grant_version as unknown as { 
-          required_inputs_json: unknown; 
           grant: { name: string } | { name: string }[] 
         };
-        const requiredInputsRaw = grantVersionData?.required_inputs_json;
-        const parsedRequiredInputs: RequiredInput[] = Array.isArray(requiredInputsRaw) 
-          ? requiredInputsRaw as RequiredInput[]
-          : [];
         
         const grantName = Array.isArray(grantVersionData?.grant) 
           ? grantVersionData.grant[0]?.name 
@@ -159,7 +152,6 @@ export default function ApplicationWorkspace() {
           status: data.status,
           inputs_json: normalizedInputs,
           grant_version: {
-            required_inputs_json: parsedRequiredInputs,
             grant: { name: grantName }
           }
         };
@@ -342,7 +334,6 @@ export default function ApplicationWorkspace() {
           onToggleCollapse={() => setInputsCollapsed(!inputsCollapsed)}
           projectName={projectName}
           onProjectNameChange={setProjectName}
-          requiredInputs={application.grant_version.required_inputs_json || []}
         />
 
         {/* Generate Report Button */}
