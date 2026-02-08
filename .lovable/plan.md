@@ -1,285 +1,392 @@
 
-
-# Update Report Assembly + Citation Finalization to Eliminate Internal Source IDs
+# Assessor-Grade TAM/SAM/SOM Dual Methodology Implementation
 
 ## Summary
 
-Update the report assembly pipeline to ensure internal source markers (e.g., `[S0-1]`, `[step9]`, `[article]`, `[Source1]`) never appear in final report output. Implement APA in-text citation format `(Author, Year)` for source references and add comprehensive hard validation with sentence-level error reporting.
+Upgrade the pipeline generation system to produce assessor-grade TAM/SAM/SOM outputs with dual methodology (top-down + bottom-up), mandatory assumption registers, sensitivity analysis, sanity checks, evidence-type enforcement, and structured output schemas. This applies universally to ALL grant archetypes.
 
-## Current State
+## Current State Analysis
 
-The codebase has extensive citation normalization infrastructure:
-- `citationNormalizer.ts` with `sanitizeFinalReport()`, `validateFinalReport()`, and `lintBracketTokens()`
-- `worker-proxy/index.ts` with `FORBIDDEN_PATTERNS_LINT` and hard failure gates
-- Test coverage in `citationNormalizer.test.ts`
+The existing codebase has:
+1. **bundleGeneratorSpec.ts** - Contains `market_sizing` module with basic TAM/SAM/SOM calculations but lacks dual methodology
+2. **process-grant-guidelines/index.ts** - Has TAM/SAM/SOM proxy protocol section (lines 2016-2063) requiring dual proxies and reconciliation
+3. **pipelineQualityGate.ts** - Validates pipelines but doesn't specifically check for the `tam_sam_som_dual_methodology` step
 
 ## Gaps to Address
 
 | Gap | Current State | Required State |
 |-----|---------------|----------------|
-| Step reference patterns | `[step9]`, `[stepN]` not covered | Add to forbidden patterns |
-| Citation format | Numeric `[1]` links | APA `(Author, Year)` hyperlinked |
-| Assembly prompts | No explicit anti-bracket rules | Explicit prohibition + APA format instruction |
-| Missing source handling | Removed silently | Replace with "Unknown (no validated source found)" + log to unknowns |
-| Error context | Pattern name only | Include surrounding sentence |
+| Dedicated step name | `market_sizing` or `calculate_market_sizing` | Must be EXACTLY `tam_sam_som_dual_methodology` |
+| Dual methodology | Basic proxy protocol exists | Enforce BOTH top-down AND bottom-up in single step |
+| Assumption register | Ad-hoc assumption notes | Structured array with assumption_id, confidence_label, defensibility_note |
+| Sensitivity analysis | Mentioned but not enforced | base/low/high for each of TAM/SAM/SOM + drivers |
+| Sanity checks | Not implemented | pricing consistency, penetration comparables, spend ceiling validation |
+| Evidence-type matching | Exists in contract | Must trigger "Unknown (evidence type mismatch)" for violations |
+| Placeholder ban | Partial coverage | Hard ban on $Z, A%, B, C, PROXY placeholders |
+| Output schema | Basic structure | Full JSON schema with 10+ top-level fields |
+| Quality gate validation | Checks TAM/SAM "Unknown" | Must also validate `tam_sam_som_dual_methodology` step exists |
 
 ---
 
 ## Implementation Plan
 
-### File 1: Update `src/lib/citationNormalizer.ts`
+### File 1: Update `src/lib/bundleGeneratorSpec.ts`
 
-**Changes:**
+Replace the existing `market_sizing` module with a new `tam_sam_som_dual_methodology` module:
 
-1. **Add missing forbidden patterns:**
+**Key Changes:**
+
+1. **Rename module** from `market_sizing` to `tam_sam_som_dual_methodology`
+2. **Update `role_name`** to `tam_sam_som_dual_methodology`
+3. **Expand `outputs_schema`** to include all required fields
+4. **Add comprehensive prompt template** (~3000+ chars) including:
+   - Market definition with buyer personas
+   - Pricing anchors (min 3)
+   - Top-down sizing with formula, inputs, sensitivity
+   - Bottom-up sizing with same structure
+   - Reconciliation logic with divergence explanation
+   - Assumptions register with 7 required fields per assumption
+   - Sensitivity summary with drivers
+   - Sanity checks with pass/fail + fix_applied
+   - Unknowns array with proxy_attempted flag
+
+**New Module Structure:**
+
 ```typescript
-// Step reference patterns
-{ pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
-{ pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
-```
-
-2. **Add APA in-text citation conversion function:**
-```typescript
-export function convertToApaInText(
-  html: string,
-  sourceMap: Map<string, SourceEntry>
-): { html: string; unknowns: UnknownEntry[] };
-```
-
-This function will:
-- Find internal markers like `[S0-1]`
-- Look up the source in sourceMap
-- Convert to `<a href="#ref-N">(Author, Year)</a>` format
-- If source not found, replace with "Unknown (no validated source found)" and log to unknowns
-
-3. **Update `lintBracketTokens()` to return sentence context:**
-```typescript
-interface LintViolation {
-  pattern: string;
-  match: string;
-  sentence: string;  // Surrounding sentence context
-  offset: number;
-}
-```
-
-4. **Update `validateFinalReport()` to include sentence context in errors:**
-```typescript
-throw new Error(
-  `Internal citation markers leaked into final report:\n` +
-  violations.map(v => `- ${v.match} in: "${v.sentence}"`).join('\n')
-);
-```
-
----
-
-### File 2: Update `supabase/functions/worker-proxy/index.ts`
-
-**Changes:**
-
-1. **Add missing patterns to `FORBIDDEN_PATTERNS_LINT`:**
-```typescript
-{ pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
-{ pattern: /\[Source\d*\]/gi, name: '[Source1] marker' },
-```
-
-2. **Update error response to include sentence context:**
-```typescript
-return jsonResponse({
-  error: "Citation lint failed",
-  message: "Internal citation markers leaked into final report",
-  violations: violations.slice(0, 10).map(v => ({
-    token: v.match,
-    context: v.sentence
-  })),
-  hint: "..."
-}, 400);
-```
-
----
-
-### File 3: Update `supabase/functions/process-grant-guidelines/index.ts`
-
-**Changes:**
-
-1. **Update `report_assembly` prompt generation** to include explicit anti-bracket rules:
-
-Add to the assembly step prompt template:
-```
-CITATION FORMAT RULES (NON-NEGOTIABLE):
-1. NEVER use bracketed internal markers: [S0-1], [article], [Source1], [step9], etc.
-2. Convert source references to APA in-text citations: (Author, Year) or (Organisation, Year)
-3. If author unknown: use (Publisher, Year)
-4. Every numeric claim must have an APA in-text citation
-5. If source_id is missing from Source Pack, replace claim with: "Unknown (no validated source found)"
-
-FORBIDDEN OUTPUT PATTERNS (hard failure if present):
-- Any [S#-#] pattern
-- Any [step#] pattern  
-- Any [Source#] pattern
-- Any [article], [ref], [reference] markers
-- Any {TBD} or $[Amount] placeholders
-```
-
-2. **Update `finalize_citations` step template:**
-
-```
-STEP N — Finalize Citations (APA Transformation + Hard Validation)
-
-PURPOSE: Transform all internal source markers to APA format and validate no forbidden patterns remain.
-
-PROCESS:
-1. Build citation map: source_id → APA reference entry
-2. For each internal marker in text:
-   - If source exists: convert to (Author, Year) hyperlinked to #ref-N
-   - If source missing: replace with "Unknown (no validated source found)" + add to unknowns[]
-3. Build References section in valid APA format
-4. Run final sanitizer pass removing any remaining forbidden tokens
-
-REFERENCES LIST REQUIREMENTS:
-- Each entry must have: Author/Org, Year, Title, Publisher (if different), URL/DOI
-- No malformed stubs like "(2025)." with no title
-- All entries must be hyperlinked to their URLs
-
-HARD VALIDATION (fail run if any match):
-- /\[[Ss]\d+-\d+\]/ (internal source IDs)
-- /\[step\d+\]/ (step references)
-- /\[Source\d+\]/ (source markers)
-- /\{TBD\}/ (placeholders)
-- /\[article\]/ (generic markers)
-
-If violations found: output error listing exact tokens and surrounding sentences.
-
-OUTPUT SCHEMA:
 {
-  "report_html": "string (final HTML with APA citations, no internal markers)",
-  "references_html": "string (APA formatted references section)",
-  "unknowns": [
-    {
-      "type": "citation_unresolved",
-      "original_token": "string",
-      "sentence_context": "string",
-      "what_is_missing": "string",
-      "what_would_validate": "string"
-    }
+  module_name: "tam_sam_som_dual_methodology",
+  when_to_include: [...GRANT_ARCHETYPES], // Universal!
+  always_include: true, // Required for ALL archetypes
+  provides_outputs: [
+    "market_definition", 
+    "pricing_anchors",
+    "top_down", 
+    "bottom_up", 
+    "reconciliation",
+    "assumptions_register",
+    "sensitivity_summary",
+    "sanity_checks",
+    "unknowns"
   ],
-  "validation": {
-    "passed": boolean,
-    "violations_found": number,
-    "violations": ["string"]
-  }
+  depends_on: ["evidence_source_pack"],
+  step_template: { /* comprehensive template */ }
 }
 ```
 
 ---
 
-### File 4: Update `supabase/functions/recover-finalize-report/index.ts`
+### File 2: Update `supabase/functions/process-grant-guidelines/index.ts`
 
 **Changes:**
 
-1. **Add missing patterns to forbidden list**
-2. **Update `normalizeCitationsInHtml()` to handle missing sources properly:**
+1. **Update CORE_STEP_NAMES constant** (if defined locally) to include `tam_sam_som_dual_methodology`
 
-```typescript
-// When source not found in sourceMap:
-if (!citationOrder.has(id)) {
-  removed++;
-  unknowns.push({
-    type: 'citation_unresolved',
-    original_token: fullMatch,
-    sentence_context: extractSentence(html, offset),
-    what_is_missing: `Source ${markerId} not in source pack`,
-    what_would_validate: `Add source with id="${markerId}" to sources array`
-  });
-  return 'Unknown (no validated source found)';  // Instead of empty string
+2. **Add dedicated step template** in the core steps section:
+   - Position after `assumptions_register` (Step 3)
+   - Full 3000+ character prompt with exact output schema
+
+3. **Add placeholder ban list** to FORBIDDEN_PATTERNS:
+   ```typescript
+   { regex: /\$Z/gi, name: "$Z placeholder" },
+   { regex: /\bA%\b/gi, name: "A% placeholder" },
+   { regex: /\bPROXY\b(?!.*estimate)/gi, name: "PROXY placeholder" },
+   ```
+
+4. **Update the pipeline generation prompt** to explicitly require `tam_sam_som_dual_methodology` as a core step
+
+5. **Add evidence-type enforcement** within the step template:
+   - Market sizing must cite market research, NOT epidemiology
+   - If mismatch: replace with "Unknown (evidence type mismatch)" and log
+
+**New Step Template (to be inserted after assumptions_register):**
+
+```
+STEP 4 — TAM/SAM/SOM Dual Methodology (Assessor-Grade)
+
+PURPOSE: Produce market sizing with BOTH top-down and bottom-up methodologies, 
+transparent assumptions, sensitivity analysis, and sanity checks.
+
+DUAL METHODOLOGY REQUIREMENT (Non-Negotiable):
+You MUST output BOTH:
+A) Top-down sizing: Parent market × segment share
+B) Bottom-up sizing: Units × price × penetration
+
+Then reconcile and explain divergence if >30%.
+
+ASSUMPTIONS REGISTER REQUIREMENT:
+Every TAM/SAM/SOM number must be decomposed into inputs with:
+- assumption_id: "A1", "A2", etc.
+- description: What this assumption represents
+- value: Number or percentage
+- confidence_label: "High" | "Medium" | "Low"
+- defensibility_note: Why this is reasonable (based on evidence or conservative proxy)
+- validation_source_type: What would validate it best
+- source_id: "S0-#" OR "ESTIMATE" (only if defensibility_note + method provided)
+
+FORBIDDEN: Unexplained percentages like "A%" or "20%" without decomposition
+
+SENSITIVITY ANALYSIS (Mandatory):
+For each of TAM, SAM, SOM output:
+- base_case: Central estimate
+- low_case: Conservative bound
+- high_case: Optimistic bound
+- sensitivity_drivers[]: Top 3 assumptions that move the result most
+- why_low_high_bounds_are_defensible: Short rationale
+
+SANITY CHECKS (Must Pass Before Output):
+1. Implied price consistent with pricing anchors OR proxy method documented
+2. Implied adoption/penetration consistent with comparables OR conservative by design
+3. Implied spend does not exceed known category spend without explanation
+
+If any sanity check FAILS:
+- Revise assumptions OR
+- Downgrade confidence AND document in sanity_checks[].fix_applied
+
+EVIDENCE-TYPE ENFORCEMENT:
+- Market size/growth/pricing must cite: market research, industry reports, procurement data, PBS/MBS
+- Market sizing must NOT cite: epidemiology papers, disease burden studies
+- If mismatch detected: Replace claim with "Unknown (evidence type mismatch)" and log to unknowns[]
+
+OUTPUT JSON SCHEMA:
+{
+  "market_definition": {
+    "product_category": "string",
+    "buyer": { "payer": "string", "decision_maker": "string", "user": "string" },
+    "geographies": ["Australia", "Global"],
+    "time_horizon_years": number
+  },
+  "pricing_anchors": [
+    { "anchor_name": "string", "price": number, "currency": "AUD|USD", "year": number,
+      "source_id": "S0-#", "relevance": "string" }
+  ],
+  "top_down": {
+    "tam": { "value": number, "currency": "AUD|USD", "year": number,
+             "formula": "string", "inputs": [{ "label": "string", "value": number, "source_id": "S0-#|ESTIMATE" }],
+             "sensitivity": { "low": number, "high": number }, "confidence": "high|medium|low" },
+    "sam": { /* same structure */ },
+    "som": { /* same structure */ }
+  },
+  "bottom_up": {
+    "tam": { /* same structure */ },
+    "sam": { /* same structure */ },
+    "som": { /* same structure */ }
+  },
+  "reconciliation": {
+    "explanation": "string",
+    "preferred_method": "top_down|bottom_up|blended",
+    "blended_value": { "tam": number, "sam": number, "som": number, "currency": "AUD|USD", "year": number }
+  },
+  "assumptions_register": [
+    { "assumption_id": "A1", "description": "string", "value": "number|percent",
+      "confidence_label": "High|Medium|Low", "defensibility_note": "string",
+      "source_id": "S0-#|ESTIMATE", "validation_source_type": "string" }
+  ],
+  "sensitivity_summary": {
+    "tam": { "base": number, "low": number, "high": number },
+    "sam": { "base": number, "low": number, "high": number },
+    "som": { "base": number, "low": number, "high": number },
+    "sensitivity_drivers": ["A1", "A3", "A7"]
+  },
+  "sanity_checks": [
+    { "check": "string", "status": "pass|fail", "note": "string", "fix_applied": "string|none" }
+  ],
+  "unknowns": [
+    { "what_is_missing": "string", "what_would_validate": "string", "proxy_attempted": true, "method": "string" }
+  ]
 }
 ```
 
 ---
 
-### File 5: Update `src/test/citationNormalizer.test.ts`
+### File 3: Update `src/lib/pipelineQualityGate.ts`
 
-**Add test cases:**
+**Changes:**
+
+1. **Add `tam_sam_som_dual_methodology` to CORE_STEP_NAMES**:
+   ```typescript
+   export const CORE_STEP_NAMES = [
+     'build_source_pack',
+     'rubric_traceability_matrix',
+     'assessor_insight_layer',
+     'assumptions_register',
+     'tam_sam_som_dual_methodology',  // NEW
+     'comparables_market_signals',
+     // ... rest
+   ] as const;
+   ```
+
+2. **Add market sizing placeholder patterns to HARD_FAIL_PATTERNS**:
+   ```typescript
+   { pattern: /\$Z\b/gi, name: '$Z placeholder' },
+   { pattern: /\bA%\b/gi, name: 'A% placeholder' },
+   { pattern: /\bB%\b/gi, name: 'B% placeholder' },
+   { pattern: /\bC%\b/gi, name: 'C% placeholder' },
+   ```
+
+3. **Add new red flag detection** for missing dual methodology:
+   ```typescript
+   // In detectRedFlags():
+   const marketStep = steps.find(s => s.step_name === 'tam_sam_som_dual_methodology');
+   if (marketStep) {
+     const prompt = marketStep.prompt_template.toLowerCase();
+     const hasDualMethod = 
+       prompt.includes('top-down') && prompt.includes('bottom-up') ||
+       prompt.includes('top_down') && prompt.includes('bottom_up');
+     
+     if (!hasDualMethod) {
+       flags.push('tam_sam_som_dual_methodology lacks dual methodology requirement');
+     }
+     
+     const hasAssumptionRegister = prompt.includes('assumption_id') || prompt.includes('assumptions_register');
+     if (!hasAssumptionRegister) {
+       flags.push('tam_sam_som_dual_methodology lacks assumptions_register requirement');
+     }
+   }
+   ```
+
+4. **Add new repair action** for missing dual methodology:
+   ```typescript
+   export function injectDualMethodologyRequirement(prompt: string): string {
+     const requirement = `
+   
+   DUAL METHODOLOGY (Mandatory for TAM/SAM/SOM):
+   - MUST output BOTH top-down (parent market × segment share) AND bottom-up (units × price × penetration)
+   - Reconcile methods if divergence >30%
+   - Include assumptions_register with assumption_id, confidence_label, defensibility_note
+   - Sensitivity analysis required: base/low/high for each metric
+   `;
+     // Insert before OUTPUT SCHEMA
+     const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
+     if (outputSchemaIdx !== -1) {
+       return prompt.slice(0, outputSchemaIdx) + requirement + prompt.slice(outputSchemaIdx);
+     }
+     return prompt + requirement;
+   }
+   ```
+
+---
+
+### File 4: Update Report Assembly Templates
+
+In `process-grant-guidelines/index.ts`, update the `createHtmlAssemblySteps` function to include dedicated market sizing presentation:
+
+**Changes to `assemble_sections_html` step:**
+
+Add to REQUIRED SECTIONS:
+```
+6. Market Sizing (TAM/SAM/SOM) with:
+   - BOTH top-down and bottom-up methodologies presented
+   - Assumptions register as a table with columns: ID, Description, Value, Confidence, Defensibility, Source
+   - Sensitivity summary as a table showing base/low/high for TAM/SAM/SOM
+   - Reconciliation explanation in assessor language
+   - Sanity check results (passed/failed with notes)
+   - Why assumptions are conservative / audit-ready
+   - NEVER show internal placeholders or bracketed tokens
+```
+
+---
+
+### File 5: Add Tests to `src/test/pipelineQualityGate.test.ts`
+
+Add test cases for the new TAM/SAM/SOM validation:
 
 ```typescript
-describe("step reference patterns", () => {
-  it("should remove [step9] references", () => {
-    const input = "<p>Data from [step9] shows growth.</p>";
-    const result = sanitizeFinalReport(input);
-    expect(result.html).not.toContain("[step9]");
+describe("tam_sam_som_dual_methodology validation", () => {
+  it("should require tam_sam_som_dual_methodology in CORE_STEP_NAMES", () => {
+    expect(CORE_STEP_NAMES).toContain('tam_sam_som_dual_methodology');
   });
 
-  it("should remove [Source1] markers", () => {
-    const input = "<p>According to [Source1] the market is growing.</p>";
-    const result = sanitizeFinalReport(input);
-    expect(result.html).not.toContain("[Source1]");
-  });
-});
-
-describe("APA citation format", () => {
-  it("should convert [S0-1] to (Author, Year) format", () => {
-    const sources = [{ id: "S0-1", authors: "Smith, J.", year: "2024", ... }];
-    const result = convertToApaInText("<p>Market grew [S0-1].</p>", buildSourceMap(sources));
-    expect(result.html).toContain("(Smith, J., 2024)");
-    expect(result.html).not.toContain("[S0-1]");
+  it("should fail if tam_sam_som_dual_methodology is missing", () => {
+    const steps = createValidPipeline().filter(s => 
+      s.step_name !== 'tam_sam_som_dual_methodology'
+    );
+    const failures = checkHardFails(steps);
+    expect(failures.some(f => f.includes('tam_sam_som_dual_methodology'))).toBe(true);
   });
 
-  it("should replace missing source with Unknown phrase", () => {
-    const result = convertToApaInText("<p>Data [S0-999] unavailable.</p>", new Map());
-    expect(result.html).toContain("Unknown (no validated source found)");
-    expect(result.unknowns.length).toBe(1);
+  it("should flag if dual methodology not required in prompt", () => {
+    const steps = createValidPipeline();
+    const marketStep = steps.find(s => s.step_name === 'tam_sam_som_dual_methodology');
+    if (marketStep) {
+      marketStep.prompt_template = createMinimalPrompt('tam_sam_som_dual_methodology');
+    }
+    const flags = detectRedFlags(steps);
+    expect(flags.some(f => f.includes('dual methodology'))).toBe(true);
   });
-});
 
-describe("sentence context in errors", () => {
-  it("should include surrounding sentence in validation errors", () => {
-    const html = "<p>The market showed [S0-1] growth rates.</p>";
-    expect(() => validateFinalReport(html)).toThrow(/growth rates/);
+  it("should fail if $Z placeholder appears in template", () => {
+    const steps = createValidPipeline();
+    steps[0].prompt_template += " The market size is $Z million";
+    const failures = checkHardFails(steps);
+    expect(failures.some(f => f.includes('$Z'))).toBe(true);
+  });
+
+  it("should fail if A% placeholder appears in template", () => {
+    const steps = createValidPipeline();
+    steps[0].prompt_template += " Growth rate of A% annually";
+    const failures = checkHardFails(steps);
+    expect(failures.some(f => f.includes('A%'))).toBe(true);
   });
 });
 ```
 
 ---
 
-## Technical Details
+## Output Schema (Complete Reference)
 
-### APA In-Text Citation Format
+The `tam_sam_som_dual_methodology` step must return JSON with EXACT fields:
 
-| Scenario | Input | Output |
-|----------|-------|--------|
-| Author + Year available | `[S0-1]` where source has `authors: "Smith, J.", year: "2024"` | `<a href="#ref-1">(Smith, J., 2024)</a>` |
-| Organisation only | `[S0-2]` where source has `publisher: "ABS", year: "2023"` | `<a href="#ref-2">(ABS, 2023)</a>` |
-| No year | `[S0-3]` where source has `authors: "Jones"` | `<a href="#ref-3">(Jones, n.d.)</a>` |
-| Source not found | `[S0-999]` | `Unknown (no validated source found)` + log to unknowns |
-
-### Forbidden Patterns (Complete List)
-
-```typescript
-const FORBIDDEN_PATTERNS = [
-  // Internal source ID formats
-  /\[S\d+-[A-Z0-9]+\]/gi,           // [S0-1], [S12-3]
-  /\[ARTICLE-\d+\]/gi,              // [ARTICLE-1]
-  /\[SEARCH-\d+\]/gi,               // [SEARCH-1]
-  /\[SOURCE-\d+\]/gi,               // [SOURCE-1]
-  /\[step\d+\]/gi,                  // [step9]
-  /\[Source\d*\]/gi,                // [Source1], [Source]
-  
-  // Generic markers
-  /\[article\]/gi,                  // [article]
-  /\[ref\]/gi,                      // [ref]
-  /\[reference\d*\]/gi,             // [reference], [reference1]
-  
-  // Placeholders
-  /\{TBD\}/gi,                      // {TBD}
-  /\[TBD\]/gi,                      // [TBD]
-  /\[Insert[^\]]*\]/gi,             // [Insert...]
-  /\[PROJECT\s*NAME\]/gi,           // [PROJECT NAME]
-  /\[COMPANY\]/gi,                  // [COMPANY]
-  /\$\[[^\]]+\]/g,                  // $[Amount]
-  
-  // Undefined markers
-  /undefined\s*\[/gi,               // undefined [
-  /\]\s*undefined/gi,               // ] undefined
-];
+```json
+{
+  "market_definition": {
+    "product_category": "string",
+    "buyer": { "payer": "string", "decision_maker": "string", "user": "string" },
+    "geographies": ["Australia", "Global"],
+    "time_horizon_years": 5
+  },
+  "pricing_anchors": [
+    { "anchor_name": "Comparable A", "price": 50000, "currency": "AUD", "year": 2024,
+      "source_id": "S0-3", "relevance": "Direct competitor pricing" }
+  ],
+  "top_down": {
+    "tam": { "value": 5000000000, "currency": "AUD", "year": 2024,
+             "formula": "Global market $X × AU GDP share (1.6%)",
+             "inputs": [{ "label": "Global market", "value": 312500000000, "source_id": "S0-1" }],
+             "sensitivity": { "low": 4000000000, "high": 6000000000 },
+             "confidence": "medium" },
+    "sam": { "...same structure..." },
+    "som": { "...same structure..." }
+  },
+  "bottom_up": {
+    "tam": { "...same structure..." },
+    "sam": { "...same structure..." },
+    "som": { "...same structure..." }
+  },
+  "reconciliation": {
+    "explanation": "Top-down yields $5B, bottom-up yields $4.2B (16% difference). Using bottom-up as more conservative.",
+    "preferred_method": "bottom_up",
+    "blended_value": { "tam": 4200000000, "sam": 840000000, "som": 42000000, "currency": "AUD", "year": 2024 }
+  },
+  "assumptions_register": [
+    { "assumption_id": "A1", "description": "AU represents 1.6% of global market",
+      "value": "1.6%", "confidence_label": "High",
+      "defensibility_note": "Based on AU GDP share in World Bank data",
+      "source_id": "S0-5", "validation_source_type": "World Bank GDP statistics" }
+  ],
+  "sensitivity_summary": {
+    "tam": { "base": 4200000000, "low": 3500000000, "high": 5500000000 },
+    "sam": { "base": 840000000, "low": 700000000, "high": 1100000000 },
+    "som": { "base": 42000000, "low": 35000000, "high": 55000000 },
+    "sensitivity_drivers": ["A1", "A3", "A7"]
+  },
+  "sanity_checks": [
+    { "check": "Implied unit price within ±30% of pricing anchors", "status": "pass", "note": "$47k vs anchors $45-55k", "fix_applied": "none" },
+    { "check": "Penetration rate below 10% in Year 1", "status": "pass", "note": "0.5% assumed", "fix_applied": "none" }
+  ],
+  "unknowns": [
+    { "what_is_missing": "Direct AU market sizing report", "what_would_validate": "IBISWorld AU industry report", "proxy_attempted": true, "method": "Used Global × GDP ratio" }
+  ]
+}
 ```
 
 ---
@@ -288,20 +395,31 @@ const FORBIDDEN_PATTERNS = [
 
 | File | Action | Description |
 |------|--------|-------------|
-| `src/lib/citationNormalizer.ts` | MODIFY | Add step patterns, APA format conversion, sentence context |
-| `supabase/functions/worker-proxy/index.ts` | MODIFY | Add missing patterns, sentence context in errors |
-| `supabase/functions/process-grant-guidelines/index.ts` | MODIFY | Update assembly prompts with anti-bracket rules |
-| `supabase/functions/recover-finalize-report/index.ts` | MODIFY | Add patterns, "Unknown" replacement for missing sources |
-| `src/test/citationNormalizer.test.ts` | MODIFY | Add tests for step patterns, APA format, sentence context |
+| `src/lib/bundleGeneratorSpec.ts` | MODIFY | Replace `market_sizing` with `tam_sam_som_dual_methodology` module |
+| `supabase/functions/process-grant-guidelines/index.ts` | MODIFY | Add core step template, update FORBIDDEN_PATTERNS, pipeline prompt |
+| `src/lib/pipelineQualityGate.ts` | MODIFY | Add to CORE_STEP_NAMES, add placeholder patterns, red flag detection, repair action |
+| `src/test/pipelineQualityGate.test.ts` | MODIFY | Add tests for dual methodology validation |
+
+---
+
+## Quality Gate Updates
+
+The quality gate will now:
+1. **Hard-fail** if `tam_sam_som_dual_methodology` step is missing
+2. **Hard-fail** if any prompt contains `$Z`, `A%`, `B%`, `C%`, or `PROXY` (without "estimate") placeholders
+3. **Red-flag** if the step lacks dual methodology or assumptions_register requirements
+4. **Auto-repair** by injecting the dual methodology requirement if conditional_pass
 
 ---
 
 ## Acceptance Criteria
 
-1. Final report contains NO bracketed source markers of any kind
-2. Every numeric claim has an APA in-text citation `(Author, Year)` hyperlinked to references
-3. References list contains only complete APA entries (no malformed stubs)
-4. Missing sources are replaced with "Unknown (no validated source found)" and logged to unknowns
-5. Hard failure gate shows exact token AND surrounding sentence when violations found
-6. All new tests pass
-
+1. Pipeline generation produces a step named EXACTLY `tam_sam_som_dual_methodology`
+2. Step outputs include BOTH top-down AND bottom-up methodologies
+3. Assumptions register includes all 7 required fields per assumption
+4. Sensitivity analysis includes base/low/high for each metric
+5. Sanity checks validate pricing consistency and penetration realism
+6. Evidence-type mismatches produce "Unknown (evidence type mismatch)"
+7. Placeholders ($Z, A%, B, C, PROXY) trigger hard-fail in quality gate
+8. Report assembly presents market sizing with both methods, assumptions table, and sensitivity table
+9. All new tests pass
