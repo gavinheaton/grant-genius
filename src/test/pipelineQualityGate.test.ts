@@ -129,6 +129,9 @@ function createValidPipeline(): PipelineStep[] {
     if (stepName === 'report_assembly') {
       prompt += `\n\nGRANT-WRITER VOICE: Write like a professional grant writer for expert assessors. Map content to rubric titles explicitly.`;
     }
+    if (stepName === 'tam_sam_som_dual_methodology') {
+      prompt += `\n\nDUAL METHODOLOGY REQUIRED: Output BOTH top-down (parent market × segment share) AND bottom-up (units × price × penetration). Include assumptions_register with assumption_id, confidence_label, defensibility_note. Sensitivity analysis: base/low/high. Sanity checks: pricing consistency, penetration, spend ceiling. Reconciliation required if divergence >30%.`;
+    }
     
     steps.push({
       step_number: i,
@@ -138,9 +141,9 @@ function createValidPipeline(): PipelineStep[] {
     });
   }
   
-  // Add one extra step to meet minimum (12 required, 11 core)
+  // Add one extra step to meet minimum (13 required now, 12 core)
   steps.push({
-    step_number: 11,
+    step_number: 12,
     step_name: 'qa_validation',
     step_description: 'Quality assurance validation',
     prompt_template: createMinimalPrompt('qa_validation'),

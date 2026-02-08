@@ -65,6 +65,7 @@ export const CORE_STEP_NAMES = [
   'rubric_traceability_matrix',
   'assessor_insight_layer',
   'assumptions_register',
+  'tam_sam_som_dual_methodology',  // Assessor-grade market sizing with dual methodology
   'comparables_market_signals',
   'additionality_and_benefit_case',
   'commercialisation_logic',
@@ -90,6 +91,12 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /Source1/gi, name: 'Source1' },
   { pattern: /\[article\]/gi, name: '[article]' },
   { pattern: /```/g, name: 'Triple backticks' },
+  // Market sizing placeholder patterns (assessor-grade TAM/SAM/SOM requirement)
+  { pattern: /\$Z\b/gi, name: '$Z placeholder' },
+  { pattern: /\bA%\b/g, name: 'A% placeholder' },
+  { pattern: /\bB%\b/g, name: 'B% placeholder' },
+  { pattern: /\bC%\b/g, name: 'C% placeholder' },
+  { pattern: /\bPROXY\b(?![_\s]*(estimate|method|calculation|protocol))/gi, name: 'PROXY placeholder (without method)' },
 ];
 
 const MINIMUM_PROMPT_LENGTH = 1500;
@@ -459,6 +466,58 @@ export function detectRedFlags(steps: PipelineStep[]): string[] {
       flags.push(`${step.step_name} allows "Unknown" for TAM/SAM/SOM without proxy requirement`);
     }
   }
+  
+  // 2b. tam_sam_som_dual_methodology must require dual methodology
+  const dualMethodStep = steps.find(s => s.step_name === 'tam_sam_som_dual_methodology');
+  if (dualMethodStep) {
+    const prompt = dualMethodStep.prompt_template.toLowerCase();
+    
+    // Check for dual methodology requirement
+    const hasTopDown = prompt.includes('top-down') || prompt.includes('top_down');
+    const hasBottomUp = prompt.includes('bottom-up') || prompt.includes('bottom_up');
+    
+    if (!hasTopDown || !hasBottomUp) {
+      flags.push('tam_sam_som_dual_methodology lacks dual methodology requirement (must have both top-down AND bottom-up)');
+    }
+    
+    // Check for assumptions register requirement
+    const hasAssumptionRegister = 
+      prompt.includes('assumption_id') || 
+      prompt.includes('assumptions_register') ||
+      (prompt.includes('assumption') && prompt.includes('register'));
+    
+    if (!hasAssumptionRegister) {
+      flags.push('tam_sam_som_dual_methodology lacks assumptions_register requirement');
+    }
+    
+    // Check for sensitivity analysis requirement
+    const hasSensitivity = 
+      prompt.includes('sensitivity') && 
+      (prompt.includes('low') && prompt.includes('high') || prompt.includes('base'));
+    
+    if (!hasSensitivity) {
+      flags.push('tam_sam_som_dual_methodology lacks sensitivity analysis requirement (base/low/high cases)');
+    }
+    
+    // Check for sanity checks requirement
+    const hasSanityChecks = 
+      prompt.includes('sanity check') || prompt.includes('sanity_check') ||
+      (prompt.includes('pricing') && prompt.includes('anchor') && prompt.includes('consistent'));
+    
+    if (!hasSanityChecks) {
+      flags.push('tam_sam_som_dual_methodology lacks sanity checks requirement');
+    }
+    
+    // Check for reconciliation requirement
+    const hasReconciliation = 
+      prompt.includes('reconcil') || 
+      prompt.includes('divergence') ||
+      (prompt.includes('compare') && prompt.includes('method'));
+    
+    if (!hasReconciliation) {
+      flags.push('tam_sam_som_dual_methodology lacks reconciliation requirement for divergent methods');
+    }
+  }
 
   // 3. Report assembly lacks grant-writer voice
   const assemblyStep = steps.find(s => s.step_name === 'report_assembly');
@@ -725,4 +784,56 @@ If any forbidden token found:
     return prompt.slice(0, outputSchemaIdx) + sanitizer + prompt.slice(outputSchemaIdx);
   }
   return prompt + sanitizer;
+}
+
+/**
+ * Inject dual methodology requirement for TAM/SAM/SOM steps
+ */
+export function injectDualMethodologyRequirement(prompt: string): string {
+  const requirement = `
+
+DUAL METHODOLOGY (Mandatory for TAM/SAM/SOM - Assessor-Grade):
+You MUST output BOTH:
+A) Top-down sizing: Parent market × segment share (with formula + inputs)
+B) Bottom-up sizing: Units × price × penetration (with formula + inputs)
+
+Then reconcile the two methods:
+- If divergence >30%, explain why and state preferred method
+- Output blended_value with currency and year
+
+ASSUMPTIONS REGISTER (Required for every market sizing input):
+Each assumption must include:
+- assumption_id: "A1", "A2", etc.
+- description: What this assumption represents
+- value: Number or percentage (NEVER "A%" or "$Z" placeholders)
+- confidence_label: "High" | "Medium" | "Low"
+- defensibility_note: Why this is reasonable (evidence-based or conservative proxy)
+- validation_source_type: What would validate it best
+- source_id: "S0-#" OR "ESTIMATE" (only with defensibility_note + method)
+
+SENSITIVITY ANALYSIS (Mandatory):
+For each of TAM, SAM, SOM output:
+- base_case: Central estimate
+- low_case: Conservative bound (typically -20% to -30%)
+- high_case: Optimistic bound (typically +20% to +30%)
+- sensitivity_drivers[]: Top 3 assumptions that move the result most
+
+SANITY CHECKS (Must Pass Before Output):
+1. Implied price consistent with pricing anchors OR proxy method documented
+2. Implied adoption/penetration consistent with comparables OR conservative by design
+3. Implied spend does not exceed known category spend without explanation
+
+If sanity check fails: revise assumptions OR downgrade confidence AND document fix_applied.
+
+EVIDENCE-TYPE ENFORCEMENT:
+- Market size/growth/pricing MUST cite: market research, industry reports, procurement data, PBS/MBS
+- Market sizing must NOT cite: epidemiology papers, disease burden studies
+- If mismatch detected: Replace with "Unknown (evidence type mismatch)" + log to unknowns[]
+`;
+
+  const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
+  if (outputSchemaIdx !== -1) {
+    return prompt.slice(0, outputSchemaIdx) + requirement + prompt.slice(outputSchemaIdx);
+  }
+  return prompt + requirement;
 }
