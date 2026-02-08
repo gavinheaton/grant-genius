@@ -12,6 +12,7 @@ import {
   FileType,
   Activity,
   Sparkles,
+  ClipboardList,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -53,6 +54,7 @@ const reportItems = [
 ];
 
 const systemItems = [
+  { title: "Manual Queue", url: "/admin/manual-queue", icon: ClipboardList },
   { title: "System Health", url: "/admin/system-health", icon: Activity },
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
 ];

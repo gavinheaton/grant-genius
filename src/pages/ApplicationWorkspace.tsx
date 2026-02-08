@@ -7,7 +7,9 @@ import {
   Loader2,
   CheckCircle,
   Sparkles,
-  CreditCard
+  CreditCard,
+  Send,
+  Clock,
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -24,10 +26,12 @@ interface ApplicationData {
   id: string;
   title: string | null;
   status: string;
+  manual_status: string | null;
   inputs_json: Record<string, string>;
   grant_version: {
     grant: {
       name: string;
+      processing_mode: string;
     };
   };
 }
@@ -42,6 +46,7 @@ export default function ApplicationWorkspace() {
   const [application, setApplication] = useState<ApplicationData | null>(null);
   const [purchaseModalOpen, setPurchaseModalOpen] = useState(false);
   const [inputsCollapsed, setInputsCollapsed] = useState(false);
+  const [isSubmittingManual, setIsSubmittingManual] = useState(false);
   const [projectName, setProjectName] = useState<string>("");
   const [inputs, setInputs] = useState<Record<string, string>>({
     publicArticleUrl: "",
@@ -100,9 +105,10 @@ export default function ApplicationWorkspace() {
           id,
           title,
           status,
+          manual_status,
           inputs_json,
           grant_version:grant_versions!inner(
-            grant:grants!inner(name)
+            grant:grants!inner(name, processing_mode)
           )
         `)
         .eq("id", id)
@@ -137,22 +143,29 @@ export default function ApplicationWorkspace() {
         if (!normalizedInputs.trl) normalizedInputs.trl = "";
         if (!normalizedInputs.ipStatus) normalizedInputs.ipStatus = "";
         
-        // Extract grant name from grant version
+        // Extract grant data from grant version
         const grantVersionData = data.grant_version as unknown as { 
-          grant: { name: string } | { name: string }[] 
+          grant: { name: string; processing_mode: string } | { name: string; processing_mode: string }[] 
         };
         
-        const grantName = Array.isArray(grantVersionData?.grant) 
-          ? grantVersionData.grant[0]?.name 
-          : grantVersionData?.grant?.name || "Unknown Grant";
+        const grantData = Array.isArray(grantVersionData?.grant) 
+          ? grantVersionData.grant[0] 
+          : grantVersionData?.grant;
+        
+        const grantName = grantData?.name || "Unknown Grant";
+        const processingMode = grantData?.processing_mode || "automated";
         
         const appData: ApplicationData = {
           id: data.id,
           title: data.title,
           status: data.status,
+          manual_status: (data as any).manual_status || null,
           inputs_json: normalizedInputs,
           grant_version: {
-            grant: { name: grantName }
+            grant: { 
+              name: grantName,
+              processing_mode: processingMode,
+            }
           }
         };
         setApplication(appData);
@@ -258,6 +271,70 @@ export default function ApplicationWorkspace() {
 
   // Check if base required inputs are complete
   const inputsComplete = (inputs.publicArticleUrl || '').trim() !== "" && (inputs.summary || '').trim() !== "";
+  
+  // Check if this is a manual processing grant
+  const isManualGrant = application?.grant_version?.grant?.processing_mode === "manual";
+  const manualStatus = application?.manual_status;
+
+  // Handle manual submission
+  const handleManualSubmit = async () => {
+    if (!id || !hasAvailableReport) {
+      if (!hasAvailableReport) {
+        setPurchaseModalOpen(true);
+      }
+      return;
+    }
+
+    setIsSubmittingManual(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Not authenticated");
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/submit-manual-request`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ application_id: id }),
+        }
+      );
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to submit");
+      }
+
+      toast({
+        title: "Submitted for Review!",
+        description: "An admin will review your submission and prepare your report. You'll receive an email when it's ready.",
+      });
+
+      // Refresh application data
+      const { data: updatedApp } = await supabase
+        .from("applications")
+        .select("manual_status")
+        .eq("id", id)
+        .single();
+      
+      if (updatedApp && application) {
+        setApplication({ ...application, manual_status: updatedApp.manual_status });
+      }
+
+      // Consume entitlement
+      setTimeout(() => refetchEntitlements(), 1000);
+    } catch (error) {
+      toast({
+        title: "Submission failed",
+        description: error instanceof Error ? error.message : "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmittingManual(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -336,9 +413,49 @@ export default function ApplicationWorkspace() {
           onProjectNameChange={setProjectName}
         />
 
-        {/* Generate Report Button */}
+        {/* Generate Report / Submit for Review Button */}
         <div className="flex flex-col items-center gap-4">
-          {!isGenerating && !isStarting && (
+          {/* Manual Grant - Pending Review Status */}
+          {isManualGrant && manualStatus === "pending_review" && (
+            <div className="flex flex-col items-center gap-2 p-6 rounded-lg border bg-muted/50">
+              <Clock className="h-8 w-8 text-muted-foreground" />
+              <h3 className="font-semibold">Pending Admin Review</h3>
+              <p className="text-sm text-muted-foreground text-center max-w-md">
+                Your submission is being reviewed by our team. You'll receive an email when your report is ready.
+              </p>
+            </div>
+          )}
+
+          {/* Manual Grant - In Progress Status */}
+          {isManualGrant && manualStatus === "in_progress" && (
+            <div className="flex flex-col items-center gap-2 p-6 rounded-lg border bg-muted/50">
+              <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              <h3 className="font-semibold">Report In Progress</h3>
+              <p className="text-sm text-muted-foreground text-center max-w-md">
+                An admin is currently preparing your report. You'll receive an email when it's ready.
+              </p>
+            </div>
+          )}
+
+          {/* Manual Grant - Not yet submitted */}
+          {isManualGrant && !manualStatus && !isGenerating && !isStarting && (
+            <Button 
+              size="lg" 
+              onClick={handleManualSubmit}
+              disabled={!inputsComplete || isSubmittingManual}
+              className="min-w-[200px]"
+            >
+              {isSubmittingManual ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4 mr-2" />
+              )}
+              {hasAvailableReport ? "Submit for Review" : "Purchase & Submit for Review"}
+            </Button>
+          )}
+
+          {/* Automated Grant - Generate Button */}
+          {!isManualGrant && !isGenerating && !isStarting && (
             <Button 
               size="lg" 
               onClick={handleGenerateReport}
@@ -350,64 +467,66 @@ export default function ApplicationWorkspace() {
             </Button>
           )}
           
-          {!inputsComplete && !isGenerating && !isStarting && (
+          {!inputsComplete && !isGenerating && !isStarting && !manualStatus && (
             <p className="text-sm text-muted-foreground">
-              Please fill in the Article URL and Summary to generate your report.
+              Please fill in the Article URL and Summary to {isManualGrant ? "submit for review" : "generate your report"}.
             </p>
           )}
         </div>
 
-        {/* Progress Indicator */}
-        <div ref={progressRef}>
-          {/* Show starting state */}
-          {isStarting && (
-            <GenerationProgress
-              currentStep={0}
-              totalSteps={15}
-              completedSteps={0}
-              steps={[]}
-              status="pending"
-              isStarting={true}
-              activeRunId={activeRun?.id}
-            />
-          )}
-          
-          {/* Show processing/failed/stalled/completed state - keep logs visible */}
-          {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
-            <GenerationProgress
-              currentStep={activeRun.current_step}
-              totalSteps={activeRun.total_steps}
-              completedSteps={completedSteps}
-              steps={steps}
-              status={activeRun.status}
-              onCancel={() => cancelRun(activeRun.id)}
-              onRestart={() => retryFromFailedStep(activeRun.id)}
-              onResume={
-                (activeRun.status === "failed" || activeRun.status === "stalled")
-                  ? () => resumeReport(activeRun.id)
-                  : undefined
-              }
-              onClearAndRestart={
-                (activeRun.status === "failed" || activeRun.status === "stalled")
-                  ? () => clearAndRestart(activeRun.id)
-                  : undefined
-              }
-              onRecoverFinalize={
-                canRecoverFinalize
-                  ? () => recoverFinalizeReport(activeRun.id)
-                  : undefined
-              }
-              isSuperAdmin={isSuperAdmin}
-              emailOnComplete={activeRun.email_on_complete}
-              onToggleEmailOnComplete={toggleEmailOnComplete}
-              startedAt={activeRun.started_at}
-              completedAt={activeRun.completed_at}
-              activeRunId={activeRun.id}
-              is504Error={activeRun.is504Error}
-              isCancelling={isCancelling}
-            />
-          )}
-        </div>
+        {/* Progress Indicator - Only for automated grants */}
+        {!isManualGrant && (
+          <div ref={progressRef}>
+            {/* Show starting state */}
+            {isStarting && (
+              <GenerationProgress
+                currentStep={0}
+                totalSteps={15}
+                completedSteps={0}
+                steps={[]}
+                status="pending"
+                isStarting={true}
+                activeRunId={activeRun?.id}
+              />
+            )}
+            
+            {/* Show processing/failed/stalled/completed state - keep logs visible */}
+            {!isStarting && (isGenerating || activeRun?.status === "failed" || activeRun?.status === "stalled" || activeRun?.status === "completed") && activeRun && (
+              <GenerationProgress
+                currentStep={activeRun.current_step}
+                totalSteps={activeRun.total_steps}
+                completedSteps={completedSteps}
+                steps={steps}
+                status={activeRun.status}
+                onCancel={() => cancelRun(activeRun.id)}
+                onRestart={() => retryFromFailedStep(activeRun.id)}
+                onResume={
+                  (activeRun.status === "failed" || activeRun.status === "stalled")
+                    ? () => resumeReport(activeRun.id)
+                    : undefined
+                }
+                onClearAndRestart={
+                  (activeRun.status === "failed" || activeRun.status === "stalled")
+                    ? () => clearAndRestart(activeRun.id)
+                    : undefined
+                }
+                onRecoverFinalize={
+                  canRecoverFinalize
+                    ? () => recoverFinalizeReport(activeRun.id)
+                    : undefined
+                }
+                isSuperAdmin={isSuperAdmin}
+                emailOnComplete={activeRun.email_on_complete}
+                onToggleEmailOnComplete={toggleEmailOnComplete}
+                startedAt={activeRun.started_at}
+                completedAt={activeRun.completed_at}
+                activeRunId={activeRun.id}
+                is504Error={activeRun.is504Error}
+                isCancelling={isCancelling}
+              />
+            )}
+          </div>
+        )}
 
         {/* Reports List */}
         <ReportsList
