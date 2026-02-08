@@ -1863,6 +1863,22 @@ Generate a pipeline that produces:
 
 This pipeline must generalise to ANY grant archetype by including a mandatory "Grant Writer Core" plus archetype-specific modules.
 
+========== UNIVERSAL GENERALISATION RULE ==========
+
+1. This pipeline MUST NOT assume NRF, AEA, or any specific program priorities unless they explicitly appear in:
+   - grantGuidelines (extracted text)
+   - rubric JSON (program_profile or priority_areas fields)
+   - requiredInputs (applicant-provided program context)
+
+2. Replace any reference to specific program priorities with:
+   "Program priorities (derived from grantGuidelines/program_profile)"
+   and ensure they are explicitly cited from Grant DNA Pack outputs.
+
+3. If program priorities are not explicit in the provided guidelines:
+   - Do NOT invent them
+   - Output: "Not specified in provided guidelines"
+   - Add to unknowns[]: { "what_is_missing": "program priorities", "what_would_validate": "grant guidelines section on priority areas or program objectives" }
+
 ========== WRITER STANCE CONTRACT ==========
 
 You are a professional grant writer (10+ years Australian government funding experience) and a commercialisation analyst. Your audience is expert assessors scoring against published criteria.
@@ -1878,6 +1894,14 @@ EVIDENCE RULES:
 2. Preserve source IDs exactly as provided in Step 0 source pack—never renumber or invent IDs.
 3. Every source_id used must exist in the consolidated sources list.
 
+4. UNSOURCED NUMERIC BAN: Any numeric claim without a valid source_id MUST be replaced by EITHER:
+   - A proxy calculation with cited inputs, sensitivity range, and confidence label, OR
+   - "Not publicly disclosed" (only for company-private numbers), plus an unknowns[] entry with what_would_validate
+
+5. BANNED HEDGE PHRASES: The following phrases are forbidden without immediate source citation:
+   - "common knowledge", "widely known", "generally accepted", "industry standard"
+   - If used, must be followed by (source_id) in the same sentence
+
 OUTPUT RULES:
 1. Return ONLY valid JSON (no code fences, no prose outside JSON).
 2. First character must be { and last character must be }.
@@ -1885,7 +1909,17 @@ OUTPUT RULES:
 
 ========== ASSESSOR INSIGHT CONTRACT (MANDATORY FOR ALL STEPS) ==========
 
-EVIDENCE-TYPE MATCHING RULE (Non-Negotiable):
+========== EVIDENCE-TYPE VALIDATION GATE (Non-Negotiable) ==========
+
+This is an ENFORCEMENT GATE, not advisory guidance. Before finalizing ANY step output:
+
+1) For each claim, identify its category:
+   - market sizing / revenue / pricing
+   - disease burden / epidemiology
+   - regulatory / reimbursement
+   - competitor status / product claims
+
+2) Check the evidence type against the allowed sources table:
 
 | Claim Category | ALLOWED Sources | NEVER Use |
 |----------------|-----------------|-----------|
@@ -1894,34 +1928,88 @@ EVIDENCE-TYPE MATCHING RULE (Non-Negotiable):
 | Regulatory pathway / approval / reimbursement | TGA/FDA/EMA guidance, PBS/HTA documents, standards bodies, official policy docs | General news, press releases |
 | Competitor status / product claims | Company filings, regulator databases (ARTG, FDA 510k), clinical trial registries (ANZCTR, ClinicalTrials.gov), official product pages, peer-reviewed publications | Wikipedia, blog posts, undated sources |
 
-If no valid evidence exists for a claim, output exactly:
-"Unknown (no validated source found)" + add to unknowns array with:
-- what_is_missing: description of the data gap
-- what_would_validate: specific source types that would provide validation
-- proxy_attempted: true/false + method if attempted
+3) If evidence type MISMATCH is detected:
+   - Replace the claim with EXACTLY: "Unknown (evidence type mismatch)"
+   - Add an unknowns[] entry with:
+     - what_is_missing: specific data needed
+     - what_would_validate: correct source types
+     - proxy_attempted: true/false
+     - next_best_source_types: (e.g., ABS, AIHW, PBS, company annual report, ARTG)
+
+4) SPECIAL RULE FOR MARKET SIZING:
+   - Evidence type mismatch is NOT allowed to terminate the step
+   - Mismatch MUST trigger mandatory proxy sizing using correct evidence types
+   - Log the mismatch in unknowns[] but proceed with proxy calculation
 
 ASSUMPTION DISCIPLINE (all assumptions must be readable + checkable):
 - confidence_label: "High" | "Medium" | "Low"
 - one_line_justification: Brief explanation of why this confidence level
 - replicable_method: Equation or steps that can be verified
 
-COMMERCIAL REALITY LAYER (fill the "researcher gap"):
-Every pipeline must produce evidence for:
-- Who pays / who decides / adoption pathway (buyer persona)
-- Pricing anchors (direct, adjacent, or proxy with methodology)
-- Implementation friction + enabling partners
-- Regulatory and reimbursement gating steps (where applicable)
-- Measurable success outcomes (assessor lens)
+COMMERCIAL REALITY LAYER (must be deliverable, not generic):
 
-COMPETITOR COMPARABILITY FRAMEWORK:
-Group competitors as:
+Every pipeline output must contain evidence for:
+
+1. BUYER PATHWAY:
+   - who_pays: payer entity type
+   - who_decides: decision-maker role
+   - who_uses: end user
+   - Must be specific (not "hospitals" but "hospital procurement committees" or "state health departments")
+
+2. ADOPTION GATING STEPS:
+   - procurement_gates: tender, direct purchase, panel contracts
+   - reimbursement_gates: PBS, MBS, HTA, private health
+   - regulatory_gates: TGA, standards, accreditation
+   - integration_gates: IT systems, training, workflow
+
+3. PRICING ANCHORS:
+   - Minimum 3 named anchors OR proxy from schedule/procurement listings
+   - Each anchor: {product, price, currency, year, source_id, relevance}
+   - If <3 available: document search strategy + why constrained
+
+4. IMPLEMENTATION FRICTION:
+   - training_requirements
+   - integration_complexity
+   - workflow_change_impact
+   - evidence_burden (what clinical/economic evidence buyers need)
+
+5. PARTNER ROLES WITH CAPABILITY GAPS:
+   - Each partner must map to a specific capability gap
+   - Gaps must be explicit (not "provides expertise")
+
+MINIMUM EVIDENCE DIVERSITY REQUIREMENTS:
+- Market sizing section: cite ≥3 distinct publishers (or log constrained search strategy)
+- Competitor section: include ≥5 named entities OR document search strategy + why constrained
+- Regulatory/reimbursement section: cite primary sources (regulator, HTA/PBS/MBS, standards bodies)
+
+COMPETITOR COMPARABILITY FRAMEWORK (Hard Rules):
+
+Classification (required for every entity):
 - Direct: Same buyer + same use case + same modality/class
 - Adjacent: Same buyer OR same use case OR similar modality
 - Enablers: Platforms, diagnostics, manufacturing, distribution, integrators
 
-Each competitor entry must include at least ONE of:
-- price/pricing_anchor, revenue, TRL/stage, trial_stage, approval_status, reimbursement_status
-If not available: mark "Unknown" + list validation sources needed.
+MEASURABLE ATTRIBUTE REQUIREMENT:
+Every "competitor" must include at least ONE measurable attribute:
+- price/pricing_anchor OR revenue OR TRL/stage OR trial_stage OR approval_status OR reimbursement_status
+
+If NO measurable attribute available:
+- Entity MUST be moved to "enablers" or "partners" category
+- Mark as "Unknown (validation needed)"
+- Add unknowns[] entry describing how to validate
+
+NO PARTNER-LIKE ENTITIES IN COMPETITOR TABLES:
+The following entity types CANNOT be listed as competitors unless they are explicitly commercial product vendors with measurable attributes:
+- Hospitals, health services, clinics
+- Universities, research institutes
+- Biobanks, specimen repositories, research cohorts
+- Government agencies, NGOs, foundations
+- Standards bodies, accreditation agencies
+
+If such entities appear in competitor research, classify them as:
+- "Enablers" (if they provide platforms, access, or infrastructure)
+- "Partners" (if they fill capability gaps in delivery)
+- "Customers" (if they are target buyers)
 
 ADDITIONALITY + JURISDICTION BENEFIT (universal):
 Every report must state:
@@ -1938,6 +2026,9 @@ The following patterns must NEVER appear in ANY step's outputs:
 - "Source 1", "Source 2" (use actual source names or source_ids)
 - "Unknown..." without proxy attempt OR proxy failure rule compliance
 - Empty values like "{}" or "[]" for required numeric fields
+- "common knowledge" (case-insensitive) — banned outright
+- "widely known", "generally accepted", "industry standard" — banned UNLESS immediately followed by a citation to an authoritative source_id
+- Any numeric claim without a valid source_id (must use proxy or mark as "Not publicly disclosed")
 
 REPLACEMENT PROTOCOL (when data is unavailable):
 - If entity unknown: output "Not publicly disclosed" or "No named entity identified in available sources"
@@ -1947,25 +2038,42 @@ REPLACEMENT PROTOCOL (when data is unavailable):
 
 ========== MANDATORY PROXY PROTOCOL FOR TAM/SAM/SOM ==========
 
-When market sizing data is not directly available, steps MUST use this structure:
+"Unknown" is FORBIDDEN for tam/sam/som fields. If direct market data is unavailable, the step MUST produce BOTH:
 
-{
-  "tam_global": {
-    "value": number,
-    "currency": "USD|AUD",
-    "year": 2024,
-    "method": "Top-down: [Parent Market] × [Segment Share]",
-    "inputs": [
-      {"description": "Parent market size", "value": number, "source_id": "S0-X"},
-      {"description": "Segment share assumption", "value": 0.XX, "source_id": "S0-Y|ESTIMATE"}
-    ],
-    "sensitivity": {"low": number, "high": number},
-    "confidence": "high|medium|low",
-    "source_ids": ["S0-X", "S0-Y"]
-  }
-}
+1) TOP-DOWN PROXY:
+   {
+     "method": "Parent market × segment share",
+     "inputs": [
+       {"description": "...", "value": number, "source_id": "S0-X"}
+     ],
+     "value": number,
+     "sensitivity": {"low": number, "high": number},
+     "confidence": "high|medium|low",
+     "confidence_justification": "one sentence"
+   }
 
-NEVER output "Unknown" for TAM/SAM/SOM without attempting a proxy calculation using available data.
+2) BOTTOM-UP PROXY:
+   {
+     "method": "Units × price × penetration",
+     "inputs": [
+       {"description": "...", "value": number, "source_id": "S0-Y"}
+     ],
+     "value": number,
+     "sensitivity": {"low": number, "high": number},
+     "confidence": "high|medium|low",
+     "confidence_justification": "one sentence"
+   }
+
+3) RECONCILIATION:
+   - If top-down and bottom-up diverge by >30%, explain why
+   - Final estimate must use the more conservative value with documented reasoning
+
+4) MISSING INPUT HANDLING:
+   If any numeric input lacks a source, estimate it explicitly as an assumption with:
+   - confidence_label: "High|Medium|Low"
+   - one_line_justification: why this confidence level
+   - replicable_method: equation or steps that can be verified
+   - Add to assumptions_register with all fields
 
 PROXY FAILURE RULE (Allowed Only After Attempts):
 If no valid anchors exist to compute a proxy estimate without violating the Evidence-Type Matching Rule, you may output:
@@ -2099,6 +2207,13 @@ Final Steps (must exist):
 N-1: report_assembly
   - Assembles an assessor-ready markdown report that explicitly follows rubric + required inputs coverage.
   - Must instruct the model to write like a grant writer and to explicitly reference rubric sections by title.
+  
+  ZERO INTERNAL IDS RULE:
+  - You must NOT output any internal tokens or IDs in brackets/parentheses such as:
+    - (S0-2), [S0-2], [article], [Source1], step9, step_outputs, {{step0}}
+  - All citations in the assembled report must be human-readable APA in-text style:
+    - e.g., (AIHW, 2023) or (Cancer Australia, 2024)
+  - If a source lacks author/year, use (Publisher, n.d.)
 
 N: finalize_citations
   - Inputs: {{step0}} (source pack), {{stepN-1}} (assembled report markdown), all prior step_outputs
@@ -2112,6 +2227,24 @@ N: finalize_citations
       - appears_in_references: true/false
       - compliant_with_evidence_type_rule: true/false
 
+  CITATION HYGIENE PASS (mandatory):
+  1. Find and remove/replace ALL internal IDs and placeholders
+  2. Every in-text citation must map to one and only one reference entry
+  3. References must be complete (authors, year, title, publisher, URL)
+  4. If any in-text citation cannot be resolved:
+     - Replace with "Unknown (citation unresolved)" in the body
+     - Add to unknowns[] with what_would_validate
+
+  REQUIRED OUTPUT SCHEMA for finalize_citations:
+  {
+    "resolved_citations_count": number,
+    "unresolved_citations": [
+      {"token_found": "S0-2", "location_hint": "Section X", "fix_applied": "removed|replaced|flagged"}
+    ],
+    "references_apa": [ /* complete reference objects */ ],
+    "report_html": "string (clean, no internal IDs)"
+  }
+
   TRANSFORMATION RULES:
   1. Replace any [S0-1] style tokens with (Author, Year) hyperlinked to the source URL
   2. If author/year missing, use (Publisher, n.d.)
@@ -2119,7 +2252,15 @@ N: finalize_citations
   4. If a bracketed token references a non-existent source_id, replace with (Source not validated) and log in audit
 
   HARD BAN: No [ ] bracketed source tokens may remain anywhere in report_markdown_clean.
-  Final validation: regex scan for /\[S\d+-\d+\]/ or /\[ARTICLE-\d+\]/ must return zero matches.
+  
+  FINAL VALIDATION (must pass):
+  The output must contain ZERO matches for:
+  - /\bS\d+-\d+\b/
+  - /\bSource\s*\d+\b/i
+  - /\[article\]/i
+  - /\{TBD\}|\[Insert/i
+  - /step\d+|step_outputs/i
+  - /\{\{[^}]+\}\}/
 
 IMPORTANT: Do NOT include HTML assembly steps in this pipeline—those are added automatically downstream.
 
@@ -2166,7 +2307,12 @@ Each step's prompt_template MUST be at least 1,500 characters and include ALL of
     - Decision implications (who decides, why, when)
     - Quantified constraints (not vague qualifiers)
     - Validated anchors with source_ids
-    - Explicit unknowns with proxy methods where attempted"
+    - Explicit unknowns with proxy methods where attempted
+    - Buyer pathway clearly defined (who pays / decides / uses)
+    - Adoption gating steps enumerated (procurement/reimbursement/regulatory)
+    - ≥3 pricing anchors or documented constraint
+    - Implementation friction addressed (training, integration, evidence burden)
+    - Partner roles mapped to specific capability gaps"
 
 10. DECISION-GRADE SPECIFICITY RULE:
    "For any recommendation or strategic claim, include at least ONE of:
@@ -2215,6 +2361,38 @@ DEPTH BUDGET CONTROLS:
 - Maximum steps: 16 unless rubric has >4 weighted sections requiring additional research depth
 - If archetype modules exceed the cap, consolidate related analyses into single deeper steps rather than splitting into multiple shallow steps
 - Quality check: if any step's prompt_template lacks a concrete deliverable count (tables, sources, entities, metrics), flag it for rewrite
+
+========== PIPELINE VALIDATION (FAIL-FAST WITH REPAIR) ==========
+
+Before returning the pipeline JSON, perform these validation checks:
+
+1. CORE STEP VALIDATION:
+   - All Grant Writer Core steps must exist with exact names:
+     build_source_pack, rubric_traceability_matrix, assessor_insight_layer,
+     assumptions_register, comparables_market_signals, additionality_and_benefit_case,
+     commercialisation_logic, risk_register_and_governance, budget_logic_and_value_for_money
+   - Final steps report_assembly and finalize_citations must exist
+
+2. SEQUENCE VALIDATION:
+   - step_number must be sequential from 0 with no gaps
+   - step_name must be snake_case and unique
+
+3. PROMPT TEMPLATE VALIDATION:
+   - Every prompt_template must be >= 1,500 characters
+   - Must include: INPUTS, HARD RULES, FORBIDDEN PATTERNS, OUTPUT SCHEMA sections
+   - Must NOT contain forbidden patterns from the banned list
+
+4. DEPTH TARGET VALIDATION:
+   - Every step_description must include a Depth Target (deliverable counts)
+
+IF VALIDATION FAILS:
+1. Log which validation(s) failed
+2. Auto-repair prompts:
+   - Missing sections: inject template boilerplate
+   - Forbidden patterns: replace with compliant alternatives
+   - Short prompts: expand with required sections
+3. Re-validate after repair
+4. Only return JSON after all validations pass
 
 Return JSON:
 {
