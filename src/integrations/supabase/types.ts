@@ -41,6 +41,7 @@ export type Database = {
       applications: {
         Row: {
           created_at: string
+          entitlement_consumption_id: string | null
           grant_version_id: string
           id: string
           inputs_json: Json | null
@@ -53,6 +54,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          entitlement_consumption_id?: string | null
           grant_version_id: string
           id?: string
           inputs_json?: Json | null
@@ -65,6 +67,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          entitlement_consumption_id?: string | null
           grant_version_id?: string
           id?: string
           inputs_json?: Json | null
@@ -76,6 +79,13 @@ export type Database = {
           user_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "applications_entitlement_consumption_id_fkey"
+            columns: ["entitlement_consumption_id"]
+            isOneToOne: false
+            referencedRelation: "entitlement_consumptions"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "applications_grant_version_id_fkey"
             columns: ["grant_version_id"]

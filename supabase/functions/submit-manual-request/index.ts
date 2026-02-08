@@ -73,13 +73,66 @@ serve(async (req) => {
       throw new Error("No admin notification email configured for this grant");
     }
 
-    // Update application status
+    // Check for available entitlement (credit consumption)
+    const { data: entitlements } = await serviceClient
+      .from("entitlements")
+      .select("id, quantity, used_quantity, expires_at")
+      .eq("user_id", user.id)
+      .eq("entitlement_type", "REPORT_ONE_OFF");
+
+    const now = new Date();
+    const availableEntitlement = (entitlements || []).find((ent) => {
+      if (ent.expires_at && new Date(ent.expires_at) < now) return false;
+      return ent.quantity > ent.used_quantity;
+    });
+
+    if (!availableEntitlement) {
+      return new Response(
+        JSON.stringify({ error: "No report credits available. Please purchase a report." }),
+        { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Consume entitlement
+    const { error: updateEntError } = await serviceClient
+      .from("entitlements")
+      .update({ used_quantity: availableEntitlement.used_quantity + 1 })
+      .eq("id", availableEntitlement.id);
+
+    if (updateEntError) {
+      console.error("Failed to update entitlement:", updateEntError);
+      throw new Error("Failed to consume credit");
+    }
+
+    // Create consumption record (report_id will be linked when admin completes)
+    const { data: consumption, error: consumptionError } = await serviceClient
+      .from("entitlement_consumptions")
+      .insert({
+        entitlement_id: availableEntitlement.id,
+        report_id: null,
+        report_run_id: null,
+      })
+      .select("id")
+      .single();
+
+    if (consumptionError) {
+      console.error("Failed to create consumption record:", consumptionError);
+      // Rollback the entitlement update
+      await serviceClient
+        .from("entitlements")
+        .update({ used_quantity: availableEntitlement.used_quantity })
+        .eq("id", availableEntitlement.id);
+      throw new Error("Failed to record credit consumption");
+    }
+
+    // Update application status and link consumption record
     const { error: updateError } = await serviceClient
       .from("applications")
       .update({
         manual_status: "pending_review",
         manual_submitted_at: new Date().toISOString(),
         status: "in_progress",
+        entitlement_consumption_id: consumption.id,
       })
       .eq("id", application_id);
 
