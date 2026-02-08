@@ -1,125 +1,193 @@
 
-# Fix: Grant-Specific Dynamic Input Collection
+# Fix: Cancel Button Reliability
 
 ## Problem Summary
 
-The report generation is stuck in a loop because:
+The Cancel button doesn't work reliably because:
 
-1. **Pipeline prompts use** `{{project_summary}}`, `{{nrf_priority_area}}` (defined in `required_inputs_json`)
-2. **Validation passes** because these are theoretically valid variables
-3. **At runtime**, the applicant's `inputs_json` only contains `summary`, `publicArticleUrl`, `trl`, `ipStatus`
-4. **Variables stay unsubstituted** → AI receives literal `{{project_summary}}` → outputs `[PROJECT NAME]` placeholder → JSON Guard fails
+1. **No loading state** - Users can click multiple times while the request is pending
+2. **Silent failures** - If the cancel request fails, users see a vague "Failed to cancel" toast
+3. **Race condition with Realtime** - The UI updates before the cancel completes, making the button disappear
+4. **Status check fails on retry** - After the first cancel attempt changes status to "failed", subsequent clicks get rejected with a 400 error
 
-The input form is hardcoded to 4 fields, but the pipeline generator uses all keys from `required_inputs_json`.
+## Root Cause Analysis
 
-## Root Cause
-
-| Component | What It Does | The Gap |
-|-----------|--------------|---------|
-| `ReportInputs.tsx` | Collects 4 hardcoded fields | Doesn't collect grant-specific inputs |
-| `required_inputs_json` | Defines what SHOULD be collected | Contains keys like `project_summary`, `nrf_priority_area` |
-| Pipeline Generator | Uses all `required_inputs_json` keys as variables | Assumes these will be available |
-| Runtime Hydration | Iterates over `inputs_json` | Keys don't exist in applicant data |
-
-## Solution Options
-
-### Option A: Dynamic Input Form (Recommended)
-
-Modify `ReportInputs.tsx` to dynamically generate form fields from the grant version's `required_inputs_json`.
-
-**Pros:**
-- Each grant gets its own tailored input form
-- Pipeline can use any variable defined in `required_inputs_json`
-- Future-proof for new grants
-
-**Cons:**
-- Larger frontend change
-- Need to handle different input types (text, textarea, select, file)
-
-### Option B: Constrain Pipeline Generator
-
-Force the pipeline generator to only use the 4 canonical variables + derive other context from `{{summary}}` and `{{requiredInputs}}`.
-
-**Pros:**
-- Smaller change (backend only)
-- Works with existing form
-
-**Cons:**
-- Limits flexibility for grant-specific pipelines
-- AI must extract info from `{{requiredInputs}}` JSON blob
-
-## Recommended Implementation: Option A (Dynamic Form)
-
-### Phase 1: Dynamic Input Form
-
-**File: `src/components/workspace/ReportInputs.tsx`**
-
-1. Accept `requiredInputs` as a prop (from grant version)
-2. Render base fields (summary, publicArticleUrl) plus dynamic fields from `requiredInputs`
-3. Store all inputs in `inputs_json` with correct keys
-
-```typescript
-interface RequiredInput {
-  key: string;
-  label: string;
-  type: 'text' | 'textarea' | 'select' | 'file';
-  required: boolean;
-  help_text?: string;
-  max_length?: number;
-  options?: string[]; // For select type
-}
-
-interface ReportInputsProps {
-  inputs: Record<string, any>; // Dynamic instead of hardcoded
-  requiredInputs: RequiredInput[];
-  onInputChange: (key: string, value: any) => void;
-  // ...
-}
+```text
+User clicks Cancel
+        │
+        ├─── Request sent to cancel-report-run
+        │              │
+        │              ├─── SUCCESS: Status → "failed", activeRun → null
+        │              │
+        │              └─── SLOW/FAIL: Button still visible, user clicks again
+        │                              │
+        │                              └─── 400 error: "already completed or failed"
+        │                                              (because first click worked)
+        │
+        └─── Realtime picks up "failed" status
+                       │
+                       └─── isInProgress becomes false
+                                      │
+                                      └─── Cancel button section doesn't render
+                                           (user thinks nothing happened)
 ```
 
-### Phase 2: Workspace Integration
+## Solution
+
+### 1. Add Loading State to Cancel Operation
+
+**File: `src/hooks/useReportGeneration.ts`**
+
+Add a new `isCancelling` state and expose it, then use it to disable the button during the operation:
+
+```typescript
+const [isCancelling, setIsCancelling] = useState(false);
+
+const cancelRun = useCallback(async (runId: string) => {
+  if (isCancelling) return; // Prevent double-clicks
+  
+  setIsCancelling(true);
+  try {
+    const { error } = await supabase.functions.invoke("cancel-report-run", {
+      body: { reportRunId: runId },
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    setActiveRun(null);
+    setIsGenerating(false);
+    setSteps([]);
+    toast({
+      title: "Generation cancelled",
+      description: "Your credit has been refunded. You can try again when ready.",
+    });
+  } catch (error) {
+    console.error("Error cancelling run:", error);
+    
+    // Check if error is "already completed or failed" - this means cancel worked
+    const errorMessage = error instanceof Error ? error.message : "";
+    if (errorMessage.includes("already completed") || errorMessage.includes("already failed")) {
+      // This is actually success - the run was cancelled
+      setActiveRun(null);
+      setIsGenerating(false);
+      setSteps([]);
+      toast({
+        title: "Generation cancelled",
+        description: "You can try again when ready.",
+      });
+    } else {
+      toast({
+        title: "Failed to cancel",
+        description: "Please try again or contact support.",
+        variant: "destructive",
+      });
+    }
+  } finally {
+    setIsCancelling(false);
+  }
+}, [toast, isCancelling]);
+
+// Return isCancelling in the hook's return object
+return {
+  // ... existing returns
+  isCancelling,
+  cancelRun,
+};
+```
+
+### 2. Update GenerationProgress to Accept Loading State
+
+**File: `src/components/workspace/GenerationProgress.tsx`**
+
+Add `isCancelling` prop and disable the button when cancelling:
+
+```typescript
+interface GenerationProgressProps {
+  // ... existing props
+  isCancelling?: boolean;
+}
+
+// In the component body, update both cancel buttons:
+
+{/* Cancel button for in-progress runs */}
+{onCancel && (
+  <Button 
+    variant="ghost" 
+    size="sm" 
+    onClick={onCancel}
+    disabled={isCancelling}
+    className="gap-2 text-muted-foreground hover:text-destructive"
+  >
+    {isCancelling ? (
+      <Loader2 className="h-4 w-4 animate-spin" />
+    ) : (
+      <XCircle className="h-4 w-4" />
+    )}
+    {isCancelling ? "Cancelling..." : "Cancel Generation"}
+  </Button>
+)}
+
+// Also update the "Cancel & Start Over" button in the stalled section:
+{onCancel && (
+  <Button 
+    variant="outline" 
+    size="sm" 
+    onClick={onCancel}
+    disabled={isCancelling}
+    className="gap-2"
+  >
+    {isCancelling ? (
+      <Loader2 className="h-4 w-4 animate-spin" />
+    ) : (
+      <XCircle className="h-4 w-4" />
+    )}
+    {isCancelling ? "Cancelling..." : "Cancel & Start Over"}
+  </Button>
+)}
+```
+
+### 3. Pass isCancelling to GenerationProgress
 
 **File: `src/pages/ApplicationWorkspace.tsx`**
 
-1. Fetch `required_inputs_json` from grant version
-2. Pass to `ReportInputs` component
-3. Ensure `inputs_json` is saved with all keys
-
-### Phase 3: Validation Enhancement
-
-**File: `supabase/functions/process-grant-guidelines/index.ts`**
-
-Add a validation that warns if prompts use variables not in the canonical list OR not likely to be collected by the form:
+Update the destructuring and prop passing:
 
 ```typescript
-// Base form fields that are ALWAYS collected
-const FORM_COLLECTABLE_FIELDS = ['summary', 'publicArticleUrl', 'trl', 'ipStatus'];
+const { 
+  // ... existing destructuring
+  isCancelling,
+  cancelRun,
+} = useReportGeneration(id, { onNoCredits: handleNoCredits });
 
-// For each variable used in prompts:
-// 1. If it's a base variable (grantName, grantRubric, etc.) → OK
-// 2. If it's a step reference (step0, step1) → OK
-// 3. If it's in FORM_COLLECTABLE_FIELDS → OK
-// 4. If it's in required_inputs_json → WARN: "Ensure form collects this"
-// 5. Otherwise → ERROR: "Unknown variable"
+// In the GenerationProgress component:
+<GenerationProgress
+  // ... existing props
+  isCancelling={isCancelling}
+  onCancel={() => cancelRun(activeRun.id)}
+/>
 ```
 
-### Phase 4: Immediate Hotfix (While Form is Being Built)
+### 4. Fix Edge Function Status Check
 
-Update the runtime hydration to fall back to `summary` when `project_summary` is missing:
+**File: `supabase/functions/cancel-report-run/index.ts`**
+
+Make the status check more lenient - if already failed, return success instead of error:
 
 ```typescript
-// In resume-report-run/index.ts buildVariables()
-// Add semantic equivalents mapping
-const semanticEquivalents: Record<string, string> = {
-  'project_summary': 'summary',
-  'project_title': 'projectName', // if we start collecting this
-  'research_summary': 'summary',
-};
-
-for (const [alias, canonical] of Object.entries(semanticEquivalents)) {
-  if (vars[alias] === undefined && vars[canonical] !== undefined) {
-    vars[alias] = vars[canonical];
-  }
+// Only allow cancelling pending or running reports
+// If already failed/completed, treat as success (idempotent)
+if (reportRun.status !== "pending" && reportRun.status !== "running") {
+  console.log(`Report run ${reportRunId} already in status ${reportRun.status}, treating as cancelled`);
+  return new Response(
+    JSON.stringify({ 
+      success: true, 
+      message: "Report generation already stopped",
+      alreadyStopped: true
+    }),
+    { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+  );
 }
 ```
 
@@ -127,38 +195,24 @@ for (const [alias, canonical] of Object.entries(semanticEquivalents)) {
 
 | File | Change |
 |------|--------|
-| `src/components/workspace/ReportInputs.tsx` | Make form dynamic based on `requiredInputs` |
-| `src/pages/ApplicationWorkspace.tsx` | Fetch and pass `required_inputs_json` |
-| `supabase/functions/resume-report-run/index.ts` | Add semantic equivalents fallback |
-| `supabase/functions/generate-report/index.ts` | Same fallback for Step 0 |
-| `supabase/functions/process-grant-guidelines/index.ts` | Add form-collectability validation |
+| `src/hooks/useReportGeneration.ts` | Add `isCancelling` state, improve error handling |
+| `src/components/workspace/GenerationProgress.tsx` | Add `isCancelling` prop, disable button + show spinner |
+| `src/pages/ApplicationWorkspace.tsx` | Pass `isCancelling` prop |
+| `supabase/functions/cancel-report-run/index.ts` | Make idempotent (return success if already stopped) |
 
-## Immediate Hotfix (Deploy First)
+## Expected Behavior After Fix
 
-To unblock the current pipeline immediately, add a semantic fallback mapping in the runtime:
-
-```typescript
-// If prompt uses {{project_summary}} but only {{summary}} is available,
-// map project_summary → summary
-const semanticEquivalents: Record<string, string> = {
-  'project_summary': 'summary',
-  'research_summary': 'summary',
-  'project_description': 'summary',
-};
-
-for (const [alias, canonical] of Object.entries(semanticEquivalents)) {
-  if (vars[alias] === undefined && inputs[canonical]) {
-    vars[alias] = String(inputs[canonical]);
-  }
-}
-```
-
-This allows the current pipeline to run while the dynamic form is implemented.
+1. User clicks "Cancel Generation"
+2. Button shows spinner and "Cancelling..." text
+3. Button is disabled - no double-clicks possible
+4. Request completes (or fails with "already stopped")
+5. Toast confirms cancellation
+6. UI resets to allow new generation
 
 ## Testing Checklist
 
-1. Deploy semantic fallback hotfix
-2. Resume the failed report run `e8ab9f92-08e1-416a-a8ae-5f1456490db9`
-3. Verify step 8 (comparables_market_signals) completes without JSON Guard failures
-4. Implement dynamic input form for future grants
-5. Test new pipeline generation with dynamic form
+1. [ ] Click Cancel once - verify spinner appears immediately
+2. [ ] Click Cancel rapidly - verify only one request sent
+3. [ ] Cancel a running report - verify credit refunded
+4. [ ] Cancel a stalled report - verify UI resets
+5. [ ] Verify toast message appears after successful cancel
