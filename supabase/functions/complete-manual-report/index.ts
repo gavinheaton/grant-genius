@@ -283,7 +283,7 @@ ${report_html}
 
     // Send email to user with attachments
     if (brevoApiKey && userProfile.email) {
-      const appUrl = supabaseUrl.replace(".supabase.co", ".lovable.app");
+      const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
       
       const emailHtml = `
         <h2>Your Report is Ready!</h2>
