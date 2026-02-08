@@ -90,6 +90,7 @@ export function useReportGeneration(
   const { toast } = useToast();
   const [isStarting, setIsStarting] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [activeRun, setActiveRun] = useState<ReportRun | null>(null);
   const [reports, setReports] = useState<Report[]>([]);
   const [isLoadingReports, setIsLoadingReports] = useState(true);
@@ -634,8 +635,11 @@ export function useReportGeneration(
 
   // Cancel a stalled/stuck report run
   const cancelRun = useCallback(async (runId: string) => {
+    if (isCancelling) return; // Prevent double-clicks
+    
+    setIsCancelling(true);
     try {
-      const { error } = await supabase.functions.invoke("cancel-report-run", {
+      const { data, error } = await supabase.functions.invoke("cancel-report-run", {
         body: { reportRunId: runId },
       });
 
@@ -643,22 +647,41 @@ export function useReportGeneration(
         throw error;
       }
 
+      // Success (including idempotent "already stopped" case)
       setActiveRun(null);
       setIsGenerating(false);
       setSteps([]);
       toast({
         title: "Generation cancelled",
-        description: "You can try again when ready.",
+        description: data?.alreadyStopped 
+          ? "The generation was already stopped."
+          : "Your credit has been refunded. You can try again when ready.",
       });
     } catch (error) {
       console.error("Error cancelling run:", error);
-      toast({
-        title: "Failed to cancel",
-        description: "Please try again or contact support.",
-        variant: "destructive",
-      });
+      
+      // Check if error indicates run already stopped (idempotent success)
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("already completed") || errorMessage.includes("already failed") || errorMessage.includes("already stopped")) {
+        // Treat as success - the run is stopped
+        setActiveRun(null);
+        setIsGenerating(false);
+        setSteps([]);
+        toast({
+          title: "Generation cancelled",
+          description: "You can try again when ready.",
+        });
+      } else {
+        toast({
+          title: "Failed to cancel",
+          description: "Please try again or contact support.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setIsCancelling(false);
     }
-  }, [toast]);
+  }, [toast, isCancelling]);
 
   // Toggle email on complete preference
   const toggleEmailOnComplete = useCallback(async (enabled: boolean) => {
@@ -835,6 +858,7 @@ export function useReportGeneration(
   return {
     isStarting,
     isGenerating,
+    isCancelling,
     activeRun,
     reports,
     isLoadingReports,

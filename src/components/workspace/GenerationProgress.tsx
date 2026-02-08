@@ -30,6 +30,7 @@ interface GenerationProgressProps {
   isStarting?: boolean;
   activeRunId?: string | null;
   is504Error?: boolean; // Flag for network/transient errors
+  isCancelling?: boolean;
 }
 
 // Format step name from snake_case to Title Case
@@ -74,6 +75,7 @@ export function GenerationProgress({
   isStarting = false,
   activeRunId,
   is504Error = false,
+  isCancelling = false,
 }: GenerationProgressProps) {
   const [countdown, setCountdown] = useState(AUTO_RETRY_SECONDS);
   const [isPaused, setIsPaused] = useState(false);
@@ -318,9 +320,19 @@ export function GenerationProgress({
                 </Button>
               )}
               {onCancel && (
-                <Button variant="outline" size="sm" onClick={onCancel} className="gap-2">
-                  <XCircle className="h-4 w-4" />
-                  Cancel & Start Over
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={onCancel}
+                  disabled={isCancelling}
+                  className="gap-2"
+                >
+                  {isCancelling ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <XCircle className="h-4 w-4" />
+                  )}
+                  {isCancelling ? "Cancelling..." : "Cancel & Start Over"}
                 </Button>
               )}
             </div>
@@ -356,11 +368,16 @@ export function GenerationProgress({
               <Button 
                 variant="ghost" 
                 size="sm" 
-                onClick={onCancel} 
+                onClick={onCancel}
+                disabled={isCancelling}
                 className="gap-2 text-muted-foreground hover:text-destructive"
               >
-                <XCircle className="h-4 w-4" />
-                Cancel Generation
+                {isCancelling ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <XCircle className="h-4 w-4" />
+                )}
+                {isCancelling ? "Cancelling..." : "Cancel Generation"}
               </Button>
             )}
           </div>
