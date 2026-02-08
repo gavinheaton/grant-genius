@@ -76,11 +76,16 @@ serve(async (req) => {
       );
     }
 
-    // Only allow cancelling pending or running reports
+    // Make cancellation idempotent - if already stopped, return success
     if (reportRun.status !== "pending" && reportRun.status !== "running") {
+      console.log(`Report run ${reportRunId} already in status ${reportRun.status}, treating as cancelled`);
       return new Response(
-        JSON.stringify({ error: "Report run is already completed or failed" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ 
+          success: true, 
+          message: "Report generation already stopped",
+          alreadyStopped: true
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 

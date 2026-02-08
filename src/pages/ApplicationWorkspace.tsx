@@ -64,6 +64,7 @@ export default function ApplicationWorkspace() {
   const { 
     isStarting,
     isGenerating, 
+    isCancelling,
     activeRun, 
     reports, 
     isLoadingReports, 
@@ -412,6 +413,7 @@ export default function ApplicationWorkspace() {
               completedAt={activeRun.completed_at}
               activeRunId={activeRun.id}
               is504Error={activeRun.is504Error}
+              isCancelling={isCancelling}
             />
           )}
         </div>
