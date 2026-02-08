@@ -208,11 +208,18 @@ export function PromptStepEditor({
   };
 
   // Get default model based on step number
+  // Heavy steps (2, 6-8, 11+) use Pro; others use Flash
   const getDefaultModel = (stepNumber: number) => {
-    if (stepNumber <= 3) return "google/gemini-2.5-flash-lite";
-    if (stepNumber <= 7) return "google/gemini-3-flash-preview";
-    if (stepNumber === 11) return "google/gemini-3-pro-preview";
-    return "google/gemini-2.5-flash-lite";
+    // Step 2: Competitor Research - benefits from Pro reasoning
+    if (stepNumber === 2) return "google/gemini-3-pro-preview";
+    // Steps 6-8: TAM/SAM/SOM - complex market calculations
+    if (stepNumber >= 6 && stepNumber <= 8) return "google/gemini-3-pro-preview";
+    // Steps 11+: Assembly and finalization
+    if (stepNumber >= 11) return "google/gemini-3-pro-preview";
+    // Early steps: use balanced Flash
+    if (stepNumber <= 5) return "google/gemini-3-flash-preview";
+    // Default fallback
+    return "google/gemini-3-flash-preview";
   };
 
   // Get default timeout based on step number
