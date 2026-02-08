@@ -1,53 +1,57 @@
 
+# Fix Manual Report Processing Issues
 
-# Add Dismiss Button to Completed Report Generation Card
+## Problems Identified
 
-## Overview
+After investigating the database and code, I found three issues with the manual report processing flow:
 
-After a report finishes generating, the "Generating Report" card remains visible showing the 100% completed state. This change adds a dismiss button so users can hide the card and focus on their completed reports.
+### Issue 1: Emails Not Being Received (Sender Address)
+The database shows emails are being sent with status "sent", but they're using an **unverified sender address** (`noreply@grantgenius.ai`) instead of the verified domain (`grantgenius@disruptorsco.com`). Emails from unverified senders typically get blocked or sent to spam.
 
----
+**Evidence from database:**
+- `MANUAL_SUBMISSION_ADMIN` email logged as "sent" to gavin@disruptorsco.com
+- `MANUAL_REPORT_READY` email logged as "sent" to gavin@disruptorsco.com
+- But both were sent from `noreply@grantgenius.ai`
 
-## Changes Required
+### Issue 2: PDF/DOCX Not Generating
+The report was created successfully (`is_manual = true`, `content_json` has the HTML), but both `pdf_path` and `docx_path` are NULL. The `complete-manual-report` function tries to generate files but:
+1. PDF generation uses a **service role Bearer token** which bypasses user auth, but the `generate-pdf` function checks `user_id` ownership via RLS
+2. The admin calling the function isn't the report owner, so RLS blocks the query
 
-### 1. Add `onDismiss` Prop to GenerationProgress Component
-
-**File: `src/components/workspace/GenerationProgress.tsx`**
-
-| Change | Description |
-|--------|-------------|
-| Add prop | `onDismiss?: () => void` - callback to hide the card |
-| Add UI | Show an "X" or "Dismiss" button in the completed state |
-
-The dismiss button will appear in the card header when `status === "completed"`, positioned next to the elapsed time indicator.
-
-### 2. Add State and Handler in ApplicationWorkspace
-
-**File: `src/pages/ApplicationWorkspace.tsx`**
-
-| Change | Description |
-|--------|-------------|
-| Add state | `const [dismissedRunId, setDismissedRunId] = useState<string \| null>(null)` |
-| Add handler | `handleDismissProgress` sets the dismissed run ID |
-| Update condition | Hide the progress card when `activeRun.id === dismissedRunId` |
-| Reset state | Clear `dismissedRunId` when a new generation starts |
+### Issue 3: Can't View Report (Viewer Not Handling Manual HTML)
+The `HtmlReportViewer` and `extractReportHtml()` check for various formats but don't specifically check for `manual_report_html`. While the `content_json.report_html` path should work, the report HTML content stored for manual reports needs proper formatting to be extracted correctly.
 
 ---
 
-## UI Design
+## Solution
 
-When the report is completed, the card header will look like:
+### 1. Fix Email Sender Address
+**Files:** `supabase/functions/submit-manual-request/index.ts`, `supabase/functions/complete-manual-report/index.ts`
 
-```text
-┌─────────────────────────────────────────────────────────────┐
-│  ✓ Generating Report              ⏱ 12m 34s    [Dismiss ✕] │
-├─────────────────────────────────────────────────────────────┤
-│  Report generation complete!                          100%  │
-│  ████████████████████████████████████████████████████████  │
-└─────────────────────────────────────────────────────────────┘
+Change sender from:
+```javascript
+sender: { name: "Grant Genius", email: "noreply@grantgenius.ai" }
+```
+To verified address:
+```javascript
+sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" }
 ```
 
-The dismiss button uses a ghost variant with an X icon, positioned in the top-right area.
+### 2. Fix PDF/DOCX Generation in complete-manual-report
+**File:** `supabase/functions/complete-manual-report/index.ts`
+
+The current code calls `generate-pdf` with the admin's auth token, but the PDF function requires the **report owner's** user ID. Two options:
+
+**Option A (Recommended):** Generate PDF/DOCX inline using the service role client, bypassing the separate functions that have RLS checks.
+
+**Option B:** Create a service-role version of the PDF/DOCX generation that doesn't rely on user auth.
+
+I'll implement Option A for reliability - the `complete-manual-report` function will directly call PDFShift API and handle storage upload using the service role.
+
+### 3. Fix Report Viewing for Manual Reports
+**File:** `src/lib/htmlReportUtils.ts`
+
+Update `extractReportHtml()` to also check for `manual_report_html` as a top-level field in the content, ensuring manual reports display correctly.
 
 ---
 
@@ -55,12 +59,35 @@ The dismiss button uses a ghost variant with an X icon, positioned in the top-ri
 
 | File | Change |
 |------|--------|
-| `src/components/workspace/GenerationProgress.tsx` | Add `onDismiss` prop and dismiss button UI for completed state |
-| `src/pages/ApplicationWorkspace.tsx` | Add dismissed state tracking and pass handler to component |
+| `supabase/functions/submit-manual-request/index.ts` | Fix sender email address |
+| `supabase/functions/complete-manual-report/index.ts` | Fix sender email + inline PDF/DOCX generation |
+| `src/lib/htmlReportUtils.ts` | Add support for `manual_report_html` field |
 
 ---
 
-## Summary
+## Technical Details
 
-A simple, focused change that adds a dismiss button visible only when the report generation is complete, allowing users to clean up the UI after their report is ready.
+### Email Fix
+Both edge functions will use `grantgenius@disruptorsco.com` as the sender to ensure emails are delivered from the verified domain.
 
+### PDF Generation Fix
+The `complete-manual-report` function will:
+1. Build HTML document from the manual report content
+2. Call PDFShift API directly with the HTML
+3. Upload to storage using service role (bypasses RLS)
+4. Update report record with file paths
+
+### DOCX Generation Fix
+Similarly, the function will call the docx generation logic directly or skip it for now (since the edge function already has DOCX generation code that failed due to auth issues).
+
+### Viewer Fix
+Add a check in `extractReportHtml()`:
+```javascript
+// Check for manual report HTML at top level
+if (content.manual_report_html && typeof content.manual_report_html === "string") {
+  return {
+    html: content.manual_report_html,
+    isLegacy: false,
+  };
+}
+```
