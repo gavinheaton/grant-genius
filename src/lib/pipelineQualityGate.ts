@@ -62,10 +62,11 @@ export interface PipelineStep {
  */
 export const CORE_STEP_NAMES = [
   'build_source_pack',
+  'market_basis_selection_and_scope',  // NEW: Determines correct parent market before TAM/SAM/SOM
   'rubric_traceability_matrix',
   'assessor_insight_layer',
   'assumptions_register',
-  'tam_sam_som_dual_methodology',  // Assessor-grade market sizing with dual methodology
+  'tam_sam_som_dual_methodology',  // Assessor-grade market sizing with dual methodology + 3x reconciliation
   'comparables_market_signals',
   'additionality_and_benefit_case',
   'commercialisation_logic',
@@ -101,7 +102,7 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
 ];
 
 const MINIMUM_PROMPT_LENGTH = 1500;
-const MINIMUM_TOTAL_STEPS = 13;  // Updated to include pre_assembly_sanitiser
+const MINIMUM_TOTAL_STEPS = 14;  // Updated to include market_basis_selection_and_scope + pre_assembly_sanitiser
 
 // ============================================================================
 // HARD-FAIL VALIDATION
@@ -468,7 +469,43 @@ export function detectRedFlags(steps: PipelineStep[]): string[] {
     }
   }
   
-  // 2b. tam_sam_som_dual_methodology must require dual methodology
+  // 2b. market_basis_selection_and_scope validation (NEW)
+  const marketBasisStep = steps.find(s => s.step_name === 'market_basis_selection_and_scope');
+  if (marketBasisStep) {
+    const prompt = marketBasisStep.prompt_template.toLowerCase();
+    
+    // Check for buyer/payer requirement
+    const hasBuyerPathway = 
+      prompt.includes('buyer') && (prompt.includes('payer') || prompt.includes('decision'));
+    
+    // Check for modality/class requirement
+    const hasModalityClass = 
+      prompt.includes('modality') || prompt.includes('class') || prompt.includes('category');
+    
+    // Check for geography justification
+    const hasGeographyJustification = 
+      prompt.includes('geography') && prompt.includes('justif');
+    
+    // Check for exclusion of generic markets
+    const banGenericMarkets = 
+      (prompt.includes('generic') && prompt.includes('not')) ||
+      (prompt.includes('global medtech') && prompt.includes('not'));
+    
+    if (!hasBuyerPathway) {
+      flags.push('market_basis_selection_and_scope lacks buyer/payer pathway requirement');
+    }
+    if (!hasModalityClass) {
+      flags.push('market_basis_selection_and_scope lacks modality/class requirement');
+    }
+    if (!hasGeographyJustification) {
+      flags.push('market_basis_selection_and_scope lacks geography justification');
+    }
+    if (!banGenericMarkets) {
+      flags.push('market_basis_selection_and_scope does not ban generic parent markets');
+    }
+  }
+  
+  // 2c. tam_sam_som_dual_methodology must require dual methodology + 3x reconciliation
   const dualMethodStep = steps.find(s => s.step_name === 'tam_sam_som_dual_methodology');
   if (dualMethodStep) {
     const prompt = dualMethodStep.prompt_template.toLowerCase();
@@ -503,20 +540,50 @@ export function detectRedFlags(steps: PipelineStep[]): string[] {
     // Check for sanity checks requirement
     const hasSanityChecks = 
       prompt.includes('sanity check') || prompt.includes('sanity_check') ||
-      (prompt.includes('pricing') && prompt.includes('anchor') && prompt.includes('consistent'));
+      (prompt.includes('pricing') && prompt.includes('anchor') && prompt.includes('consistent')) ||
+      prompt.includes('arithmetic');
     
     if (!hasSanityChecks) {
       flags.push('tam_sam_som_dual_methodology lacks sanity checks requirement');
     }
     
-    // Check for reconciliation requirement
-    const hasReconciliation = 
-      prompt.includes('reconcil') || 
-      prompt.includes('divergence') ||
-      (prompt.includes('compare') && prompt.includes('method'));
+    // Check for 3x reconciliation requirement (NEW - updated from 30%)
+    const has3xReconciliation = 
+      prompt.includes('3x') || prompt.includes('3 times') || 
+      prompt.includes('300%') ||
+      (prompt.includes('reconcil') && prompt.includes('converge'));
     
-    if (!hasReconciliation) {
-      flags.push('tam_sam_som_dual_methodology lacks reconciliation requirement for divergent methods');
+    if (!has3xReconciliation) {
+      flags.push('tam_sam_som_dual_methodology lacks 3x convergence reconciliation rule');
+    }
+    
+    // Check for arithmetic consistency sanity check (NEW)
+    const hasArithmeticCheck = 
+      prompt.includes('arithmetic') || 
+      (prompt.includes('population') && prompt.includes('price') && prompt.includes('penetration') && prompt.includes('='));
+    
+    if (!hasArithmeticCheck) {
+      flags.push('tam_sam_som_dual_methodology lacks arithmetic consistency sanity check (pop × price × penetration = SOM)');
+    }
+    
+    // Check for scope consistency (NEW)
+    const hasScopeCheck = 
+      (prompt.includes('scope') && prompt.includes('consisten')) ||
+      (prompt.includes('same product') && prompt.includes('same buyer')) ||
+      prompt.includes('scope consistency');
+    
+    if (!hasScopeCheck) {
+      flags.push('tam_sam_som_dual_methodology lacks scope consistency sanity check');
+    }
+    
+    // Check for defensibility notes (NEW)
+    const hasDefensibilityNotes = 
+      prompt.includes('defensibility_notes') ||
+      prompt.includes('defensibility notes') ||
+      (prompt.includes('why') && prompt.includes('parent market') && prompt.includes('correct'));
+    
+    if (!hasDefensibilityNotes) {
+      flags.push('tam_sam_som_dual_methodology lacks defensibility_notes section requirement');
     }
   }
 
@@ -838,18 +905,21 @@ A) Top-down sizing: Parent market × segment share (with formula + inputs)
 B) Bottom-up sizing: Units × price × penetration (with formula + inputs)
 
 Then reconcile the two methods:
-- If divergence >30%, explain why and state preferred method
+- If divergence >3x (300%), you MUST either:
+  a) Revise assumptions until methods converge within 3x, OR
+  b) Explicitly explain the discrepancy and narrow/expand scope
+- Document actions_taken[] with every adjustment made
 - Output blended_value with currency and year
 
 ASSUMPTIONS REGISTER (Required for every market sizing input):
 Each assumption must include:
 - assumption_id: "A1", "A2", etc.
-- description: What this assumption represents
+- assumption_name: Short label for the assumption
 - value: Number or percentage (NEVER "A%" or "$Z" placeholders)
-- confidence_label: "High" | "Medium" | "Low"
-- defensibility_note: Why this is reasonable (evidence-based or conservative proxy)
-- validation_source_type: What would validate it best
-- source_id: "S0-#" OR "ESTIMATE" (only with defensibility_note + method)
+- units: What the value represents (patients, AUD, fraction)
+- confidence: "High" | "Medium" | "Low"
+- one_line_defensibility: Why this is reasonable (evidence-based or conservative proxy)
+- evidence_support: { source_id: "S0-#" | "ESTIMATE", rationale: "..." }
 
 SENSITIVITY ANALYSIS (Mandatory):
 For each of TAM, SAM, SOM output:
@@ -858,17 +928,67 @@ For each of TAM, SAM, SOM output:
 - high_case: Optimistic bound (typically +20% to +30%)
 - sensitivity_drivers[]: Top 3 assumptions that move the result most
 
-SANITY CHECKS (Must Pass Before Output):
-1. Implied price consistent with pricing anchors OR proxy method documented
-2. Implied adoption/penetration consistent with comparables OR conservative by design
-3. Implied spend does not exceed known category spend without explanation
+MANDATORY SANITY CHECKS (All Must Pass Before Output):
+1. ARITHMETIC CONSISTENCY: (eligible_population × price × penetration) = bottom_up_som_value (within ±5%)
+2. SCOPE CONSISTENCY: TAM/SAM/SOM all refer to the same product and buyer type
+3. PRICING CONSISTENCY: Implied unit price within ±30% of pricing anchors
+4. PENETRATION REALISM: Year 1 penetration < 1%, Year 5 < 10% (unless exceptional justification)
+5. SPEND CEILING: SOM does not exceed known category budget
 
-If sanity check fails: revise assumptions OR downgrade confidence AND document fix_applied.
+For each sanity check that fails: revise assumptions AND document fix_applied, OR downgrade confidence and explain why deviation is justified.
+
+DEFENSIBILITY NOTES (Required):
+Include a defensibility_notes object with:
+- why_parent_market_correct: Explanation of market category choice
+- why_segment_share_reasonable: Justification for segment assumptions
+- top_3_drivers_that_would_change_numbers: ["A1: penetration rate", "A3: price", "A7: population"]
 
 EVIDENCE-TYPE ENFORCEMENT:
 - Market size/growth/pricing MUST cite: market research, industry reports, procurement data, PBS/MBS
 - Market sizing must NOT cite: epidemiology papers, disease burden studies
 - If mismatch detected: Replace with "Unknown (evidence type mismatch)" + log to unknowns[]
+`;
+
+  const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
+  if (outputSchemaIdx !== -1) {
+    return prompt.slice(0, outputSchemaIdx) + requirement + prompt.slice(outputSchemaIdx);
+  }
+  return prompt + requirement;
+}
+
+/**
+ * Inject market basis requirement into a prompt template
+ */
+export function injectMarketBasisRequirement(prompt: string): string {
+  const requirement = `
+
+MARKET BASIS SELECTION (Mandatory - before TAM/SAM/SOM):
+Before calculating TAM/SAM/SOM, you MUST determine the correct "parent market":
+
+1. BUYER/PAYER PATHWAY:
+   - Who pays? (government agency, private payer, enterprise, consumer)
+   - Who decides? (procurement committee, clinician, IT manager, end-user)
+   - What's the procurement path? (tender, PBS listing, direct purchase, SaaS subscription)
+
+2. MODALITY/CLASS:
+   - Is this a therapy, diagnostic, platform, service, or device?
+   - What regulatory class? (e.g., Class II device, software as medical device)
+   - What category does the buyer mentally slot this into?
+
+3. GEOGRAPHY:
+   - AU-only vs Global with AU subset?
+   - If Global → AU, what is the appropriate scaling factor?
+   - Justify the choice with source_id
+
+HARD RULE: Do NOT use generic parent markets like "global medtech" or "healthcare industry" unless:
+- You explicitly justify why a narrower category is unavailable
+- You document exclusion_rules to scope down appropriately
+
+Output market_basis object with:
+- market_type, parent_market_name, parent_market_value_aud, parent_market_source_id
+- buyer_persona: { payer, decision_maker, user }
+- modality_class, geography, geography_justification
+- inclusion_rules[], exclusion_rules[], justification, source_ids[]
 `;
 
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
