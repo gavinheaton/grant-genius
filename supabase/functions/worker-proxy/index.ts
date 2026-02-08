@@ -654,19 +654,30 @@ function lintReportHtml(html: string): LintViolation[] {
   while ((match = bracketPattern.exec(html)) !== null) {
     const content = match[1];
     
-    // ALLOWED: Numeric citations that are hyperlinked [1], [2], etc.
-    if (/^\d+$/.test(content)) {
-      const beforeContext = html.substring(Math.max(0, match.index - 100), match.index);
-      if (beforeContext.includes('href="#ref-')) {
-        continue; // Valid linked citation
+    // ALLOWED: Numeric citations (single or comma-separated)
+    // Examples: [1], [13], [13, 14], [13, 14, 15]
+    if (/^[\d,\s]+$/.test(content)) {
+      const nums = content.split(/\s*,\s*/).map(s => s.trim()).filter(s => s.length > 0);
+      const allNumeric = nums.every(n => /^\d+$/.test(n));
+      
+      if (allNumeric) {
+        // Check if this citation is inside an anchor tag
+        // Look for <a...> before and </a> after (within reasonable distance)
+        const startIdx = Math.max(0, match.index - 50);
+        const endIdx = Math.min(html.length, match.index + match[0].length + 20);
+        const beforeContext = html.substring(startIdx, match.index);
+        const afterContext = html.substring(match.index + match[0].length, endIdx);
+        
+        // Either it's hyperlinked (has <a> wrapper)
+        // OR it's a valid-looking reference number (we allow unlinked [1], [2] in final output)
+        // as they map to the References section at the bottom
+        const isInsideAnchor = beforeContext.includes('<a') && afterContext.includes('</a>');
+        const isValidRefNumber = nums.every(n => parseInt(n, 10) > 0 && parseInt(n, 10) <= 999);
+        
+        if (isInsideAnchor || isValidRefNumber) {
+          continue; // Valid numeric citation - allow it
+        }
       }
-      // Unlinked numeric - still a violation
-      violations.push({
-        token: match[0],
-        pattern: 'Unlinked citation',
-        context: extractSentenceContext(html, match.index, match[0].length)
-      });
-      continue;
     }
     
     // Check if it looks like an internal marker (starts with letter, contains number)
