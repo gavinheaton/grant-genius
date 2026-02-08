@@ -703,6 +703,7 @@ export type Database = {
           is_assembly_step: boolean | null
           is_heavy: boolean | null
           max_expected_seconds: number | null
+          max_output_tokens: number | null
           model_override: string | null
           prompt_template: string
           step_config_json: Json | null
@@ -720,6 +721,7 @@ export type Database = {
           is_assembly_step?: boolean | null
           is_heavy?: boolean | null
           max_expected_seconds?: number | null
+          max_output_tokens?: number | null
           model_override?: string | null
           prompt_template: string
           step_config_json?: Json | null
@@ -737,6 +739,7 @@ export type Database = {
           is_assembly_step?: boolean | null
           is_heavy?: boolean | null
           max_expected_seconds?: number | null
+          max_output_tokens?: number | null
           model_override?: string | null
           prompt_template?: string
           step_config_json?: Json | null

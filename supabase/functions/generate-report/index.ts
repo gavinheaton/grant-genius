@@ -83,7 +83,7 @@ const RETRY_DELAYS = [5000, 15000, 30000];
 // Cache for active prompt bundle
 let cachedBundle: {
   system_prompt: string;
-  steps: Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>;
+  steps: Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null; max_output_tokens: number | null }>;
 } | null = null;
 
 // Fetch active prompt bundle from database
@@ -105,7 +105,7 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
 
     const { data: steps, error: stepsError } = await supabase
       .from("prompt_bundle_steps")
-      .select("step_number, prompt_template, model_override, timeout_seconds")
+      .select("step_number, prompt_template, model_override, timeout_seconds, max_output_tokens")
       .eq("bundle_id", bundle.id)
       .order("step_number", { ascending: true });
 
@@ -114,12 +114,13 @@ async function fetchActiveBundle(supabase: any): Promise<typeof cachedBundle> {
       return null;
     }
 
-    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null }>();
+    const stepsMap = new Map<number, { prompt_template: string; model_override: string | null; timeout_seconds: number | null; max_output_tokens: number | null }>();
     for (const step of steps) {
       stepsMap.set(step.step_number, {
         prompt_template: step.prompt_template,
         model_override: step.model_override,
         timeout_seconds: step.timeout_seconds,
+        max_output_tokens: step.max_output_tokens,
       });
     }
 
@@ -780,7 +781,7 @@ Return JSON:
         ? stepConfig.timeout_seconds * 1000 
         : getTimeoutForStep(0);
 
-      const sourcePackResult = await callAIWithRetry(sourcePackPrompt, 0, systemPrompt, stepConfig?.model_override, timeoutMs);
+      const sourcePackResult = await callAIWithRetry(sourcePackPrompt, 0, systemPrompt, stepConfig?.model_override, timeoutMs, stepConfig?.max_output_tokens);
       
       // Try to parse as JSON, otherwise wrap in structure
       let parsedSourcePack;
@@ -886,7 +887,8 @@ async function callAIWithRetry(
   stepNumber: number, 
   systemPrompt: string = DEFAULT_SYSTEM_PROMPT,
   modelOverride?: string | null,
-  customTimeoutMs?: number
+  customTimeoutMs?: number,
+  maxOutputTokens?: number | null
 ): Promise<string> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
@@ -899,7 +901,7 @@ async function callAIWithRetry(
   
   // Use custom timeout if provided, otherwise use step-specific default
   const timeout = customTimeoutMs || getTimeoutForStep(stepNumber);
-  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeout / 1000}s`);
+  console.log(`Step ${stepNumber}: Using model ${model}, timeout ${timeout / 1000}s${maxOutputTokens ? `, max_tokens ${maxOutputTokens}` : ''}`);
 
   for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
     // Wait before retry (not on first attempt)
@@ -924,6 +926,7 @@ async function callAIWithRetry(
               { role: "system", content: systemPrompt },
               { role: "user", content: prompt }
             ],
+            ...(maxOutputTokens && { max_tokens: maxOutputTokens }),
           }),
         },
         timeout

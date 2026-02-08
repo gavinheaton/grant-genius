@@ -43,6 +43,7 @@ export interface PromptBundleStep {
   timeout_seconds: number | null;
   is_heavy: boolean;
   max_expected_seconds: number | null;
+  max_output_tokens: number | null;
   step_type: StepType;
   step_config_json: Record<string, unknown> | null;
   is_assembly_step?: boolean;
@@ -60,6 +61,7 @@ export type PromptBundleStepUpdate = {
   timeout_seconds?: number | null;
   is_heavy?: boolean;
   max_expected_seconds?: number | null;
+  max_output_tokens?: number | null;
   step_type?: StepType;
   step_config_json?: Json;
   is_assembly_step?: boolean;
@@ -116,7 +118,7 @@ export function usePromptBundle(id: string | undefined) {
 
       const { data: steps, error: stepsError } = await supabase
         .from("prompt_bundle_steps")
-        .select("*, is_heavy, max_expected_seconds, step_type, step_config_json")
+        .select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
         .eq("bundle_id", id)
         .order("step_number", { ascending: true });
 

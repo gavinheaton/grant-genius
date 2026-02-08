@@ -257,6 +257,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
             timeout_seconds,
             is_heavy,
             max_expected_seconds,
+            max_output_tokens,
             is_assembly_step,
             step_type,
             step_config_json
@@ -334,6 +335,7 @@ async function handleGetRunContext(supabase: any, params: Record<string, unknown
           timeout_seconds,
           is_heavy,
           max_expected_seconds,
+          max_output_tokens,
           is_assembly_step,
           step_type,
           step_config_json
