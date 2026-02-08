@@ -437,6 +437,25 @@ async function handleUpdateStep(supabase: any, params: Record<string, unknown>) 
     return errorResponse("Invalid status");
   }
 
+  // STEP STATUS GUARD: Prevent failed→completed override
+  // This prevents the external worker from accidentally marking a failed step as completed
+  if (status === "completed") {
+    const { data: existingStep } = await supabase
+      .from("report_run_steps")
+      .select("status")
+      .eq("report_run_id", report_run_id)
+      .eq("step_number", step_number)
+      .single();
+    
+    if (existingStep?.status === "failed") {
+      console.log(`[GUARD] Rejecting status override: step ${step_number} is already failed, cannot mark as completed`);
+      return jsonResponse({ 
+        success: false, 
+        message: "Cannot mark failed step as completed. Step has already been marked as failed." 
+      }, 409); // 409 Conflict
+    }
+  }
+
   const updateData: Record<string, unknown> = { status };
   
   // Apply code fence stripping to outputs before saving
@@ -461,7 +480,7 @@ async function handleUpdateStep(supabase: any, params: Record<string, unknown>) 
 }
 
 async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
-  const { report_run_id, status, current_step, phase, checkpoint_data_json, checkpoint_citations_json, started_at, completed_at } = params;
+  const { report_run_id, status, current_step, phase, checkpoint_data_json, checkpoint_citations_json, started_at, completed_at, halt_reason } = params;
 
   if (!report_run_id || typeof report_run_id !== "string" || !isValidUUID(report_run_id)) {
     return errorResponse("Invalid report_run_id");
@@ -483,6 +502,18 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
   if (checkpoint_citations_json !== undefined) updateData.checkpoint_citations_json = checkpoint_citations_json;
   if (started_at !== undefined) updateData.started_at = started_at;
   if (completed_at !== undefined) updateData.completed_at = completed_at;
+
+  // HALT REASON: Store the reason when pipeline fails fatally
+  // This provides diagnostics for why the pipeline was stopped
+  if (halt_reason !== undefined && typeof halt_reason === "string") {
+    updateData.halt_reason = halt_reason;
+    console.log(`[HALT] Pipeline ${report_run_id} stopped: ${halt_reason}`);
+  }
+
+  // Auto-set halt_reason for failed runs if not provided
+  if (status === "failed" && !halt_reason) {
+    console.log(`[HALT] Run ${report_run_id} marked as failed (no explicit halt_reason provided)`);
+  }
 
   if (Object.keys(updateData).length === 0) {
     return errorResponse("No fields to update");
