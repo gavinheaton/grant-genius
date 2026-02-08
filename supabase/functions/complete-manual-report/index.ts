@@ -56,6 +56,7 @@ serve(async (req) => {
         inputs_json,
         user_id,
         grant_version_id,
+        entitlement_consumption_id,
         grant_version:grant_versions!inner(
           id,
           grant:grants!inner(id, name)
@@ -157,6 +158,17 @@ serve(async (req) => {
 
       if (reportError) throw reportError;
       reportId = newReport.id;
+
+      // Link the entitlement consumption record to the report
+      if (application.entitlement_consumption_id) {
+        await serviceClient
+          .from("entitlement_consumptions")
+          .update({ 
+            report_id: reportId, 
+            report_run_id: reportRun.id 
+          })
+          .eq("id", application.entitlement_consumption_id);
+      }
     }
 
     // Update application status
