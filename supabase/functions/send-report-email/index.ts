@@ -67,7 +67,7 @@ serve(async (req) => {
     const userName = profile.full_name || profile.email.split("@")[0];
 
     // Get the app URL from environment or construct it
-    const appUrl = Deno.env.get("APP_URL") || "https://grant-genius-dc.lovable.app";
+    const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
     const reportLink = `${appUrl}/applications/${applicationId}`;
 
     // Get the Brevo template ID from email_templates table

@@ -114,7 +114,7 @@ serve(async (req) => {
         <p><strong>IP Status:</strong> ${inputs?.ipStatus || "Not specified"}</p>
         <hr />
         <p>
-          <a href="${supabaseUrl.replace('.supabase.co', '.lovable.app')}/admin/manual-queue" 
+          <a href="${Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com"}/admin/manual-queue" 
              style="background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
             Open Manual Queue
           </a>
