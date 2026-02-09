@@ -322,25 +322,40 @@ export type Database = {
           brevo_template_id: number
           created_at: string
           description: string | null
+          html_content: string | null
           id: string
+          sender_email: string | null
+          sender_name: string | null
+          subject: string | null
           template_key: string
           updated_at: string
+          variables_schema: Json | null
         }
         Insert: {
           brevo_template_id: number
           created_at?: string
           description?: string | null
+          html_content?: string | null
           id?: string
+          sender_email?: string | null
+          sender_name?: string | null
+          subject?: string | null
           template_key: string
           updated_at?: string
+          variables_schema?: Json | null
         }
         Update: {
           brevo_template_id?: number
           created_at?: string
           description?: string | null
+          html_content?: string | null
           id?: string
+          sender_email?: string | null
+          sender_name?: string | null
+          subject?: string | null
           template_key?: string
           updated_at?: string
+          variables_schema?: Json | null
         }
         Relationships: []
       }

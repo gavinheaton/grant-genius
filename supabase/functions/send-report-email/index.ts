@@ -15,123 +15,33 @@ interface SendReportEmailRequest {
   userId: string;
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+interface EmailTemplate {
+  brevo_template_id: number;
+  subject: string | null;
+  html_content: string | null;
+  sender_name: string | null;
+  sender_email: string | null;
+}
+
+// Replace template variables with actual values
+function substituteVariables(
+  content: string,
+  variables: Record<string, string>
+): string {
+  let result = content;
+  for (const [key, value] of Object.entries(variables)) {
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
   }
+  return result;
+}
 
-  try {
-    const { reportRunId, reportId, applicationId, userId } = await req.json() as SendReportEmailRequest;
-
-    if (!reportRunId || !reportId || !userId) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL") ?? "",
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
-    );
-
-    // Get user profile for email
-    const { data: profile, error: profileError } = await supabase
-      .from("profiles")
-      .select("email, full_name")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (profileError || !profile) {
-      console.error("Failed to fetch user profile:", profileError);
-      return new Response(
-        JSON.stringify({ error: "User not found" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Get application details for grant name
-    const { data: application } = await supabase
-      .from("applications")
-      .select(`
-        title,
-        grant_version:grant_versions!inner(
-          grant:grants!inner(name)
-        )
-      `)
-      .eq("id", applicationId)
-      .maybeSingle();
-
-    // deno-lint-ignore no-explicit-any
-    const grantName = (application?.grant_version as any)?.grant?.name || "Your Research";
-    const userName = profile.full_name || profile.email.split("@")[0];
-
-    // Get the app URL from environment or construct it
-    const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
-    const reportLink = `${appUrl}/applications/${applicationId}`;
-
-    // Get the Brevo template ID from email_templates table
-    const { data: template } = await supabase
-      .from("email_templates")
-      .select("brevo_template_id")
-      .eq("template_key", "REPORT_READY")
-      .maybeSingle();
-
-    // Send email via Brevo API
-    const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
-    
-    if (!BREVO_API_KEY) {
-      console.error("BREVO_API_KEY not configured");
-      return new Response(
-        JSON.stringify({ error: "Email service not configured" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    let emailSent = false;
-    let brevoMessageId = null;
-
-    // If we have a Brevo template, use it
-    if (template?.brevo_template_id) {
-      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "api-key": BREVO_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          templateId: template.brevo_template_id,
-          to: [{ email: profile.email, name: userName }],
-          params: {
-            user_name: userName,
-            grant_name: grantName,
-            report_link: reportLink,
-          },
-        }),
-      });
-
-      if (brevoResponse.ok) {
-        const brevoData = await brevoResponse.json();
-        brevoMessageId = brevoData.messageId;
-        emailSent = true;
-      } else {
-        console.error("Brevo template email failed:", await brevoResponse.text());
-      }
-    }
-
-    // Fallback: send raw email if template not configured or failed
-    if (!emailSent) {
-      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "api-key": BREVO_API_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
-          to: [{ email: profile.email, name: userName }],
-          subject: "Your Grant Genius Report is Ready! 🎉",
-          htmlContent: `
+// Hardcoded fallback template (legacy support)
+function getFallbackHtml(
+  userName: string,
+  grantName: string,
+  reportLink: string
+): string {
+  return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -176,8 +86,197 @@ serve(async (req) => {
     This email was sent by Grant Genius because you requested to be notified when your report was ready.
   </p>
 </body>
-</html>
-          `,
+</html>`;
+}
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  try {
+    const { reportRunId, reportId, applicationId, userId } =
+      (await req.json()) as SendReportEmailRequest;
+
+    if (!reportRunId || !reportId || !userId) {
+      return new Response(
+        JSON.stringify({ error: "Missing required fields" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    );
+
+    // Get user profile for email
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("email, full_name")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (profileError || !profile) {
+      console.error("Failed to fetch user profile:", profileError);
+      return new Response(JSON.stringify({ error: "User not found" }), {
+        status: 404,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Get application details for grant name
+    const { data: application } = await supabase
+      .from("applications")
+      .select(
+        `
+        title,
+        grant_version:grant_versions!inner(
+          grant:grants!inner(name)
+        )
+      `
+      )
+      .eq("id", applicationId)
+      .maybeSingle();
+
+    // deno-lint-ignore no-explicit-any
+    const grantName =
+      (application?.grant_version as any)?.grant?.name || "Your Research";
+    const userName = profile.full_name || profile.email.split("@")[0];
+
+    // Get the app URL from environment or construct it
+    const appUrl =
+      Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+    const reportLink = `${appUrl}/applications/${applicationId}`;
+
+    // Template variables for substitution
+    const templateVariables = {
+      user_name: userName,
+      grant_name: grantName,
+      report_link: reportLink,
+    };
+
+    // Get the template from email_templates table
+    const { data: template } = await supabase
+      .from("email_templates")
+      .select("brevo_template_id, subject, html_content, sender_name, sender_email")
+      .eq("template_key", "REPORT_READY")
+      .maybeSingle();
+
+    // Cast to our interface
+    const emailTemplate = template as EmailTemplate | null;
+
+    // Get Brevo API key
+    const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
+
+    if (!BREVO_API_KEY) {
+      console.error("BREVO_API_KEY not configured");
+      return new Response(
+        JSON.stringify({ error: "Email service not configured" }),
+        {
+          status: 500,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    let emailSent = false;
+    let brevoMessageId = null;
+    let subjectUsed = "Your Grant Genius Report is Ready! 🎉";
+
+    // Priority 1: Use custom html_content from database if available
+    if (emailTemplate?.html_content) {
+      const htmlContent = substituteVariables(
+        emailTemplate.html_content,
+        templateVariables
+      );
+      const subject = emailTemplate.subject
+        ? substituteVariables(emailTemplate.subject, templateVariables)
+        : subjectUsed;
+      subjectUsed = subject;
+
+      const senderName = emailTemplate.sender_name || "Grant Genius";
+      const senderEmail =
+        emailTemplate.sender_email || "grantgenius@disruptorsco.com";
+
+      console.log("Using custom HTML template from database");
+
+      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: profile.email, name: userName }],
+          subject: subject,
+          htmlContent: htmlContent,
+        }),
+      });
+
+      if (brevoResponse.ok) {
+        const brevoData = await brevoResponse.json();
+        brevoMessageId = brevoData.messageId;
+        emailSent = true;
+      } else {
+        console.error(
+          "Brevo custom template email failed:",
+          await brevoResponse.text()
+        );
+      }
+    }
+
+    // Priority 2: Use Brevo template if configured and custom content not available/failed
+    if (!emailSent && emailTemplate?.brevo_template_id && emailTemplate.brevo_template_id > 0) {
+      console.log(
+        "Using Brevo template ID:",
+        emailTemplate.brevo_template_id
+      );
+
+      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          templateId: emailTemplate.brevo_template_id,
+          to: [{ email: profile.email, name: userName }],
+          params: templateVariables,
+        }),
+      });
+
+      if (brevoResponse.ok) {
+        const brevoData = await brevoResponse.json();
+        brevoMessageId = brevoData.messageId;
+        emailSent = true;
+      } else {
+        console.error(
+          "Brevo template email failed:",
+          await brevoResponse.text()
+        );
+      }
+    }
+
+    // Priority 3: Fallback to hardcoded template (legacy support)
+    if (!emailSent) {
+      console.log("Using hardcoded fallback template");
+
+      const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": BREVO_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+          to: [{ email: profile.email, name: userName }],
+          subject: subjectUsed,
+          htmlContent: getFallbackHtml(userName, grantName, reportLink),
         }),
       });
 
@@ -187,10 +286,13 @@ serve(async (req) => {
         emailSent = true;
       } else {
         const errorText = await brevoResponse.text();
-        console.error("Brevo raw email failed:", errorText);
+        console.error("Brevo fallback email failed:", errorText);
         return new Response(
           JSON.stringify({ error: "Failed to send email", details: errorText }),
-          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+          {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          }
         );
       }
     }
@@ -200,19 +302,19 @@ serve(async (req) => {
       user_id: userId,
       to_email: profile.email,
       template_key: "REPORT_READY",
-      subject: "Your Grant Genius Report is Ready!",
+      subject: subjectUsed,
       brevo_message_id: brevoMessageId,
       status: emailSent ? "sent" : "failed",
       sent_at: emailSent ? new Date().toISOString() : null,
       variables_json: {
-        user_name: userName,
-        grant_name: grantName,
-        report_link: reportLink,
+        ...templateVariables,
         report_id: reportId,
       },
     });
 
-    console.log(`Report ready email sent to ${profile.email} for report ${reportId}`);
+    console.log(
+      `Report ready email sent to ${profile.email} for report ${reportId}`
+    );
 
     return new Response(
       JSON.stringify({ success: true, messageId: brevoMessageId }),
@@ -221,8 +323,13 @@ serve(async (req) => {
   } catch (error) {
     console.error("Error in send-report-email:", error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      JSON.stringify({
+        error: error instanceof Error ? error.message : "Unknown error",
+      }),
+      {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      }
     );
   }
 });
