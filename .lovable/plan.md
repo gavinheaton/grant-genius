@@ -1,381 +1,164 @@
 
+# Plan: Fix Report HTML Field Name + Citation Quality Improvements
 
-# AEA Single Prompt - Redesigned Pipeline
+## Overview
+This plan addresses the "No step output found with 'sections_html' or 'report_html' field" error by ensuring the final assembly step outputs the canonical `report_html` key. Additionally, we'll strengthen citation binding and evidence requirements across the pipeline.
 
-## Analysis of Your ChatGPT Prompt
-
-Your prompt has **11 distinct research steps** plus final assembly. To make this work with Grant Genius, we need to:
-
-1. **Split data gathering** (Firecrawl searches) from **analysis** (AI prompts)
-2. **Chain outputs** using `{{stepN}}` syntax
-3. **Name the final step** `finalize_report_html` with output key `report_html`
-
----
-
-## Proposed 10-Step Pipeline Architecture
-
-### Phase 1: Data Gathering (Firecrawl Search Steps)
-
-| Step | Name | Type | Purpose |
-|------|------|------|---------|
-| 0 | `search_scholarly_competitors` | firecrawl_search | Google Scholar for competitive research projects |
-| 1 | `search_market_companies` | firecrawl_search | Find companies with similar products, market sizes |
-| 2 | `search_market_data` | firecrawl_search | TAM data from Euromonitor, market research sources |
-| 3 | `search_australian_partners` | firecrawl_search | Australian businesses by ANZSIC codes |
-
-### Phase 2: Analysis (AI Prompt Steps)
-
-| Step | Name | Type | Purpose |
-|------|------|------|---------|
-| 4 | `analyze_market_segments` | ai_prompt | Translate research into 3+ product/service segments |
-| 5 | `calculate_tam_sam_som` | ai_prompt | Calculate TAM → SAM → SOM with sources |
-| 6 | `build_competitor_analysis` | ai_prompt | Feature/UX/price comparison table |
-| 7 | `calculate_economic_impact` | ai_prompt | Australian economic impact from SOM |
-| 8 | `identify_partners` | ai_prompt | Match ANZSIC codes to Australian partners |
-
-### Phase 3: Assembly
-
-| Step | Name | Type | Purpose |
-|------|------|------|---------|
-| 9 | `finalize_report_html` | ai_prompt | Assemble full HTML report with APA citations |
+## Problem Summary
+- The external Replit worker and `recover-finalize-report` function search for `report_html`, `sections_html`, `report`, `html`, or `content` fields
+- A step outputting `part_one_report_html` is not recognized
+- Citation and evidence quality needs improvement for assessor-grade output
 
 ---
 
-## Step-by-Step Prompt Templates
+## Part 1: Fix Output Field Name (Step 9)
 
-### Step 0: `search_scholarly_competitors` (Firecrawl Search)
-```
-Query Template:
-"{{summary}}" site:scholar.google.com OR site:researchgate.net competitive research similar methodology
-```
+### Change 1.1: Update finalize_report_html Prompt
+**File:** Database update to `prompt_bundle_steps` table
 
-### Step 1: `search_market_companies` (Firecrawl Search)
-```
-Query Template:
-"{{summary}}" market size revenue company product service commercialization
-```
-
-### Step 2: `search_market_data` (Firecrawl Search)
-```
-Query Template:
-"{{summary}}" TAM total addressable market size 2024 2025 site:statista.com OR site:euromonitor.com OR site:marketresearch.com
-```
-
-### Step 3: `search_australian_partners` (Firecrawl Search)
-```
-Query Template:
-"{{summary}}" Australia industry partner manufacturer distributor ANZSIC
-```
-
-### Step 4: `analyze_market_segments` (AI Prompt)
-```text
-You are a commercialization analyst for an Australian university research project.
-
-RESEARCH SUMMARY:
-{{summary}}
-
-SCHOLARLY RESEARCH FINDINGS:
-{{step0}}
-
-MARKET COMPANY DATA:
-{{step1}}
-
-TASK:
-Analyze how this research can be translated into commercial products or services across at least 3 distinct market segments. At least one segment MUST be in Australia.
-
-For each segment, provide:
-1. Segment name and geographic focus
-2. Target customer profile
-3. Product/service description
-4. Value proposition
-5. Estimated market entry timeline
-
-OUTPUT FORMAT:
-Return valid JSON:
-{
-  "segments": [
-    {
-      "segment_name": "string",
-      "geography": "string",
-      "target_customers": "string",
-      "product_description": "string",
-      "value_proposition": "string",
-      "entry_timeline": "string",
-      "sources": ["url1", "url2"]
-    }
-  ],
-  "sources": [
-    {"source_id": "S1", "title": "string", "url": "string", "publisher": "string", "date": "string"}
-  ]
-}
-```
-
-### Step 5: `calculate_tam_sam_som` (AI Prompt)
-```text
-You are a market sizing analyst preparing a grant application for the AEA Ignite program.
-
-RESEARCH SUMMARY:
-{{summary}}
-
-MARKET SEGMENTS IDENTIFIED:
-{{step4}}
-
-MARKET DATA FROM RESEARCH:
-{{step2}}
-
-TASK:
-For each market segment, calculate:
-1. **Total Addressable Market (TAM)**: The entire market demand
-2. **Serviceable Addressable Market (SAM)**: The portion targetable with current capabilities
-3. **Serviceable Obtainable Market (SOM)**: Realistic capture over 5 years
-
-REQUIREMENTS:
-- All figures must cite validated sources (Statista, Euromonitor, industry reports)
-- Provide methodology for each calculation
-- Include currency (AUD preferred for Australian segments)
-- Flag any assumptions or data gaps
-
-OUTPUT FORMAT:
-Return valid JSON:
-{
-  "market_sizing": [
-    {
-      "segment": "string",
-      "tam": {"value": "number", "currency": "AUD", "methodology": "string", "sources": ["S1"]},
-      "sam": {"value": "number", "currency": "AUD", "methodology": "string", "sources": ["S2"]},
-      "som": {"value": "number", "currency": "AUD", "methodology": "string", "sources": ["S3"]}
-    }
-  ],
-  "sources": [
-    {"source_id": "S1", "title": "string", "url": "string", "publisher": "string", "date": "string"}
-  ],
-  "data_gaps": ["string"]
-}
-```
-
-### Step 6: `build_competitor_analysis` (AI Prompt)
-```text
-You are a competitive intelligence analyst.
-
-RESEARCH SUMMARY:
-{{summary}}
-
-MARKET SEGMENTS AND PRODUCTS:
-{{step4}}
-
-COMPANY DATA:
-{{step1}}
-
-TASK:
-Build a comprehensive competitor comparison table for each market segment.
-
-For each competitor, analyze:
-1. Company name and location
-2. Product/service offering
-3. Key features (list 5-8)
-4. User experience rating (based on reviews if available)
-5. Pricing model and range
-6. Market share (if known)
-
-OUTPUT FORMAT:
-Return valid JSON:
-{
-  "competitor_tables": [
-    {
-      "segment": "string",
-      "competitors": [
-        {
-          "company": "string",
-          "location": "string",
-          "product": "string",
-          "features": ["string"],
-          "ux_rating": "string",
-          "pricing": "string",
-          "market_share": "string",
-          "source_url": "string"
-        }
-      ]
-    }
-  ],
-  "sources": [...]
-}
-```
-
-### Step 7: `calculate_economic_impact` (AI Prompt)
-```text
-You are an economic analyst preparing an AEA Ignite grant application.
-
-SERVICEABLE OBTAINABLE MARKET DATA:
-{{step5}}
-
-TASK:
-Calculate the likely economic impact to the Australian economy from commercializing this research.
-
-Consider:
-1. Direct revenue generation (from SOM)
-2. Job creation potential
-3. Export potential
-4. Tax revenue implications
-5. Multiplier effects on related industries
-6. Comparison to similar commercialization outcomes
-
-OUTPUT FORMAT:
-Return valid JSON:
-{
-  "economic_impact": {
-    "direct_revenue_5yr": {"value": "number", "currency": "AUD"},
-    "jobs_created": {"value": "number", "methodology": "string"},
-    "export_potential": {"value": "number", "currency": "AUD"},
-    "tax_revenue": {"value": "number", "currency": "AUD"},
-    "multiplier_effect": "string",
-    "comparison_cases": ["string"]
-  },
-  "sources": [...],
-  "assumptions": ["string"]
-}
-```
-
-### Step 8: `identify_partners` (AI Prompt)
-```text
-You are a business development analyst identifying commercialization partners.
-
-RESEARCH SUMMARY:
-{{summary}}
-
-MARKET SEGMENTS:
-{{step4}}
-
-AUSTRALIAN PARTNER SEARCH RESULTS:
-{{step3}}
-
-TASK:
-Based on ANZSIC industry codes (https://www.dcceew.gov.au/sites/default/files/documents/anzsic-code-hierarchy.pdf), identify:
-
-1. Relevant ANZSIC codes for each market segment
-2. Australian businesses operating in those classifications
-3. Partnership potential (manufacturing, distribution, licensing)
-
-OUTPUT FORMAT:
-Return valid JSON:
-{
-  "partner_analysis": [
-    {
-      "segment": "string",
-      "anzsic_codes": [{"code": "string", "description": "string"}],
-      "potential_partners": [
-        {
-          "company": "string",
-          "location": "string",
-          "anzsic_code": "string",
-          "partnership_type": "string",
-          "rationale": "string",
-          "source_url": "string"
-        }
-      ]
-    }
-  ],
-  "sources": [...]
-}
-```
-
-### Step 9: `finalize_report_html` (AI Prompt) - CRITICAL FINAL STEP
-```text
-You are assembling the final commercialization report for an AEA Ignite grant application.
-
-RESEARCH SUMMARY:
-{{summary}}
-
-MARKET SEGMENTS:
-{{step4}}
-
-TAM/SAM/SOM ANALYSIS:
-{{step5}}
-
-COMPETITOR ANALYSIS:
-{{step6}}
-
-ECONOMIC IMPACT:
-{{step7}}
-
-PARTNER ANALYSIS:
-{{step8}}
-
-TASK:
-Create a comprehensive HTML report that includes:
-
-1. **Executive Summary** - Key findings and recommendations
-2. **Market Opportunity** - Segments, TAM/SAM/SOM with tables
-3. **Competitive Landscape** - Comparison tables
-4. **Economic Impact** - Australian economy benefits
-5. **Potential Partners** - Australian industry partnerships
-6. **Data Gaps & Considerations** - What needs further research
-7. **References** - Full APA format reference list
-
-FORMATTING REQUIREMENTS:
-- Use semantic HTML (h1, h2, h3, p, table, ul, ol)
-- Tables: 1px black border, smaller font size for cell text
-- All citations hyperlinked to source URLs
-- No horizontal rules between sections
-- Bold only for headings, table headers, and bullet point labels
-- Include Table of Contents at the beginning
-
-OUTPUT FORMAT:
-Return valid JSON:
+**Current output schema:**
+```json
 {
   "report_html": "<article>...</article>",
-  "tables": [...],
-  "all_sources": [...],
-  "data_gaps": [...]
+  "tables": [],
+  "all_sources": [],
+  "data_gaps": []
 }
+```
 
-CRITICAL: The report_html key must contain the complete HTML document.
+**Action:** Verify Step 9 (`finalize_report_html`) in bundle `8cfdf953-0d7f-48aa-981c-a29c7d863944` outputs `report_html`. If testing a different bundle where Step 7 outputs `part_one_report_html`, update that step's output schema to include:
+```json
+{
+  "report_html": "<article>Full HTML report</article>",
+  "part_one_report_html": "<same as above if needed>",
+  ...
+}
 ```
 
 ---
 
-## Key Differences from Your ChatGPT Prompt
+## Part 2: Citation Quality Improvements
 
-| Aspect | ChatGPT Prompt | Grant Genius Pipeline |
-|--------|---------------|----------------------|
-| Web searches | ChatGPT does its own browsing | Firecrawl steps gather data first |
-| Data flow | Implicit memory | Explicit `{{stepN}}` references |
-| Output format | Plain HTML | JSON with `report_html` key |
-| Final step name | N/A | Must be `finalize_report_html` |
-| Source tracking | Inline citations | Structured `sources` arrays |
+### Change 2.1: Strengthen TAM/SAM/SOM Citations (Step 5)
+**Update prompt to enforce:**
+- Every numeric value must have a source citation OR explicit proxy formula
+- If using a proxy: cite both the proxy source AND the derivation methodology
+- Include sensitivity range (low/base/high) for each SOM figure
+
+**Add to Step 5 prompt:**
+```text
+CITATION REQUIREMENTS:
+- Every TAM/SAM/SOM figure MUST include:
+  a) A direct source citation (Statista, Euromonitor, industry report with URL), OR
+  b) A proxy formula showing: [Base Value] × [Multiplier] = [Result], with both inputs cited
+- Include sensitivity range: low (-30%), base, high (+30%) for each SOM figure
+- If no validated source exists, output: "Unknown (no validated source found)" and add to data_gaps
+```
+
+### Change 2.2: Strengthen Competitor Validation (Step 6)
+**Update prompt to require:**
+- Each competitor row must cite official source (company website, ASIC/SEC filing, Crunchbase, LinkedIn)
+- No "best guess" pricing - either cite source or mark as "Unknown"
+
+**Add to Step 6 prompt:**
+```text
+EVIDENCE REQUIREMENTS:
+- Each competitor entry MUST include a source_url pointing to:
+  Official company website, SEC/ASIC filing, Crunchbase profile, or reputable industry publication
+- If pricing is not publicly available: use "Unknown (no public data)" rather than estimates
+- If UX rating unavailable: use "Not rated" rather than estimates
+```
+
+### Change 2.3: Strengthen Partner Evidence (Step 8)
+**Update prompt to require:**
+- One evidence line per partner showing capability + relevance
+- Source URL for each partner (company website, ANZSIC registry, industry directory)
+
+**Add to Step 8 prompt:**
+```text
+EVIDENCE REQUIREMENTS:
+- Each potential partner MUST include:
+  1. source_url: Link to company website or official registry
+  2. evidence_line: One sentence citing their capability + relevance (e.g., "Operates 5 manufacturing facilities in NSW with ISO 13485 certification (source)")
+- If no evidence available, do not include the partner in the list
+```
 
 ---
 
-## Database Setup Required
+## Part 3: Reference Resolution Improvements
 
-After you create the grant version and prompt bundle:
+### Change 3.1: Update Final Assembly Prompt (Step 9)
+**Add validation instruction to prevent [undefined] citations:**
 
+```text
+REFERENCE VALIDATION:
+- Every in-text citation [1], [2] etc. MUST map to a numbered reference in the References section
+- Every reference MUST include a URL (where available)
+- Do NOT output [undefined], [TBD], [S0-1], or any internal markers
+- If a source lacks a URL, note: "(no URL available)"
+- Deduplicate references: merge identical sources under one number
+```
+
+---
+
+## Implementation Sequence
+
+1. **Database Update 1:** Update Step 5 (`calculate_tam_sam_som`) prompt with citation requirements
+2. **Database Update 2:** Update Step 6 (`build_competitor_analysis`) prompt with evidence requirements  
+3. **Database Update 3:** Update Step 8 (`identify_partners`) prompt with evidence requirements
+4. **Database Update 4:** Update Step 9 (`finalize_report_html`) prompt with reference validation + ensure `report_html` output key is present
+
+---
+
+## Technical Details
+
+### SQL Updates Required
+
+**Step 5 (TAM/SAM/SOM):**
 ```sql
--- Ensure the grant version uses this bundle
-UPDATE grant_versions 
-SET 
-  prompt_bundle_id = '<new_bundle_id>',
-  pipeline_generation_status = 'published'
-WHERE id = '<grant_version_id>';
+UPDATE prompt_bundle_steps
+SET prompt_template = '...updated prompt with citation requirements...'
+WHERE bundle_id = '8cfdf953-0d7f-48aa-981c-a29c7d863944'
+  AND step_number = 5;
+```
+
+**Step 6 (Competitors):**
+```sql
+UPDATE prompt_bundle_steps
+SET prompt_template = '...updated prompt with evidence requirements...'
+WHERE bundle_id = '8cfdf953-0d7f-48aa-981c-a29c7d863944'
+  AND step_number = 6;
+```
+
+**Step 8 (Partners):**
+```sql
+UPDATE prompt_bundle_steps
+SET prompt_template = '...updated prompt with evidence requirements...'
+WHERE bundle_id = '8cfdf953-0d7f-48aa-981c-a29c7d863944'
+  AND step_number = 8;
+```
+
+**Step 9 (Assembly):**
+```sql
+UPDATE prompt_bundle_steps
+SET prompt_template = '...updated prompt with reference validation...'
+WHERE bundle_id = '8cfdf953-0d7f-48aa-981c-a29c7d863944'
+  AND step_number = 9;
 ```
 
 ---
 
-## Model Recommendations
-
-| Step | Model | Reason |
-|------|-------|--------|
-| 0-3 | N/A (Firecrawl) | Web search steps |
-| 4-8 | gemini-3-flash-preview | Fast analysis steps |
-| 9 | gemini-3-pro-preview | Heavy assembly, needs 32K output tokens |
+## Risk Mitigation
+- All changes are prompt-level updates (no code changes)
+- Existing pipeline structure remains intact
+- Changes can be tested by running a single report before broader rollout
+- If quality improvements cause longer AI response times, `max_output_tokens` and `timeout_seconds` are already configured appropriately
 
 ---
 
-## Next Steps
-
-1. **Create the grant** in Admin Console
-2. **Create the prompt bundle** with these 10 steps
-3. **Set step types**: Steps 0-3 as `firecrawl_search`, Steps 4-9 as `ai_prompt`
-4. **Configure Firecrawl queries** in step_config_json for steps 0-3
-5. **Publish the grant version** so the worker uses this bundle
-6. **Test with a sample application**
-
+## Success Criteria
+1. Reports complete without "No step output found" error
+2. Every TAM/SAM/SOM figure has a citation or explicit proxy formula
+3. Every competitor row has a source URL (no "best guess" entries)
+4. Every partner has an evidence line with source
+5. No [undefined] or unresolved citations in final output
