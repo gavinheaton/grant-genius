@@ -76,10 +76,10 @@ export function ReportInputs({
               </p>
             </div>
 
-            {/* Public Article URL (Required) */}
+            {/* Public Article URL (Optional) */}
             <div className="space-y-2">
               <Label htmlFor="publicArticleUrl">
-                Public Article URL <span className="text-destructive">*</span>
+                Public Article URL
               </Label>
               <Input
                 id="publicArticleUrl"
@@ -90,7 +90,7 @@ export function ReportInputs({
                 disabled={disabled}
               />
               <p className="text-xs text-muted-foreground">
-                Link to a published article or preprint describing your research
+                Optional: Link to a published article or preprint describing your research
               </p>
             </div>
 
