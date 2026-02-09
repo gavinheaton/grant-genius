@@ -493,6 +493,73 @@ export type Database = {
           },
         ]
       }
+      grant_review_workflow_steps: {
+        Row: {
+          created_at: string
+          id: string
+          reviewer_user_id: string
+          step_number: number
+          workflow_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          reviewer_user_id: string
+          step_number: number
+          workflow_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          reviewer_user_id?: string
+          step_number?: number
+          workflow_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "grant_review_workflow_steps_workflow_id_fkey"
+            columns: ["workflow_id"]
+            isOneToOne: false
+            referencedRelation: "grant_review_workflows"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      grant_review_workflows: {
+        Row: {
+          created_at: string
+          grant_id: string
+          id: string
+          is_enabled: boolean
+          step_count: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          grant_id: string
+          id?: string
+          is_enabled?: boolean
+          step_count?: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          grant_id?: string
+          id?: string
+          is_enabled?: boolean
+          step_count?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "grant_review_workflows_grant_id_fkey"
+            columns: ["grant_id"]
+            isOneToOne: true
+            referencedRelation: "grants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       grant_versions: {
         Row: {
           ai_analysis_status: string | null
@@ -916,6 +983,63 @@ export type Database = {
           },
         ]
       }
+      report_reviews: {
+        Row: {
+          completed_at: string | null
+          created_at: string
+          edited_html: string | null
+          id: string
+          notes: string | null
+          report_id: string
+          reviewer_user_id: string
+          started_at: string | null
+          status: string
+          step_number: number
+          workflow_step_id: string
+        }
+        Insert: {
+          completed_at?: string | null
+          created_at?: string
+          edited_html?: string | null
+          id?: string
+          notes?: string | null
+          report_id: string
+          reviewer_user_id: string
+          started_at?: string | null
+          status?: string
+          step_number: number
+          workflow_step_id: string
+        }
+        Update: {
+          completed_at?: string | null
+          created_at?: string
+          edited_html?: string | null
+          id?: string
+          notes?: string | null
+          report_id?: string
+          reviewer_user_id?: string
+          started_at?: string | null
+          status?: string
+          step_number?: number
+          workflow_step_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "report_reviews_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "reports"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "report_reviews_workflow_step_id_fkey"
+            columns: ["workflow_step_id"]
+            isOneToOne: false
+            referencedRelation: "grant_review_workflow_steps"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       report_run_steps: {
         Row: {
           citations_json: Json | null
@@ -1106,6 +1230,7 @@ export type Database = {
           citations_json: Json
           content_json: Json
           created_at: string
+          current_review_step: number | null
           docx_path: string | null
           grant_version_id: string
           id: string
@@ -1115,6 +1240,7 @@ export type Database = {
           pdf_path: string | null
           report_run_id: string
           report_template_version_id: string
+          review_status: string | null
           user_id: string
           version_number: number
         }
@@ -1123,6 +1249,7 @@ export type Database = {
           citations_json?: Json
           content_json?: Json
           created_at?: string
+          current_review_step?: number | null
           docx_path?: string | null
           grant_version_id: string
           id?: string
@@ -1132,6 +1259,7 @@ export type Database = {
           pdf_path?: string | null
           report_run_id: string
           report_template_version_id: string
+          review_status?: string | null
           user_id: string
           version_number?: number
         }
@@ -1140,6 +1268,7 @@ export type Database = {
           citations_json?: Json
           content_json?: Json
           created_at?: string
+          current_review_step?: number | null
           docx_path?: string | null
           grant_version_id?: string
           id?: string
@@ -1149,6 +1278,7 @@ export type Database = {
           pdf_path?: string | null
           report_run_id?: string
           report_template_version_id?: string
+          review_status?: string | null
           user_id?: string
           version_number?: number
         }
