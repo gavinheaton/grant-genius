@@ -8,6 +8,12 @@ import type { GrantArchetype } from "@/lib/bundleGeneratorSpec";
 // TYPES
 // ============================================================================
 
+export interface LinkedGrant {
+  grant_name: string;
+  version_number: number;
+  is_published: boolean;
+}
+
 export interface PromptBundle {
   id: string;
   name: string;
@@ -17,6 +23,7 @@ export interface PromptBundle {
   created_at: string;
   updated_at: string;
   step_count?: number;
+  linked_grants?: LinkedGrant[];
 }
 
 export type StepType = 'ai_prompt' | 'firecrawl_search' | 'firecrawl_scrape';
@@ -93,16 +100,21 @@ export function usePromptBundles() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("prompt_bundles")
-        .select("*, prompt_bundle_steps(count)")
+        .select("*, prompt_bundle_steps(count), grant_versions(id, version_number, is_published, grants(name))")
         .order("created_at", { ascending: false });
 
       if (error) throw error;
       
-      // Transform the nested count into a flat step_count property
-      return (data || []).map((bundle) => ({
+      return (data || []).map((bundle: any) => ({
         ...bundle,
         step_count: bundle.prompt_bundle_steps?.[0]?.count ?? 0,
-        prompt_bundle_steps: undefined, // Remove the nested array
+        linked_grants: (bundle.grant_versions || []).map((gv: any) => ({
+          grant_name: gv.grants?.name ?? "Unknown",
+          version_number: gv.version_number,
+          is_published: gv.is_published,
+        })),
+        prompt_bundle_steps: undefined,
+        grant_versions: undefined,
       })) as PromptBundle[];
     },
   });

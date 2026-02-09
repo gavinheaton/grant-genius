@@ -223,10 +223,24 @@ export default function PromptBundles() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground mb-2">
                     <span className="font-medium text-foreground">{bundle.step_count ?? 0} steps</span>
                     <span>Created: {new Date(bundle.created_at).toLocaleDateString()}</span>
                     <span>Updated: {new Date(bundle.updated_at).toLocaleDateString()}</span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {bundle.linked_grants && bundle.linked_grants.length > 0 ? (
+                      bundle.linked_grants.map((lg, idx) => (
+                        <Badge
+                          key={idx}
+                          variant={lg.is_published ? "secondary" : "outline"}
+                        >
+                          {lg.grant_name} (v{lg.version_number})
+                        </Badge>
+                      ))
+                    ) : (
+                      <span className="text-xs text-muted-foreground">No grant linked</span>
+                    )}
                   </div>
                 </CardContent>
               </Card>
