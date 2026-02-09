@@ -118,7 +118,7 @@ export function usePromptBundle(id: string | undefined) {
 
       const { data: steps, error: stepsError } = await supabase
         .from("prompt_bundle_steps")
-        .select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
+        .select("*")
         .eq("bundle_id", id)
         .order("step_number", { ascending: true });
 
