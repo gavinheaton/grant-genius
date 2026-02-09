@@ -1,76 +1,159 @@
 
 
-# Fix Duplicate Bundle Confusion - Add Step Count to Bundle List
+# Add Step Name and Description Editing to Pipeline Editor
 
 ## Problem
 
-You have **two bundles** both named "AEA Single Prompt":
-
-| Created | Bundle ID | Steps |
-|---------|-----------|-------|
-| Feb 9 (newer) | `16a9204a-...` | **8 steps** |
-| Feb 4 (older) | `6abbcd3f-...` | **1 step** |
-
-The bundle list currently shows only the name and "last updated" date, making it impossible to distinguish between them. You're likely clicking export on the older one.
+The external Cloud Run worker requires a step named exactly `finalize_report_html` to correctly extract and save the final report. When you manually create a pipeline, you may have the step with the correct purpose but a different name - and currently there's no way to rename it in the UI.
 
 ## Solution
 
-Add a **step count** to each bundle card so you can easily see which bundle has more steps. Optionally, also add the creation date for disambiguation.
+Add editable fields for `step_name` and `step_description` within the `PromptStepEditor` component, allowing Super Admins to rename steps directly.
 
-## Technical Changes
+## Technical Implementation
 
-### File: `src/pages/admin/PromptBundles.tsx`
+### File: `src/components/admin/PromptStepEditor.tsx`
 
-**Change 1**: Update the bundles query to include step count
-
-The current `usePromptBundles` hook only fetches bundle metadata. We need to either:
-- A) Add a joined query to count steps (preferred)
-- B) Fetch steps separately for display
-
-**Change 2**: Display step count on each bundle card
-
-```tsx
-<CardContent>
-  <div className="flex items-center gap-4 text-sm text-muted-foreground">
-    <span>{stepCount} steps</span>
-    <span>Created: {new Date(bundle.created_at).toLocaleDateString()}</span>
-    <span>Updated: {new Date(bundle.updated_at).toLocaleDateString()}</span>
-  </div>
-</CardContent>
-```
-
-### File: `src/hooks/usePromptBundles.ts`
-
-Update `usePromptBundles` to fetch step counts alongside bundles:
+**1. Add state for step name and description:**
 
 ```typescript
-// Option A: Use Postgres count aggregation via RPC or
-// Option B: Fetch with joined count
-const { data, error } = await supabase
-  .from("prompt_bundles")
-  .select("*, prompt_bundle_steps(count)")
-  .order("created_at", { ascending: false });
+const [stepName, setStepName] = useState(step.step_name);
+const [stepDescription, setStepDescription] = useState(step.step_description);
 ```
 
-This returns each bundle with a nested `prompt_bundle_steps` array containing `[{ count: N }]`.
+**2. Update the props interface to include step_name and step_description:**
 
-## Immediate Workaround
+```typescript
+onSave: (
+  stepId: string,
+  data: { 
+    step_name?: string;
+    step_description?: string;
+    prompt_template?: string; 
+    model_override?: string | null; 
+    // ... existing fields
+  }
+) => Promise<void>;
+```
 
-Until this fix is implemented, you can identify the correct bundle by:
-1. Looking at the **updated date** - the Feb 9 bundle will show a more recent date
-2. Clicking **Edit** on each to see the step count in the editor
-3. Or simply **delete the old 1-step bundle** if it's no longer needed
+**3. Add input fields at the top of the editor:**
+
+```tsx
+{/* Step Identity - Name and Description */}
+<div className="space-y-4 border-b pb-4 mb-4">
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div className="space-y-2">
+      <Label htmlFor={`step-name-${step.id}`}>Step Name</Label>
+      <Input
+        id={`step-name-${step.id}`}
+        value={stepName}
+        onChange={(e) => {
+          setStepName(e.target.value);
+          setHasChanges(true);
+        }}
+        disabled={!canEdit}
+        placeholder="finalize_report_html"
+        className="font-mono"
+      />
+      <p className="text-xs text-muted-foreground">
+        Internal identifier. Must be unique. Final step must be named "finalize_report_html".
+      </p>
+    </div>
+    <div className="space-y-2">
+      <Label htmlFor={`step-desc-${step.id}`}>Step Description</Label>
+      <Input
+        id={`step-desc-${step.id}`}
+        value={stepDescription}
+        onChange={(e) => {
+          setStepDescription(e.target.value);
+          setHasChanges(true);
+        }}
+        disabled={!canEdit}
+        placeholder="Assemble final report HTML"
+      />
+      <p className="text-xs text-muted-foreground">
+        Human-readable description shown in the pipeline list.
+      </p>
+    </div>
+  </div>
+</div>
+```
+
+**4. Include fields in save handler:**
+
+```typescript
+const handleSave = async () => {
+  setIsSaving(true);
+  try {
+    await onSave(step.id, {
+      step_name: stepName,
+      step_description: stepDescription,
+      prompt_template: promptTemplate,
+      // ... rest of fields
+    });
+    setHasChanges(false);
+  } finally {
+    setIsSaving(false);
+  }
+};
+```
+
+**5. Reset state when step changes:**
+
+```typescript
+useEffect(() => {
+  setStepName(step.step_name);
+  setStepDescription(step.step_description);
+  // ... existing resets
+}, [step]);
+```
+
+### File: `src/components/admin/InlinePipelineEditor.tsx`
+
+Update the `handleStepUpdate` function to pass through `step_name` and `step_description`:
+
+```typescript
+const handleStepUpdate = async (
+  stepId: string,
+  data: { 
+    step_name?: string;
+    step_description?: string;
+    prompt_template?: string; 
+    model_override?: string | null;
+    // ... existing fields
+  }
+) => {
+  await updateStep.mutateAsync({
+    id: stepId,
+    bundleId,
+    ...data,
+    step_config_json: data.step_config_json as Json,
+  });
+};
+```
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/hooks/usePromptBundles.ts` | Add step count to bundle query |
-| `src/pages/admin/PromptBundles.tsx` | Display step count on bundle cards |
+| `src/components/admin/PromptStepEditor.tsx` | Add step_name and step_description editable fields |
+| `src/components/admin/InlinePipelineEditor.tsx` | Update handler type to include new fields |
+
+## Validation Warning
+
+A helpful validation warning will be added for the final step:
+
+```tsx
+{stepName !== 'finalize_report_html' && step.step_number === bundle.steps.length - 1 && (
+  <Badge variant="warning">
+    ⚠️ Final step should be named "finalize_report_html"
+  </Badge>
+)}
+```
 
 ## Impact
 
-- Users can easily distinguish between bundles with the same name
-- Shows creation date alongside update date for better context
-- No database changes required
+- Super Admins can now rename steps directly in the editor
+- Clear guidance about the required `finalize_report_html` naming
+- No database changes required (the existing update mutation already supports these fields)
 
