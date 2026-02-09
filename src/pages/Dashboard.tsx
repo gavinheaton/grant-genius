@@ -93,7 +93,7 @@ export default function Dashboard() {
       }
       setUser({ email: session.user.email });
       
-      // Fetch applications
+      // Fetch only the current user's applications
       const { data, error } = await supabase
         .from("applications")
         .select(`
@@ -105,6 +105,7 @@ export default function Dashboard() {
             grant:grants!inner(name)
           )
         `)
+        .eq("user_id", session.user.id)
         .order("updated_at", { ascending: false });
 
       if (error) {
