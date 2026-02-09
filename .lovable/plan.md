@@ -1,138 +1,124 @@
 
 
-# Add `{{report_html}}` and `{{report_summary}}` Shortcodes
+# Use REPORT_READY Template for Manual Reports
 
 ## Overview
 
-Implement two new email template shortcodes that allow admins to embed report content directly in emails:
+Currently, the `complete-manual-report` function uses hardcoded email HTML (lines 300-313) instead of the editable REPORT_READY template. This means manual reports don't benefit from the new template system with `{{report_html}}` and `{{report_summary}}` shortcodes.
 
-| Shortcode | Content | Typical Size |
-|-----------|---------|--------------|
-| `{{report_html}}` | Full rendered report | 50-80KB |
-| `{{report_summary}}` | Executive Summary section only | 2-5KB |
+## Current vs Proposed Flow
 
-## How It Works
-
-When the `send-report-email` function runs, it will:
-1. Fetch the report from the `reports` table using the `reportId`
-2. Extract the HTML from `content_json.assembledReport.report_html`
-3. For `{{report_summary}}` - extract just the Executive Summary section (H2 heading + content)
-4. Sanitize the HTML for email compatibility (inline styles, constrained images)
-5. Add both variables to the template substitution
+| Aspect | Current | Proposed |
+|--------|---------|----------|
+| Email HTML | Hardcoded in function | Uses REPORT_READY template from database |
+| Shortcodes | Not supported | Full support for `{{user_name}}`, `{{grant_name}}`, `{{report_link}}`, `{{report_html}}`, `{{report_summary}}` |
+| Subject line | Hardcoded | Editable via admin panel |
+| Sender | Hardcoded | Configurable via admin panel |
+| Attachments | PDF + DOCX attached | Preserved (no change) |
 
 ## Implementation
 
-### 1. Update Edge Function (`send-report-email/index.ts`)
+### Update `complete-manual-report/index.ts`
 
-Add report fetching and HTML extraction:
+Replace the hardcoded email section (lines 296-368) with template-aware logic:
 
 ```text
 Changes:
-1. Fetch report: SELECT content_json FROM reports WHERE id = reportId
-2. Add extractReportHtml() function (port core logic from htmlReportUtils.ts)
-3. Add extractExecutiveSummary() function to get just the summary section
-4. Add sanitizeForEmail() function:
-   - Remove <style> and <script> tags
-   - Add max-width: 100% to images
-   - Wrap in container with safe fonts
-5. Add to templateVariables:
-   - report_html: sanitized full report
+1. Add the same helper functions from send-report-email:
+   - extractExecutiveSummary()
+   - sanitizeForEmail()
+   - substituteVariables()
+   - getFallbackHtml()
+
+2. Fetch REPORT_READY template from database:
+   SELECT subject, html_content, sender_name, sender_email, brevo_template_id
+   FROM email_templates WHERE template_key = 'REPORT_READY'
+
+3. Build templateVariables with all shortcodes:
+   - user_name: userProfile.full_name
+   - grant_name: grant.name
+   - report_link: full URL to application
+   - report_html: sanitized full report content
    - report_summary: sanitized executive summary
-```
 
-### 2. Update Admin UI (`EmailTemplates.tsx`)
+4. Apply 3-tier priority:
+   Priority 1: Custom html_content from DB (with variable substitution)
+   Priority 2: Brevo template ID
+   Priority 3: Hardcoded fallback
 
-Extend the variables list with the new shortcodes:
+5. Keep existing attachment logic (PDF + DOCX)
 
-```text
-Variables List:
-- {{user_name}} → Recipient's name
-- {{grant_name}} → Name of the grant  
-- {{report_link}} → URL to view the report
-- {{report_summary}} → Executive summary section (recommended for emails)
-- {{report_html}} → Full report content (⚠️ Gmail clips >102KB)
-```
-
-Also update the preview to show placeholder boxes for report content:
-```text
-{{report_summary}} → [Executive Summary would appear here]
-{{report_html}} → [Full report would appear here - large content]
-```
-
-### 3. HTML Extraction Logic
-
-Port simplified extraction from `htmlReportUtils.ts`:
-
-```text
-function extractReportHtml(contentJson):
-  1. Check for manual_report_html
-  2. Check for report_html at root
-  3. Check step keys: finalize_report_html, assemble_sections_html
-  4. Check assembledReport.report_html
-  Return HTML string or empty
-  
-function extractExecutiveSummary(html):
-  1. Find <h2>.*Executive Summary.*</h2> section
-  2. Extract content until next <h2> or end
-  3. Return the summary HTML
-```
-
-### 4. Email Sanitization
-
-Make the report HTML email-client safe:
-
-```text
-function sanitizeForEmail(html):
-  1. Remove <style>...</style> blocks
-  2. Remove <script>...</script> blocks
-  3. Add inline styles for images: max-width: 100%; height: auto;
-  4. Wrap content in <div style="font-family: sans-serif; line-height: 1.6;">
-  5. Return sanitized HTML
-```
-
-## Example Email Template
-
-After implementation, admins can create templates like:
-
-**Option A: Summary Only (Recommended)**
-```html
-<html>
-<body>
-  <h1>Hi {{user_name}},</h1>
-  <p>Your {{grant_name}} report is ready!</p>
-  
-  <h2>Key Findings Preview</h2>
-  {{report_summary}}
-  
-  <p><a href="{{report_link}}">View Full Report →</a></p>
-</body>
-</html>
-```
-
-**Option B: Full Report**
-```html
-<html>
-<body>
-  <h1>Hi {{user_name}},</h1>
-  {{report_html}}
-  <p><a href="{{report_link}}">View online</a></p>
-</body>
-</html>
+6. Update email_outbox logging to use REPORT_READY template_key
 ```
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/send-report-email/index.ts` | Fetch report, extract HTML/summary, sanitize, add variables |
-| `src/pages/admin/EmailTemplates.tsx` | Add new variables to list with warnings |
+| `supabase/functions/complete-manual-report/index.ts` | Add template helpers, fetch template, apply variable substitution, keep attachments |
 
-## Considerations
+## Example Result
 
-1. **Gmail Size Limit**: Gmail clips emails >102KB. Reports are 50-80KB, so `{{report_html}}` is borderline. `{{report_summary}}` is always safe (~2-5KB).
+After implementation, when an admin edits the REPORT_READY template with:
+```html
+<h1>Hi {{user_name}},</h1>
+<p>Your {{grant_name}} report is complete!</p>
+{{report_summary}}
+<p><a href="{{report_link}}">View Full Report</a></p>
+```
 
-2. **CSS Compatibility**: Email clients have limited CSS support. The sanitization strips external styles and adds basic inline styling.
+Both automated AND manual reports will use this template, ensuring consistent email formatting across all report types.
 
-3. **Images**: External images (from sources like Google, etc.) will display if they're absolute URLs. Self-hosted images may need adjustment.
+## Technical Details
 
-4. **Recommendation**: The admin UI will highlight `{{report_summary}}` as the recommended option for emails, with a warning on `{{report_html}}` about size limits.
+### Helper Functions to Add
+
+```typescript
+// Extract Executive Summary section from report HTML
+function extractExecutiveSummary(html: string): string {
+  // Find section between Executive Summary h2 and next h2
+}
+
+// Sanitize HTML for email compatibility  
+function sanitizeForEmail(html: string): string {
+  // Remove <style> and <script> blocks
+  // Add inline styles to images
+  // Wrap in safe font container
+}
+
+// Replace {{variable}} placeholders
+function substituteVariables(content: string, variables: Record<string, string>): string {
+  // Loop through variables and replace
+}
+
+// Legacy fallback template
+function getFallbackHtml(userName: string, grantName: string, reportLink: string): string {
+  // Return hardcoded HTML template
+}
+```
+
+### Template Priority Logic
+
+```text
+if (template.html_content exists) {
+  → Use custom template with variable substitution
+  → Apply attachments
+}
+else if (template.brevo_template_id > 0) {
+  → Use Brevo template with params
+  → Apply attachments  
+}
+else {
+  → Use hardcoded fallback
+  → Apply attachments
+}
+```
+
+### Key Benefit
+
+Admins can now manage ONE template (REPORT_READY) that works for:
+- Automated AI-generated reports
+- Manual human-authored reports
+
+Both get the same styling, shortcode support, and consistent branding.
+
