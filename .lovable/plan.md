@@ -1,112 +1,80 @@
 
 
-# Handle Empty URL in Firecrawl Scrape - Use Summary as Fallback
+# Fix Admin Dashboard - Active/Stalled Runs Not Showing
 
 ## Problem
 
-When a user generates a report without providing a Public Article URL, the pipeline fails at the `firecrawl_scrape` step because the worker-proxy rejects empty URLs:
+Joanne's running report (`7b279e5c-61dc-4bab-990c-c2af995d8ca2`) is not appearing in the Admin Dashboard's "Currently Running" card or "Active Runs" table, even though:
+- The report has `status: running` 
+- It's been running for 12+ minutes (should show as stalled)
+- The data exists correctly in the database
 
-```
-Step 1 failed: scrape_article
-Error: Firecrawl scrape: URL variable 'publicArticleUrl' not found in application inputs
-```
+## Root Cause
 
----
+The Supabase query uses `profiles:user_id(email)` to fetch user emails, but **there is no foreign key relationship** between `applications.user_id` and `profiles.user_id`. PostgREST requires a foreign key to resolve the nested relationship syntax.
+
+Without the foreign key, PostgREST either:
+- Returns null for the profiles object
+- Fails to match rows correctly
+- Or in some cases, filters out the row entirely
 
 ## Solution
 
-Modify the `handleFirecrawlScrape` function in `worker-proxy` to accept a `fallback_content` parameter. When the URL is empty but fallback content (the researcher's 100-word summary) is provided, return a successful response using that content instead of calling Firecrawl.
+Add a foreign key constraint from `profiles.user_id` to `auth.users.id`. This allows PostgREST to understand the relationship chain:
 
----
-
-## Changes Required
-
-### File: `supabase/functions/worker-proxy/index.ts`
-
-**Location:** `handleFirecrawlScrape` function (lines 1145-1212)
-
-**Before:**
-```typescript
-async function handleFirecrawlScrape(params: Record<string, unknown>) {
-  const { url, formats } = params;
-
-  if (!url || typeof url !== "string") {
-    return errorResponse("url is required and must be a string");
-  }
-  // ... rest of function
-}
+```
+report_runs → applications (via application_id)
+           → applications.user_id → profiles.user_id (via FK to auth.users)
 ```
 
-**After:**
-```typescript
-async function handleFirecrawlScrape(params: Record<string, unknown>) {
-  const { url, formats, fallback_content } = params;
+### Database Migration
 
-  // If no URL provided but fallback content exists, use summary as article content
-  if (!url || (typeof url === "string" && url.trim() === "")) {
-    if (fallback_content && typeof fallback_content === "string" && fallback_content.trim()) {
-      console.log(`[FIRECRAWL] No URL provided, using fallback content (${fallback_content.length} chars)`);
-      return jsonResponse({
-        success: true,
-        url: "",
-        title: "Researcher Summary",
-        description: "Content derived from researcher-provided summary",
-        content: fallback_content,
-        metadata: {},
-        source: {
-          source_id: "SUMMARY-1",
-          url: "",
-          title: "Researcher-provided summary",
-          confidence: "high",
-        },
-        used_fallback: true,
-      });
-    }
-    return errorResponse("url is required (or provide fallback_content)");
-  }
-  // ... rest of function unchanged
-}
+```sql
+-- Add foreign key from profiles.user_id to auth.users.id
+-- This enables PostgREST to resolve the profiles:user_id() syntax
+ALTER TABLE public.profiles
+ADD CONSTRAINT profiles_user_id_fkey
+FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 ```
 
----
+### Why This Works
 
-## How It Works
+PostgREST uses foreign keys to determine how tables relate. With this constraint:
+1. `profiles.user_id` → `auth.users.id` is established
+2. `applications.user_id` and `profiles.user_id` both point to `auth.users.id`
+3. PostgREST can now infer that `profiles:user_id` means "join profiles where profiles.user_id = applications.user_id"
 
-1. **External Worker** calls `execute_firecrawl_scrape` with:
-   - `url`: the `publicArticleUrl` (may be empty)
-   - `fallback_content`: the `summary` field
+## Alternative Approach (If FK Cannot Be Added)
 
-2. **Worker-proxy** checks if URL is empty:
-   - If empty but `fallback_content` exists → return success with summary as content
-   - If empty with no fallback → return error (maintains safety)
-   - If URL exists → scrape normally via Firecrawl
+If adding the foreign key is not desired, the dashboard queries would need to be rewritten to use raw SQL via RPC functions, or fetch profiles in a separate query:
 
-3. **Downstream steps** receive `{{articleContent}}` populated with either:
-   - Scraped web content (if URL was provided)
-   - Researcher's summary (if no URL provided)
+```typescript
+// Fetch runs first
+const runs = await supabase
+  .from("report_runs")
+  .select(`id, status, ..., applications!inner(title, user_id)`)
+  .in("status", ["running", "pending"]);
 
----
+// Then fetch profiles separately
+const userIds = runs.data.map(r => r.applications.user_id);
+const profiles = await supabase
+  .from("profiles")
+  .select("user_id, email")
+  .in("user_id", userIds);
+
+// Merge manually
+```
+
+This is more complex but avoids needing to modify database constraints.
+
+## Recommended Action
+
+Add the foreign key constraint - it's the cleanest solution and aligns with Supabase best practices for the `profiles` table pattern.
 
 ## Technical Details
 
-| Aspect | Detail |
-|--------|--------|
-| File | `supabase/functions/worker-proxy/index.ts` |
-| Function | `handleFirecrawlScrape` |
-| New parameter | `fallback_content: string` (optional) |
-| Response flag | `used_fallback: true` for audit trail |
-
----
-
-## Compatibility
-
-- **External worker** needs to pass `fallback_content: inputs.summary` when calling the scrape action
-- **Existing pipelines** with URLs continue to work unchanged
-- **New pipelines** without URLs will gracefully use the summary
-
----
-
-## Note on External Worker
-
-The external Cloud Run worker also needs to be updated to pass `fallback_content` when calling the scrape action. This is handled outside of Lovable's codebase, but the worker-proxy change enables the behavior.
+| Component | File | Change |
+|-----------|------|--------|
+| Database | Migration | Add FK constraint on `profiles.user_id` |
+| No code changes needed | - | Once FK exists, existing queries will work |
 
