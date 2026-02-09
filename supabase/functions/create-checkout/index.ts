@@ -72,7 +72,7 @@ serve(async (req) => {
       ],
       mode: "payment",
       allow_promotion_codes: true,
-      success_url: successUrl || `${origin}/dashboard?payment=success`,
+      success_url: successUrl || `${origin}/dashboard?payment=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
       metadata: {
         user_id: user.id,
