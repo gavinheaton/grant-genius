@@ -1054,6 +1054,7 @@ async function sendReviewNotification(supabase: any, reviewerUserId: string, rep
   } catch (e) {
     console.error("Failed to send review notification:", e);
   }
+}
 
 // Helper to get max step number for a run
 // deno-lint-ignore no-explicit-any
