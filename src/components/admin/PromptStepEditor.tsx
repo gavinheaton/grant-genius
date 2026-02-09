@@ -30,7 +30,7 @@ const TIMEOUT_OPTIONS = [
 
 // Max output tokens options for AI responses
 const OUTPUT_TOKEN_OPTIONS = [
-  { value: "", label: "Default (8K)" },
+  { value: "default", label: "Default (8K)" },
   { value: "8192", label: "8K tokens" },
   { value: "16384", label: "16K tokens" },
   { value: "20000", label: "20K tokens (Competitor Research)" },
@@ -84,7 +84,7 @@ export function PromptStepEditor({
     step.max_expected_seconds ? String(step.max_expected_seconds) : ""
   );
   const [maxOutputTokens, setMaxOutputTokens] = useState<string>(
-    step.max_output_tokens ? String(step.max_output_tokens) : ""
+    step.max_output_tokens ? String(step.max_output_tokens) : "default"
   );
   const [stepType, setStepType] = useState<StepType>(step.step_type || "ai_prompt");
   const [stepConfig, setStepConfig] = useState<Record<string, unknown>>(
@@ -132,7 +132,7 @@ export function PromptStepEditor({
     setTimeoutSeconds(step.timeout_seconds ? String(step.timeout_seconds) : "default");
     setIsHeavy(step.is_heavy ?? false);
     setMaxExpectedSeconds(step.max_expected_seconds ? String(step.max_expected_seconds) : "");
-    setMaxOutputTokens(step.max_output_tokens ? String(step.max_output_tokens) : "");
+    setMaxOutputTokens(step.max_output_tokens ? String(step.max_output_tokens) : "default");
     setStepType(step.step_type || "ai_prompt");
     setStepConfig((step.step_config_json as Record<string, unknown>) || {});
     setHasChanges(false);
@@ -153,7 +153,7 @@ export function PromptStepEditor({
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
         is_heavy: isHeavy,
         max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
-        max_output_tokens: maxOutputTokens ? parseInt(maxOutputTokens, 10) : null,
+        max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
         step_type: stepType,
         step_config_json: stepConfig,
       });
@@ -191,7 +191,7 @@ export function PromptStepEditor({
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
         is_heavy: isHeavy,
         max_expected_seconds: maxExpectedSeconds ? parseInt(maxExpectedSeconds, 10) : null,
-        max_output_tokens: maxOutputTokens ? parseInt(maxOutputTokens, 10) : null,
+        max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
       });
       setHasChanges(false);
     } finally {
