@@ -273,43 +273,6 @@ export function useUpdatePromptStep() {
   });
 }
 
-export function useSetActiveBundle() {
-  const queryClient = useQueryClient();
-  const { toast } = useToast();
-
-  return useMutation({
-    mutationFn: async (bundleId: string) => {
-      // Deactivate all bundles first
-      // Deactivate all bundles except the one we're activating
-      const { error: deactivateError } = await supabase
-        .from("prompt_bundles")
-        .update({ is_active: false })
-        .neq("id", bundleId);
-
-      if (deactivateError) throw deactivateError;
-
-      // Activate the selected bundle
-      const { error: activateError } = await supabase
-        .from("prompt_bundles")
-        .update({ is_active: true })
-        .eq("id", bundleId);
-
-      if (activateError) throw activateError;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["prompt-bundles"] });
-      toast({ title: "Active bundle updated" });
-    },
-    onError: (error) => {
-      toast({
-        title: "Failed to set active bundle",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-}
-
 export function useDeletePromptBundle() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
