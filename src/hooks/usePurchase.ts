@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { trackEvent } from "@/lib/analytics";
 
 // Stripe price IDs (GST-inclusive amounts charged by Stripe)
 // Single Report: $45 + GST = $49.50 AUD
@@ -53,6 +54,11 @@ export function usePurchase() {
       }
 
       if (data?.url) {
+        trackEvent("begin_checkout", {
+          currency: "AUD",
+          value: priceId === BUNDLE_10_PRICE_ID ? 440 : 49.5,
+          items: [{ item_name: productKey, price: priceId === BUNDLE_10_PRICE_ID ? 440 : 49.5 }],
+        });
         window.open(data.url, "_blank");
         return { success: true };
       }

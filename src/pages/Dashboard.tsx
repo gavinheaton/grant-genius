@@ -34,6 +34,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useEntitlements } from "@/hooks/useEntitlements";
 import { PurchaseModal } from "@/components/PurchaseModal";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
+import { trackEvent } from "@/lib/analytics";
 
 type ApplicationStatus = "draft" | "in_progress" | "ready" | "failed";
 
@@ -74,6 +75,10 @@ export default function Dashboard() {
   useEffect(() => {
     const paymentStatus = searchParams.get("payment");
     if (paymentStatus === "success") {
+      trackEvent("purchase", {
+        currency: "AUD",
+        transaction_id: searchParams.get("session_id") || undefined,
+      });
       toast({
         title: "Payment successful!",
         description: "Your report credit has been added. You can now generate reports.",
