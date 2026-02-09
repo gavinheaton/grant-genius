@@ -17,6 +17,7 @@ import {
   ILevelsOptions,
   ShadingType,
   TableOfContents,
+  ExternalHyperlink,
 } from "https://esm.sh/docx@8.5.0";
 
 const corsHeaders = {
@@ -100,6 +101,16 @@ function parseJsonFromSection(content: string): Record<string, unknown> | null {
   }
   
   return null;
+}
+
+/**
+ * Detect if HTML already contains a References/Citations/Bibliography section
+ * Used to prevent duplicate references in exports
+ */
+function hasReferencesInHtml(html: string | undefined): boolean {
+  if (!html) return false;
+  // Match h1, h2, or h3 headings containing References, Citations, or Bibliography
+  return /<h[123][^>]*>.*(?:References|Citations|Bibliography).*<\/h[123]>/i.test(html);
 }
 
 // Extract sources from build_source_pack section
@@ -325,13 +336,14 @@ const NUMBERED_CONFIG: ILevelsOptions[] = [
   },
 ];
 
-// Parse inline formatting (bold, italic) into TextRuns
-function parseInlineFormatting(text: string): TextRun[] {
-  const runs: TextRun[] = [];
+// Parse inline formatting (bold, italic, links) into TextRuns and Hyperlinks
+// Returns array of (TextRun | ExternalHyperlink)
+function parseInlineFormatting(text: string): (TextRun | ExternalHyperlink)[] {
+  const runs: (TextRun | ExternalHyperlink)[] = [];
   let remaining = text;
 
-  // Pattern to match bold (**text**) and italic (*text* but not **text**)
-  const inlinePattern = /(\*\*(.+?)\*\*|\*(?!\*)(.+?)(?<!\*)\*|\[([^\]]+)\]\([^)]+\))/g;
+  // Pattern to match bold (**text**), italic (*text*), and links [text](url)
+  const inlinePattern = /(\*\*(.+?)\*\*|\*(?!\*)(.+?)(?<!\*)\*|\[([^\]]+)\]\(([^)]+)\))/g;
   let lastIndex = 0;
   let match;
 
@@ -350,9 +362,22 @@ function parseInlineFormatting(text: string): TextRun[] {
     } else if (match[3]) {
       // Italic text (*text*)
       runs.push(new TextRun({ text: match[3], italics: true, size: STYLES.fontSize.body }));
-    } else if (match[4]) {
-      // Link [text](url) - just extract text
-      runs.push(new TextRun({ text: match[4], size: STYLES.fontSize.body }));
+    } else if (match[4] && match[5]) {
+      // Link [text](url) - create clickable hyperlink
+      runs.push(
+        new ExternalHyperlink({
+          link: match[5],
+          children: [
+            new TextRun({
+              text: match[4],
+              style: "Hyperlink",
+              size: STYLES.fontSize.body,
+              color: "0563C1",
+              underline: {},
+            }),
+          ],
+        })
+      );
     }
 
     lastIndex = match.index + match[0].length;
@@ -1077,8 +1102,14 @@ function buildDocument(
     children.push(...buildDataGaps(dataGaps));
   }
 
-  // Page break before references
-  if (sources.length > 0) {
+  // Check if references already exist in the report HTML
+  const htmlHasReferences = hasReferencesInHtml(assembledReport.report_html);
+  const markdownHasReferences = sections.some(
+    (s) => s.type === "heading" && /references|citations|bibliography/i.test(s.text)
+  );
+
+  // Page break before references - only if not already in content
+  if (sources.length > 0 && !htmlHasReferences && !markdownHasReferences) {
     children.push(new Paragraph({ children: [new PageBreak()] }));
 
     children.push(

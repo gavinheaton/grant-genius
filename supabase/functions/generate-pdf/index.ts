@@ -25,6 +25,7 @@ interface PdfTemplate {
 }
 
 interface ReportContent {
+  // Legacy fields (fallback)
   researchContext?: string;
   marketSegments?: string | any[];
   competitors?: string | any[];
@@ -38,6 +39,65 @@ interface ReportContent {
   partnerBusinesses?: string;
   competitorTable?: string;
   citations?: any[];
+  // New HTML-first format
+  report_html?: string;
+  assembledReport?: {
+    report_html?: string;
+    all_sources?: Array<{ id: string; mla_citation?: string; url?: string }>;
+    data_gaps?: string[];
+  };
+  manual_report_html?: string;
+}
+
+/**
+ * Detect if HTML already contains a References/Citations/Bibliography section
+ */
+function hasReferencesInHtml(html: string | undefined): boolean {
+  if (!html) return false;
+  return /<h[123][^>]*>.*(?:References|Citations|Bibliography).*<\/h[123]>/i.test(html);
+}
+
+/**
+ * Extract report HTML from content_json
+ * Supports multiple formats: direct report_html, assembledReport wrapper, manual reports
+ */
+function extractReportHtml(content: ReportContent): string | null {
+  // Case 1: Direct manual report HTML
+  if (content.manual_report_html) {
+    return content.manual_report_html;
+  }
+  
+  // Case 2: Direct report_html
+  if (content.report_html) {
+    return content.report_html;
+  }
+  
+  // Case 3: Wrapped in assembledReport
+  if (content.assembledReport?.report_html) {
+    return content.assembledReport.report_html;
+  }
+  
+  // Case 4: Check step-based keys (finalize_report_html, etc.)
+  const contentRecord = content as Record<string, unknown>;
+  const stepKeys = ['finalize_report_html', 'assemble_sections_html', 'build_tables_sources_html'];
+  for (const key of stepKeys) {
+    if (contentRecord[key]) {
+      let stepData = contentRecord[key];
+      if (typeof stepData === 'string') {
+        try {
+          stepData = JSON.parse(stepData);
+        } catch {
+          continue;
+        }
+      }
+      const stepObj = stepData as Record<string, unknown>;
+      if (stepObj.report_html && typeof stepObj.report_html === 'string') {
+        return stepObj.report_html;
+      }
+    }
+  }
+  
+  return null;
 }
 
 function getFontStack(fontFamily: string): string {
@@ -70,6 +130,226 @@ function buildHtml(
   });
 
   const fontStack = getFontStack(template.font_family);
+  
+  // Try to extract report_html (new format)
+  const reportHtml = extractReportHtml(content);
+  const htmlHasReferences = hasReferencesInHtml(reportHtml || "");
+  
+  // Cover page
+  const coverPageHtml = template.include_cover_page
+    ? `<div class="cover-page">
+        ${logoUrl ? `<img src="${logoUrl}" alt="Logo" class="cover-logo" />` : ""}
+        <h1 class="cover-title">Research Commercialisation Report</h1>
+        <h2 class="cover-subtitle">${escapeHtml(grantName)}</h2>
+        <p class="cover-date">Generated: ${createdAt}</p>
+        <p class="cover-version">Version ${report.version_number}</p>
+      </div>
+      <div class="page-break"></div>`
+    : "";
+
+  // Watermark CSS
+  const watermarkCss = template.watermark_text
+    ? `
+      .page-content::before {
+        content: "${template.watermark_text}";
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) rotate(-45deg);
+        font-size: 100px;
+        font-weight: bold;
+        color: ${template.primary_color};
+        opacity: 0.06;
+        pointer-events: none;
+        z-index: -1;
+      }
+    `
+    : "";
+
+  // If we have report_html, use it directly with template styling
+  if (reportHtml) {
+    console.log("Using report_html format for PDF generation");
+    
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: ${fontStack};
+      font-size: ${template.heading_sizes_json.body}px;
+      line-height: 1.6;
+      color: #1f2937;
+    }
+    
+    .page-content {
+      padding: ${template.margins_json.top}mm ${template.margins_json.right}mm ${template.margins_json.bottom}mm ${template.margins_json.left}mm;
+    }
+    
+    ${watermarkCss}
+    
+    .page-break {
+      page-break-after: always;
+    }
+    
+    /* Cover page */
+    .cover-page {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 40mm;
+    }
+    
+    .cover-logo {
+      max-width: 200px;
+      max-height: 80px;
+      margin-bottom: 40px;
+    }
+    
+    .cover-title {
+      font-size: ${template.heading_sizes_json.h1 + 8}px;
+      font-weight: 700;
+      color: ${template.primary_color};
+      margin-bottom: 20px;
+    }
+    
+    .cover-subtitle {
+      font-size: ${template.heading_sizes_json.h2}px;
+      font-weight: 500;
+      color: ${template.secondary_color};
+      margin-bottom: 40px;
+    }
+    
+    .cover-date, .cover-version {
+      font-size: ${template.heading_sizes_json.body}px;
+      color: #6b7280;
+    }
+    
+    /* Report content styling */
+    .report-content h1 {
+      font-size: ${template.heading_sizes_json.h1}px;
+      font-weight: 700;
+      color: ${template.primary_color};
+      margin: 24px 0 16px 0;
+      border-bottom: 2px solid ${template.secondary_color};
+      padding-bottom: 8px;
+    }
+    
+    .report-content h2 {
+      font-size: ${template.heading_sizes_json.h2}px;
+      font-weight: 600;
+      color: ${template.primary_color};
+      margin: 20px 0 12px 0;
+    }
+    
+    .report-content h3 {
+      font-size: ${template.heading_sizes_json.h3}px;
+      font-weight: 600;
+      color: ${template.secondary_color};
+      margin: 16px 0 8px 0;
+    }
+    
+    .report-content p {
+      margin-bottom: 12px;
+    }
+    
+    .report-content ul, .report-content ol {
+      margin: 12px 0;
+      padding-left: 24px;
+    }
+    
+    .report-content li {
+      margin-bottom: 4px;
+    }
+    
+    .report-content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+    }
+    
+    .report-content th, .report-content td {
+      border: 1px solid #d1d5db;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    
+    .report-content th {
+      background-color: ${template.primary_color};
+      color: white;
+      font-weight: 600;
+    }
+    
+    .report-content tr:nth-child(even) {
+      background-color: #f9fafb;
+    }
+    
+    .report-content a {
+      color: ${template.secondary_color};
+      text-decoration: underline;
+    }
+    
+    .report-content blockquote {
+      border-left: 4px solid ${template.secondary_color};
+      padding-left: 16px;
+      margin: 16px 0;
+      color: #4b5563;
+      font-style: italic;
+    }
+    
+    /* Footer branding */
+    .footer-branding {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+      color: #9ca3af;
+      font-size: ${template.heading_sizes_json.body - 2}px;
+    }
+    
+    @page {
+      size: ${template.page_format};
+      margin: ${template.margins_json.top}mm ${template.margins_json.right}mm ${template.margins_json.bottom}mm ${template.margins_json.left}mm;
+      
+      @top-center {
+        content: "${template.header_text}";
+        font-size: 10px;
+        color: #6b7280;
+      }
+      
+      @bottom-center {
+        content: "${template.footer_text.replace("{page}", "counter(page)").replace("{pages}", "counter(pages)")}";
+        font-size: 10px;
+        color: #6b7280;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-content">
+    ${coverPageHtml}
+    <div class="report-content">
+      ${reportHtml}
+    </div>
+    <div class="footer-branding">
+      Powered by Grant Genius
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+  
+  // Fallback to legacy format - build from individual fields
+  console.log("Falling back to legacy format for PDF generation");
 
   // Build sections array for TOC
   const sections: { title: string; content: string }[] = [];
@@ -234,20 +514,8 @@ function buildHtml(
        </section>`
     : "";
 
-  // Cover page
-  const coverPageHtml = template.include_cover_page
-    ? `<div class="cover-page">
-        ${logoUrl ? `<img src="${logoUrl}" alt="Logo" class="cover-logo" />` : ""}
-        <h1 class="cover-title">Research Commercialisation Report</h1>
-        <h2 class="cover-subtitle">${escapeHtml(grantName)}</h2>
-        <p class="cover-date">Generated: ${createdAt}</p>
-        <p class="cover-version">Version ${report.version_number}</p>
-      </div>
-      <div class="page-break"></div>`
-    : "";
-
-  // Watermark CSS
-  const watermarkCss = template.watermark_text
+  // Legacy watermark CSS  
+  const legacyWatermarkCss = template.watermark_text
     ? `
       .page-content::before {
         content: "${template.watermark_text}";
@@ -287,7 +555,7 @@ function buildHtml(
       padding: ${template.margins_json.top}mm ${template.margins_json.right}mm ${template.margins_json.bottom}mm ${template.margins_json.left}mm;
     }
     
-    ${watermarkCss}
+    ${legacyWatermarkCss}
     
     .page-break {
       page-break-after: always;
