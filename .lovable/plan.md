@@ -1,110 +1,86 @@
 
 
-# Fix Firecrawl Step Validation - Allow Empty Prompt Template for Search Steps
+# Fix Export Prompt Bundle - Only Shows 1 Step
 
-## Problem
+## Investigation Summary
 
-When creating a Firecrawl search step, you must:
-1. Create the step as an AI step first
-2. Change the step type to "Web Search"
-3. Move the search query from the Prompt Template to the Search Query Template
+After extensive analysis, I've identified the root cause and a potential issue:
 
-When you clear the Prompt Template (since the query is now in Search Query Template), you get:
-> "Prompt is too short (minimum 50 characters)"
+### Root Cause: Redundant Column Selection in Query
 
-This prevents saving the step because the Save button is disabled.
-
-## Root Cause
-
-The `validatePrompt` function in `PromptStepEditor.tsx` always validates the `promptTemplate` field, even for Firecrawl steps where the prompt template is not used - the search query is stored in `stepConfig.query_template` instead.
+In `src/hooks/usePromptBundles.ts` (line 121), the steps query uses:
 
 ```typescript
-// Line 113-125 - Always validates promptTemplate
-const validatePrompt = (prompt: string) => {
-  if (prompt.length < 50) {
-    return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
-  }
-  // ...
-};
-
-// Line 127 - Applied unconditionally
-const promptValidation = validatePrompt(promptTemplate);
+.select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
 ```
+
+This is problematic because:
+1. `*` already includes all columns
+2. Listing specific columns after `*` is redundant and can cause issues in some PostgREST versions
+3. May lead to unexpected query behavior
+
+### Additional Context
+
+There are two bundles named "AEA Single Prompt":
+- Older one (Feb 4): Has only 1 step
+- Newer one (Feb 9): Has 7 steps
+
+If you're seeing only 1 step, you may have been looking at the older bundle. However, the redundant select statement should still be fixed for reliability.
 
 ## Solution
 
-Make the validation step-type-aware:
+### File: `src/hooks/usePromptBundles.ts`
 
-1. **Skip prompt validation for Firecrawl steps** - They don't use the prompt template field
-2. **Add validation for Firecrawl-specific fields** - Validate the search query template instead
-3. **Update the Save button logic** - Use appropriate validation based on step type
-
-## Technical Changes
-
-### File: `src/components/admin/PromptStepEditor.tsx`
-
-**Change 1**: Create a step-type-aware validation function
+Simplify the select statement to use only `*`:
 
 ```typescript
-const validateStep = (): { valid: boolean; warning: string | null } => {
-  // For Firecrawl search steps, validate the query template instead
-  if (stepType === "firecrawl_search") {
-    const query = stepConfig.query_template as string || "";
-    if (query.length < 10) {
-      return { valid: false, warning: "Search query is too short (minimum 10 characters)" };
-    }
-    return { valid: true, warning: null };
-  }
-  
-  // For Firecrawl scrape steps, validate URL variable is set
-  if (stepType === "firecrawl_scrape") {
-    const urlVar = stepConfig.url_variable as string;
-    if (!urlVar) {
-      return { valid: false, warning: "URL variable must be specified" };
-    }
-    return { valid: true, warning: null };
-  }
-  
-  // For AI steps, use existing prompt validation
-  if (promptTemplate.length < 50) {
-    return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
-  }
-  
-  for (const pattern of SUSPICIOUS_PATTERNS) {
-    if (pattern.test(promptTemplate)) {
-      return { valid: false, warning: "Prompt contains suspicious schema-like content" };
-    }
-  }
-  
-  return { valid: true, warning: null };
-};
+// Before (line 119-123)
+const { data: steps, error: stepsError } = await supabase
+  .from("prompt_bundle_steps")
+  .select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
+  .eq("bundle_id", id)
+  .order("step_number", { ascending: true });
+
+// After
+const { data: steps, error: stepsError } = await supabase
+  .from("prompt_bundle_steps")
+  .select("*")
+  .eq("bundle_id", id)
+  .order("step_number", { ascending: true });
 ```
 
-**Change 2**: Use the new validation function
+### Additional Fix: Reset Export State on Dialog Close
+
+To prevent stale data issues, clear the export bundle ID when the dialog closes:
+
+In `src/pages/admin/PromptBundles.tsx`, update the dialog `onOpenChange`:
 
 ```typescript
-// Replace line 127
-const stepValidation = validateStep();
+// Before
+<Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+
+// After
+<Dialog 
+  open={exportDialogOpen} 
+  onOpenChange={(open) => {
+    setExportDialogOpen(open);
+    if (!open) {
+      setExportBundleId(null); // Clear on close
+    }
+  }}
+>
 ```
 
-**Change 3**: Update the warning display and Save button to use `stepValidation`
-
-**Change 4**: Optionally hide the Prompt Template field entirely for Firecrawl steps (since it's not used)
-
-## UX Improvement
-
-For Firecrawl steps, the Prompt Template field could be hidden since it's not relevant. The step-specific configuration (query template, URL variable, etc.) is shown via the `StepTypeEditor` component.
-
-## Files to Modify
+## Technical Details
 
 | File | Change |
 |------|--------|
-| `src/components/admin/PromptStepEditor.tsx` | Add step-type-aware validation, optionally hide prompt template for Firecrawl steps |
+| `src/hooks/usePromptBundles.ts` | Simplify `.select()` to just `*` |
+| `src/pages/admin/PromptBundles.tsx` | Reset `exportBundleId` when dialog closes |
 
 ## Impact
 
+- Cleaner, more reliable Supabase query
+- Prevents potential stale cache issues on export dialog
 - No database changes required
-- Firecrawl steps can be saved with empty prompt templates
-- AI steps retain their current validation behavior
-- Better UX by hiding irrelevant fields for Firecrawl steps
 
