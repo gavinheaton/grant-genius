@@ -1,80 +1,104 @@
 
+# Restrict User Applications & Extend Admin Applications Overview
 
-# Fix Admin Dashboard - Active/Stalled Runs Not Showing
+## Summary
 
-## Problem
+This plan addresses two related requirements:
+1. **Researchers** should only see their own applications on the Dashboard
+2. **Admins** should have visibility into all applications (not just manual queue) for monitoring volume and activity
 
-Joanne's running report (`7b279e5c-61dc-4bab-990c-c2af995d8ca2`) is not appearing in the Admin Dashboard's "Currently Running" card or "Active Runs" table, even though:
-- The report has `status: running` 
-- It's been running for 12+ minutes (should show as stalled)
-- The data exists correctly in the database
+## Current State Analysis
 
-## Root Cause
+### RLS Policies (Database)
+The `applications` table already has proper RLS policies:
+- `Users can view own applications`: Only returns rows where `user_id = auth.uid()`
+- `Admins can view all applications`: Returns all rows for admin users
 
-The Supabase query uses `profiles:user_id(email)` to fetch user emails, but **there is no foreign key relationship** between `applications.user_id` and `profiles.user_id`. PostgREST requires a foreign key to resolve the nested relationship syntax.
+**The database security is already correct** - users can only see their own data at the database level.
 
-Without the foreign key, PostgREST either:
-- Returns null for the profiles object
-- Fails to match rows correctly
-- Or in some cases, filters out the row entirely
+### Dashboard Code Issue
+The Dashboard (`src/pages/Dashboard.tsx`) doesn't apply any additional filtering because RLS handles it. However, if a user has an admin role, the "Admins can view all applications" RLS policy kicks in and they see ALL applications - including other users' applications on their personal "My Applications" page.
+
+### Current Admin Manual Queue
+The `/admin/manual-queue` page only shows applications with `manual_status IS NOT NULL`, which limits visibility to manually-processed grants only.
 
 ## Solution
 
-Add a foreign key constraint from `profiles.user_id` to `auth.users.id`. This allows PostgREST to understand the relationship chain:
+### Part 1: Filter Dashboard to User's Own Applications
 
-```
-report_runs → applications (via application_id)
-           → applications.user_id → profiles.user_id (via FK to auth.users)
-```
+Even though admins CAN see all applications via RLS, the "My Applications" Dashboard should only show the logged-in user's own applications. This requires adding a client-side filter:
 
-### Database Migration
+**File**: `src/pages/Dashboard.tsx`
+- Add `.eq("user_id", session.user.id)` to the Supabase query
+- This ensures admins see only their own work on the Dashboard, while still having full visibility in the Admin Console
 
-```sql
--- Add foreign key from profiles.user_id to auth.users.id
--- This enables PostgREST to resolve the profiles:user_id() syntax
-ALTER TABLE public.profiles
-ADD CONSTRAINT profiles_user_id_fkey
-FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
-```
+### Part 2: Extend Admin Manual Queue to "All Applications"
 
-### Why This Works
+Rename and expand the Manual Queue page to become a comprehensive "Applications" overview:
 
-PostgREST uses foreign keys to determine how tables relate. With this constraint:
-1. `profiles.user_id` → `auth.users.id` is established
-2. `applications.user_id` and `profiles.user_id` both point to `auth.users.id`
-3. PostgREST can now infer that `profiles:user_id` means "join profiles where profiles.user_id = applications.user_id"
+**File**: `src/pages/admin/ManualQueue.tsx` → Extend with tabbed interface
+- **Tab 1: All Applications** - Shows all applications across the platform with status, user, grant, and date info
+- **Tab 2: Manual Queue** - Existing functionality for manual submissions
 
-## Alternative Approach (If FK Cannot Be Added)
+**Add new summary cards**:
+- Total Applications
+- By Status breakdown (Draft / In Progress / Ready / Failed)
+- Recent activity trends
 
-If adding the foreign key is not desired, the dashboard queries would need to be rewritten to use raw SQL via RPC functions, or fetch profiles in a separate query:
-
-```typescript
-// Fetch runs first
-const runs = await supabase
-  .from("report_runs")
-  .select(`id, status, ..., applications!inner(title, user_id)`)
-  .in("status", ["running", "pending"]);
-
-// Then fetch profiles separately
-const userIds = runs.data.map(r => r.applications.user_id);
-const profiles = await supabase
-  .from("profiles")
-  .select("user_id, email")
-  .in("user_id", userIds);
-
-// Merge manually
-```
-
-This is more complex but avoids needing to modify database constraints.
-
-## Recommended Action
-
-Add the foreign key constraint - it's the cleanest solution and aligns with Supabase best practices for the `profiles` table pattern.
+**File**: `src/components/admin/AdminSidebar.tsx`
+- Rename "Manual Queue" to "Applications" for clarity
 
 ## Technical Details
 
-| Component | File | Change |
-|-----------|------|--------|
-| Database | Migration | Add FK constraint on `profiles.user_id` |
-| No code changes needed | - | Once FK exists, existing queries will work |
+### Dashboard.tsx Changes
+```typescript
+// Current (line ~97-108)
+const { data, error } = await supabase
+  .from("applications")
+  .select(`...`)
+  .order("updated_at", { ascending: false });
 
+// Updated - add user filter
+const { data, error } = await supabase
+  .from("applications")
+  .select(`...`)
+  .eq("user_id", session.user.id)  // <-- Add this filter
+  .order("updated_at", { ascending: false });
+```
+
+### ManualQueue.tsx Changes
+1. Add Tabs component with "All Applications" and "Manual Queue" tabs
+2. Create a new query for all applications:
+```typescript
+const { data: allApplications } = useQuery({
+  queryKey: ["admin-all-applications"],
+  queryFn: async () => {
+    const { data, error } = await supabase
+      .from("applications")
+      .select(`
+        id, title, status, created_at, updated_at,
+        grant_version:grant_versions!inner(grant:grants!inner(id, name)),
+        profile:profiles!applications_user_id_profiles_fkey(email, full_name)
+      `)
+      .order("updated_at", { ascending: false });
+    if (error) throw error;
+    return data;
+  },
+});
+```
+3. Add summary cards showing status breakdown
+4. Add a table displaying all applications with filtering
+
+### Sidebar Update
+Change the menu item label from "Manual Queue" to "Applications" to reflect the expanded scope.
+
+## Files to Modify
+
+| File | Change |
+|------|--------|
+| `src/pages/Dashboard.tsx` | Add `.eq("user_id", session.user.id)` filter |
+| `src/pages/admin/ManualQueue.tsx` | Add tabs, "All Applications" view, summary cards |
+| `src/components/admin/AdminSidebar.tsx` | Rename "Manual Queue" to "Applications" |
+
+## No Database Changes Required
+The existing RLS policies are correctly configured. This is a UI/UX change only.
