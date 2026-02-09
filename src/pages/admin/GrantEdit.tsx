@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ChevronDown, ChevronUp, Users } from "lucide-react";
 import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
