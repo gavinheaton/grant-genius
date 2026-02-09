@@ -14,6 +14,7 @@ import {
   Sparkles,
   ClipboardList,
   FileStack,
+  Eye,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
