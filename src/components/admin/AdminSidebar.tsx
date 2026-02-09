@@ -77,6 +77,27 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
+  // Fetch pending review count for the current admin
+  useEffect(() => {
+    const fetchPendingReviews = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
+
+      const { count, error } = await supabase
+        .from("report_reviews")
+        .select("*", { count: "exact", head: true })
+        .eq("reviewer_user_id", session.user.id)
+        .eq("status", "pending");
+
+      if (!error && count !== null) {
+        setPendingReviewCount(count);
+      }
+    };
+
+    fetchPendingReviews();
+  }, []);
 
   const isActive = (path: string) => {
     if (path === "/admin") {
