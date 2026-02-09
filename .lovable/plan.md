@@ -1,70 +1,53 @@
 
 
-## Conversion Tracking: GTM + GA4 + Stripe
+## Add "Testing" Toggle for Grants
 
-### 1. Replace inline GA4 with GTM container (`index.html`)
+Allow admins to mark a grant as "Testing" so it only appears in the grant dropdown for admin users, enabling pipeline testing before wider release.
 
-Remove the current gtag.js snippet and replace with the GTM container script using ID `GTM-WBB49KQQ`:
+### How It Works
 
-**Head** (just after `<title>`):
-```html
-<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
-new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
-j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
-'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
-})(window,document,'script','dataLayer','GTM-WBB49KQQ');</script>
+- A new `is_testing` column on the `grants` table (default `false`)
+- When `is_testing = true`, the grant appears in the admin grant list with a "Testing" badge
+- On the New Application page, testing grants are filtered out for regular researchers but shown for admins
+- Admins can toggle this on/off from the Grant Edit page
+
+### Changes
+
+**1. Database migration**
+
+Add an `is_testing` boolean column to the `grants` table:
+
+```sql
+ALTER TABLE public.grants ADD COLUMN is_testing boolean NOT NULL DEFAULT false;
 ```
 
-**Body** (right after `<body>`):
-```html
-<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-WBB49KQQ"
-height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-```
+No RLS changes needed -- the existing "Anyone can view active grants" policy still applies; the filtering happens at the application level.
 
-### 2. Create analytics helper (`src/lib/analytics.ts` -- new file)
+**2. Grant Edit page (`src/pages/admin/GrantEdit.tsx`)**
 
-A small utility to push events to the GTM dataLayer:
+Add a "Testing Mode" toggle (Switch) next to the existing "Active" toggle in the Details tab. When toggled on, the grant is only visible to admins in the application dropdown.
 
-```ts
-export function trackEvent(event: string, params?: Record<string, unknown>) {
-  window.dataLayer = window.dataLayer || [];
-  window.dataLayer.push({ event, ...params });
-}
-```
+**3. Grants list (`src/pages/admin/Grants.tsx`)**
 
-Plus a TypeScript declaration for `window.dataLayer`.
+Show a "Testing" badge on grants where `is_testing = true`, so admins can quickly see which grants are in test mode.
 
-### 3. Fire `begin_checkout` event (`src/hooks/usePurchase.ts`)
+**4. New Application page (`src/pages/NewApplication.tsx`)**
 
-After a checkout session URL is received (before opening it), push a `begin_checkout` event with currency, value, and item info.
+Update the grant-fetching query:
+- Fetch the current user's role from `user_roles`
+- If the user is an admin/super_admin, show all active grants (including testing ones)
+- If the user is a regular researcher, filter out grants where `is_testing = true`
 
-### 4. Fire `purchase` event on success redirect (`src/pages/Dashboard.tsx`)
+**5. Types update**
 
-In the existing `useEffect` that handles `?payment=success`, also push a `purchase` event with the Stripe session ID as `transaction_id`.
+The `is_testing` column will be automatically reflected in the generated Supabase types after migration.
 
-### 5. Pass Stripe session ID in success URL (`supabase/functions/create-checkout/index.ts`)
-
-Update the success URL to include `{CHECKOUT_SESSION_ID}` (Stripe auto-replaces this):
-
-```
-/dashboard?payment=success&session_id={CHECKOUT_SESSION_ID}
-```
-
-### GTM Dashboard Setup (manual, not code)
-
-Once deployed, configure these tags in GTM at tagmanager.google.com:
-
-- **GA4 Configuration tag** with Measurement ID `G-BY7T9G87NW`
-- **GA4 Event tags** for `begin_checkout` and `purchase` events
-- Any additional conversion pixels can be added later without code changes
-
-### Files Changed
+### Technical Details
 
 | File | Change |
 |------|--------|
-| `index.html` | Replace gtag.js with GTM container snippet |
-| `src/lib/analytics.ts` | New -- trackEvent helper |
-| `src/hooks/usePurchase.ts` | Fire begin_checkout event |
-| `src/pages/Dashboard.tsx` | Fire purchase event on success |
-| `supabase/functions/create-checkout/index.ts` | Add session_id to success URL |
+| Migration SQL | Add `is_testing` column to `grants` |
+| `src/pages/admin/GrantEdit.tsx` | Add Testing Mode toggle + state |
+| `src/pages/admin/Grants.tsx` | Show "Testing" badge in grant list |
+| `src/pages/NewApplication.tsx` | Filter testing grants for non-admin users |
 
