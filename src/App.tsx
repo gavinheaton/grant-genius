@@ -31,6 +31,8 @@ import SystemHealth from "./pages/admin/SystemHealth";
 import AdminAssistant from "./pages/admin/AdminAssistant";
 import ManualQueue from "./pages/admin/ManualQueue";
 import CmsPages from "./pages/admin/CmsPages";
+import ReportReview from "./pages/admin/ReportReview";
+import ReviewsList from "./pages/admin/ReviewsList";
 
 const queryClient = new QueryClient();
 
@@ -69,6 +71,8 @@ const App = () => (
             <Route path="/admin/manual-queue" element={<AdminLayout><ManualQueue /></AdminLayout>} />
             <Route path="/admin/assistant" element={<AdminLayout><AdminAssistant /></AdminLayout>} />
             <Route path="/admin/pages" element={<AdminLayout><CmsPages /></AdminLayout>} />
+            <Route path="/admin/reviews" element={<AdminLayout><ReviewsList /></AdminLayout>} />
+            <Route path="/admin/reviews/:reviewId" element={<AdminLayout><ReportReview /></AdminLayout>} />
             
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

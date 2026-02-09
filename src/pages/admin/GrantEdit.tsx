@@ -27,13 +27,14 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
-import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, CheckCircle, FileText, Settings2, Workflow, ChevronDown, ChevronUp, Users } from "lucide-react";
 import { format } from "date-fns";
 import { GuidelinesUploader } from "@/components/admin/GuidelinesUploader";
 import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
 import { usePromptBundles, usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
+import { WorkflowTab } from "@/components/admin/WorkflowTab";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -499,6 +500,10 @@ export default function GrantEdit() {
           </TabsTrigger>
           <TabsTrigger value="inputs">Required Inputs</TabsTrigger>
           <TabsTrigger value="rubric">Rubric</TabsTrigger>
+          <TabsTrigger value="workflow">
+            <Users className="h-4 w-4 mr-1" />
+            Workflow
+          </TabsTrigger>
           {isSuperAdmin && (
             <TabsTrigger value="advanced">
               <Settings2 className="h-4 w-4 mr-1" />
@@ -970,6 +975,10 @@ export default function GrantEdit() {
               </Button>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="workflow" className="mt-6">
+          {id && <WorkflowTab grantId={id} />}
         </TabsContent>
 
         {/* Advanced Tab - Super Admin Only */}
