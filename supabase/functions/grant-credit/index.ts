@@ -99,7 +99,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // Validate entitlement type
-    const validTypes = ["REPORT_ONE_OFF"];
+    const validTypes = ["REPORT_ONE_OFF", "REPORT_BUNDLE_10"];
     if (!validTypes.includes(entitlement_type)) {
       return new Response(
         JSON.stringify({ error: `Invalid entitlement type. Valid types: ${validTypes.join(", ")}` }),
