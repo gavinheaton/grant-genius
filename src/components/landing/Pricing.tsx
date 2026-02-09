@@ -1,12 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Check, Loader2 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { usePurchase } from "@/hooks/usePurchase";
+import { Badge } from "@/components/ui/badge";
 
 const plans = [
   {
     name: "Single Report",
-    price: "$99",
+    basePrice: "$45",
+    gstNote: "+ GST ($49.50 inc. GST)",
     description: "Perfect for a single grant application",
     features: [
       "1 Complete Application Report",
@@ -14,36 +16,36 @@ const plans = [
       "Evidence Library Access",
       "PDF & DOCX Export",
       "Compliance Validation",
-      "30-Day Report Access",
     ],
     cta: "Purchase Report",
-    highlighted: true,
-    isPurchase: true,
+    highlighted: false,
+    type: "single" as const,
   },
   {
-    name: "Research Team",
-    price: "Contact Us",
-    description: "For departments and research groups",
+    name: "Report 10-Pack",
+    basePrice: "$400",
+    gstNote: "+ GST ($440 inc. GST)",
+    description: "Best value for multiple applications",
     features: [
-      "Unlimited Applications",
-      "Multiple Team Members",
-      "Priority Support",
-      "Custom Grant Templates",
-      "Advanced Analytics",
-      "API Access",
+      "10 Report Credits",
+      "All Grant-Specific Sections",
+      "Evidence Library Access",
+      "PDF & DOCX Export",
+      "Compliance Validation",
+      "Save $50 vs individual",
     ],
-    cta: "Contact Sales",
-    highlighted: false,
-    isPurchase: false,
+    cta: "Purchase 10-Pack",
+    highlighted: true,
+    type: "bundle" as const,
   },
 ];
 
 export function Pricing() {
   const navigate = useNavigate();
-  const { purchaseReport, isLoading } = usePurchase();
+  const { purchaseReport, purchaseBundle, isLoading } = usePurchase();
 
-  const handlePurchase = async () => {
-    const result = await purchaseReport();
+  const handlePurchase = async (type: "single" | "bundle") => {
+    const result = type === "bundle" ? await purchaseBundle() : await purchaseReport();
     if (result.requiresAuth) {
       navigate("/auth");
     }
@@ -73,7 +75,7 @@ export function Pricing() {
             >
               {plan.highlighted && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full bg-accent text-accent-foreground text-sm font-medium">
-                  Most Popular
+                  Best Value
                 </div>
               )}
               
@@ -82,14 +84,12 @@ export function Pricing() {
                 {plan.description}
               </p>
               
-              <div className="mb-6">
-                <span className="text-4xl font-bold">{plan.price}</span>
-                {plan.price !== "Contact Us" && (
-                  <span className={`text-sm ${plan.highlighted ? "text-primary-foreground/80" : "text-muted-foreground"}`}>
-                    {" "}AUD / report
-                  </span>
-                )}
+              <div className="mb-2">
+                <span className="text-4xl font-bold">{plan.basePrice}</span>
               </div>
+              <p className={`text-sm mb-6 ${plan.highlighted ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                {plan.gstNote}
+              </p>
               
               <ul className="space-y-3 mb-8">
                 {plan.features.map((feature) => (
@@ -100,36 +100,29 @@ export function Pricing() {
                 ))}
               </ul>
               
-              {plan.isPurchase ? (
-                <Button
-                  variant="accent"
-                  size="lg"
-                  className="w-full"
-                  onClick={handlePurchase}
-                  disabled={isLoading}
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Processing...
-                    </>
-                  ) : (
-                    plan.cta
-                  )}
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="lg"
-                  className="w-full"
-                  asChild
-                >
-                  <a href="mailto:sales@grantgenius.com.au">{plan.cta}</a>
-                </Button>
-              )}
+              <Button
+                variant={plan.highlighted ? "accent" : "outline"}
+                size="lg"
+                className="w-full"
+                onClick={() => handlePurchase(plan.type)}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  plan.cta
+                )}
+              </Button>
             </div>
           ))}
         </div>
+
+        <p className="text-xs text-center text-muted-foreground mt-6">
+          All prices in AUD. GST applies to Australian customers. Have a coupon? Enter it at checkout.
+        </p>
       </div>
     </section>
   );

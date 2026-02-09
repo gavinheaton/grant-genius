@@ -42,9 +42,10 @@ serve(async (req) => {
     if (!user?.email) throw new Error("User not authenticated or email not available");
     logStep("User authenticated", { userId: user.id, email: user.email });
 
-    const { priceId, successUrl, cancelUrl } = await req.json();
+    const { priceId, productKey, successUrl, cancelUrl } = await req.json();
     if (!priceId) throw new Error("Price ID is required");
-    logStep("Request parsed", { priceId });
+    const resolvedProductKey = productKey || "REPORT_ONE_OFF";
+    logStep("Request parsed", { priceId, productKey: resolvedProductKey });
 
     const stripe = new Stripe(stripeKey, { apiVersion: "2025-08-27.basil" });
 
@@ -75,7 +76,7 @@ serve(async (req) => {
       cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
       metadata: {
         user_id: user.id,
-        product_key: "REPORT_ONE_OFF",
+        product_key: resolvedProductKey,
       },
     });
 

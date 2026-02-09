@@ -68,6 +68,14 @@ serve(async (req) => {
       const userId = session.metadata?.user_id;
       const productKey = session.metadata?.product_key || "REPORT_ONE_OFF";
 
+      // Determine credit quantity based on product
+      const PRODUCT_QUANTITIES: Record<string, number> = {
+        "REPORT_ONE_OFF": 1,
+        "REPORT_BUNDLE_10": 10,
+      };
+      const creditQuantity = PRODUCT_QUANTITIES[productKey] || 1;
+      logStep("Credit quantity determined", { productKey, creditQuantity });
+
       if (!userId) {
         logStep("No user_id in metadata, attempting to find by email");
       }
@@ -156,11 +164,11 @@ serve(async (req) => {
           .from("entitlements")
           .insert({
             user_id: userId,
-            entitlement_type: productKey,
+            entitlement_type: "REPORT_ONE_OFF",
             order_id: orderId,
-            quantity: 1,
+            quantity: creditQuantity,
             used_quantity: 0,
-            expires_at: null, // No expiry for one-off purchases
+            expires_at: null,
           })
           .select("id")
           .single();
