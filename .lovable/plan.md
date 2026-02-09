@@ -1,124 +1,86 @@
 
 
-# Use REPORT_READY Template for Manual Reports
+# Update Pricing: $45 + GST Single Report + $400 + GST Ten-Pack Bundle
 
 ## Overview
 
-Currently, the `complete-manual-report` function uses hardcoded email HTML (lines 300-313) instead of the editable REPORT_READY template. This means manual reports don't benefit from the new template system with `{{report_html}}` and `{{report_summary}}` shortcodes.
+Change the single report price from $99 to $45 + GST ($49.50 inc. GST), and add a 10-report bundle at $400 + GST ($440 inc. GST). Prices displayed as base price with GST noted separately.
 
-## Current vs Proposed Flow
+## Stripe Products and Prices
 
-| Aspect | Current | Proposed |
-|--------|---------|----------|
-| Email HTML | Hardcoded in function | Uses REPORT_READY template from database |
-| Shortcodes | Not supported | Full support for `{{user_name}}`, `{{grant_name}}`, `{{report_link}}`, `{{report_html}}`, `{{report_summary}}` |
-| Subject line | Hardcoded | Editable via admin panel |
-| Sender | Hardcoded | Configurable via admin panel |
-| Attachments | PDF + DOCX attached | Preserved (no change) |
+Stripe charges the GST-inclusive amount (what the customer actually pays):
 
-## Implementation
+| Product | Base Price | GST (10%) | Stripe Charge | Per-Report |
+|---------|-----------|-----------|---------------|------------|
+| Single Report | $45.00 | $4.50 | $49.50 AUD | $49.50 |
+| Report 10-Pack | $400.00 | $40.00 | $440.00 AUD | $44.00 |
 
-### Update `complete-manual-report/index.ts`
+Create via Stripe tools:
+- New price on existing product `prod_TroVyrVbcfvfrk`: **4950 cents AUD**
+- New product "Report 10-Pack" with price: **44000 cents AUD**
 
-Replace the hardcoded email section (lines 296-368) with template-aware logic:
+## Database Updates (`products` table)
 
-```text
-Changes:
-1. Add the same helper functions from send-report-email:
-   - extractExecutiveSummary()
-   - sanitizeForEmail()
-   - substituteVariables()
-   - getFallbackHtml()
+- Update `REPORT_ONE_OFF`: `price_cents` to 4950, new `stripe_price_id`
+- Insert `REPORT_BUNDLE_10`: `price_cents` 44000, new `stripe_price_id`, name "Report 10-Pack"
 
-2. Fetch REPORT_READY template from database:
-   SELECT subject, html_content, sender_name, sender_email, brevo_template_id
-   FROM email_templates WHERE template_key = 'REPORT_READY'
+## Frontend Price Display
 
-3. Build templateVariables with all shortcodes:
-   - user_name: userProfile.full_name
-   - grant_name: grant.name
-   - report_link: full URL to application
-   - report_html: sanitized full report content
-   - report_summary: sanitized executive summary
+### Landing Page (`Pricing.tsx`)
 
-4. Apply 3-tier priority:
-   Priority 1: Custom html_content from DB (with variable substitution)
-   Priority 2: Brevo template ID
-   Priority 3: Hardcoded fallback
+**Card 1: Single Report**
+- Headline: **$45**
+- Subtext: "+ GST ($49.50 inc. GST)"
+- Features: 1 Complete Report, all sections, exports, etc.
 
-5. Keep existing attachment logic (PDF + DOCX)
+**Card 2: Report 10-Pack (highlighted as "Best Value")**
+- Headline: **$400**
+- Subtext: "+ GST ($440 inc. GST)"
+- Features: 10 Report Credits, save $50 vs individual, etc.
 
-6. Update email_outbox logging to use REPORT_READY template_key
-```
+### Purchase Modal (`PurchaseModal.tsx`)
+
+- Show both options as selectable cards
+- Each shows "$45 + GST" / "$400 + GST" with inc. GST amount
+- Bundle card shows "Save $50" badge
+
+### `usePurchase.ts`
+
+- Define both new Stripe price IDs as constants
+- Accept optional `priceId` parameter
+- Default to single report price
+
+## Backend Updates
+
+### `stripe-webhook/index.ts`
+
+Dynamic entitlement quantity based on product_key:
+- `REPORT_ONE_OFF` -> quantity: 1
+- `REPORT_BUNDLE_10` -> quantity: 10
+
+Entitlement type remains `REPORT_ONE_OFF` for both (same type of credit).
+
+### `grant-credit/index.ts`
+
+Add `REPORT_BUNDLE_10` to valid entitlement types list.
 
 ## Files to Modify
 
 | File | Changes |
 |------|---------|
-| `supabase/functions/complete-manual-report/index.ts` | Add template helpers, fetch template, apply variable substitution, keep attachments |
+| Stripe (via tool) | Create new price ($49.50) + new product/price ($440) |
+| Database (`products`) | Update single report, insert bundle |
+| `supabase/functions/stripe-webhook/index.ts` | Dynamic quantity based on product_key |
+| `supabase/functions/grant-credit/index.ts` | Add REPORT_BUNDLE_10 to valid types |
+| `src/hooks/usePurchase.ts` | Support multiple price IDs |
+| `src/components/landing/Pricing.tsx` | New plans with "$X + GST" display |
+| `src/components/PurchaseModal.tsx` | Both purchase options with GST display |
 
-## Example Result
+## How the Bundle Works
 
-After implementation, when an admin edits the REPORT_READY template with:
-```html
-<h1>Hi {{user_name}},</h1>
-<p>Your {{grant_name}} report is complete!</p>
-{{report_summary}}
-<p><a href="{{report_link}}">View Full Report</a></p>
-```
-
-Both automated AND manual reports will use this template, ensuring consistent email formatting across all report types.
-
-## Technical Details
-
-### Helper Functions to Add
-
-```typescript
-// Extract Executive Summary section from report HTML
-function extractExecutiveSummary(html: string): string {
-  // Find section between Executive Summary h2 and next h2
-}
-
-// Sanitize HTML for email compatibility  
-function sanitizeForEmail(html: string): string {
-  // Remove <style> and <script> blocks
-  // Add inline styles to images
-  // Wrap in safe font container
-}
-
-// Replace {{variable}} placeholders
-function substituteVariables(content: string, variables: Record<string, string>): string {
-  // Loop through variables and replace
-}
-
-// Legacy fallback template
-function getFallbackHtml(userName: string, grantName: string, reportLink: string): string {
-  // Return hardcoded HTML template
-}
-```
-
-### Template Priority Logic
-
-```text
-if (template.html_content exists) {
-  → Use custom template with variable substitution
-  → Apply attachments
-}
-else if (template.brevo_template_id > 0) {
-  → Use Brevo template with params
-  → Apply attachments  
-}
-else {
-  → Use hardcoded fallback
-  → Apply attachments
-}
-```
-
-### Key Benefit
-
-Admins can now manage ONE template (REPORT_READY) that works for:
-- Automated AI-generated reports
-- Manual human-authored reports
-
-Both get the same styling, shortcode support, and consistent branding.
+1. User clicks "Purchase 10-Pack" -> Stripe charges $440 AUD
+2. Webhook fires with `product_key: "REPORT_BUNDLE_10"`
+3. Webhook creates entitlement with `quantity: 10, used_quantity: 0`
+4. Existing `useEntitlements` hook sums available credits -- 10 credits appear immediately
+5. Each report generation consumes 1 credit as normal
 
