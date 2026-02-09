@@ -861,31 +861,199 @@ async function createFinalReport(
     console.error("Failed to update application status:", appUpdateError);
   }
 
-  // Send email notification if enabled
-  if (emailOnComplete && newReport?.id) {
-    try {
-      const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-      const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      
-      await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          reportRunId,
-          reportId: newReport.id,
-          applicationId,
-          userId,
-        }),
-      });
-      console.log(`Email notification triggered for report ${newReport.id}`);
-    } catch (emailError) {
-      console.error("Failed to send email notification:", emailError);
+  // Check for review workflow before sending email
+  if (newReport?.id) {
+    const workflowResult = await checkAndStartReviewWorkflow(supabase, newReport.id, applicationId, grantVersionId);
+    
+    if (workflowResult.hasWorkflow) {
+      console.log(`Report ${newReport.id} sent to review workflow (step 1 of ${workflowResult.totalSteps})`);
+      // Don't send email to user - workflow will handle it after approval
+    } else if (emailOnComplete) {
+      // No workflow - send email directly (current behavior)
+      try {
+        const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+        const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+        
+        await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            reportRunId,
+            reportId: newReport.id,
+            applicationId,
+            userId,
+          }),
+        });
+        console.log(`Email notification triggered for report ${newReport.id}`);
+      } catch (emailError) {
+        console.error("Failed to send email notification:", emailError);
+      }
     }
   }
 }
+
+/**
+ * Check if the grant has an enabled review workflow, and if so,
+ * set the report to pending_review and notify the first reviewer.
+ */
+// deno-lint-ignore no-explicit-any
+async function checkAndStartReviewWorkflow(
+  supabase: any,
+  reportId: string,
+  applicationId: string,
+  grantVersionId: string
+): Promise<{ hasWorkflow: boolean; totalSteps: number }> {
+  try {
+    // Get the grant_id from grant_version
+    const { data: grantVersion } = await supabase
+      .from("grant_versions")
+      .select("grant_id")
+      .eq("id", grantVersionId)
+      .single();
+
+    if (!grantVersion) return { hasWorkflow: false, totalSteps: 0 };
+
+    // Check for enabled workflow
+    const { data: workflow } = await supabase
+      .from("grant_review_workflows")
+      .select("id, step_count, is_enabled")
+      .eq("grant_id", grantVersion.grant_id)
+      .eq("is_enabled", true)
+      .maybeSingle();
+
+    if (!workflow) return { hasWorkflow: false, totalSteps: 0 };
+
+    // Get step 1 reviewer
+    const { data: firstStep } = await supabase
+      .from("grant_review_workflow_steps")
+      .select("id, reviewer_user_id")
+      .eq("workflow_id", workflow.id)
+      .eq("step_number", 1)
+      .single();
+
+    if (!firstStep) return { hasWorkflow: false, totalSteps: 0 };
+
+    // Set report to pending review
+    await supabase
+      .from("reports")
+      .update({ review_status: "pending_review", current_review_step: 1 })
+      .eq("id", reportId);
+
+    // Create first review record
+    await supabase
+      .from("report_reviews")
+      .insert({
+        report_id: reportId,
+        workflow_step_id: firstStep.id,
+        reviewer_user_id: firstStep.reviewer_user_id,
+        step_number: 1,
+        status: "pending",
+      });
+
+    // Send email to first reviewer
+    await sendReviewNotification(supabase, firstStep.reviewer_user_id, reportId, 1, workflow.step_count);
+
+    return { hasWorkflow: true, totalSteps: workflow.step_count };
+  } catch (e) {
+    console.error("Error checking review workflow:", e);
+    return { hasWorkflow: false, totalSteps: 0 };
+  }
+}
+
+// deno-lint-ignore no-explicit-any
+async function sendReviewNotification(supabase: any, reviewerUserId: string, reportId: string, stepNumber: number, totalSteps: number) {
+  try {
+    const brevoApiKey = Deno.env.get("BREVO_API_KEY");
+    if (!brevoApiKey) return;
+
+    const { data: reviewer } = await supabase
+      .from("profiles")
+      .select("email, full_name")
+      .eq("user_id", reviewerUserId)
+      .single();
+
+    if (!reviewer) return;
+
+    const { data: report } = await supabase
+      .from("reports")
+      .select("application:applications!inner(title, grant_version:grant_versions!inner(grant:grants!inner(name)))")
+      .eq("id", reportId)
+      .single();
+
+    const app = report?.application as any;
+    const gv = app?.grant_version as any;
+    const grant = Array.isArray(gv?.grant) ? gv.grant[0] : gv?.grant;
+
+    const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+
+    // Find review record for the link
+    const { data: reviewRecord } = await supabase
+      .from("report_reviews")
+      .select("id")
+      .eq("report_id", reportId)
+      .eq("step_number", stepNumber)
+      .eq("reviewer_user_id", reviewerUserId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    const reviewLink = reviewRecord
+      ? `${appUrl}/admin/reviews/${reviewRecord.id}`
+      : `${appUrl}/admin/reviews`;
+
+    const variables: Record<string, string> = {
+      reviewer_name: reviewer.full_name || reviewer.email.split("@")[0],
+      grant_name: grant?.name || "Unknown Grant",
+      application_title: app?.title || "Untitled",
+      review_link: reviewLink,
+      step_number: String(stepNumber),
+      total_steps: String(totalSteps),
+    };
+
+    // Fetch template
+    const { data: emailTemplate } = await supabase
+      .from("email_templates")
+      .select("html_content, subject, sender_name, sender_email")
+      .eq("template_key", "REVIEW_REQUESTED")
+      .maybeSingle();
+
+    let htmlContent = emailTemplate?.html_content ||
+      `<h2>Review Requested</h2><p>Hi {{reviewer_name}},</p><p>A report for <strong>{{grant_name}}</strong> ({{application_title}}) is ready for your review (Step {{step_number}} of {{total_steps}}).</p><p><a href="{{review_link}}">Click here to review the report</a></p>`;
+    let subject = emailTemplate?.subject || "Report Review Required - {{grant_name}}";
+
+    for (const [key, value] of Object.entries(variables)) {
+      htmlContent = htmlContent.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+      subject = subject.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+    }
+
+    await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sender: { name: emailTemplate?.sender_name || "Grant Genius", email: emailTemplate?.sender_email || "grantgenius@disruptorsco.com" },
+        to: [{ email: reviewer.email, name: variables.reviewer_name }],
+        subject,
+        htmlContent,
+      }),
+    });
+
+    await supabase.from("email_outbox").insert({
+      user_id: reviewerUserId,
+      to_email: reviewer.email,
+      template_key: "REVIEW_REQUESTED",
+      subject,
+      status: "sent",
+      sent_at: new Date().toISOString(),
+      variables_json: variables,
+    });
+
+    console.log(`Review notification sent to ${reviewer.email}`);
+  } catch (e) {
+    console.error("Failed to send review notification:", e);
+  }
 
 // Helper to get max step number for a run
 // deno-lint-ignore no-explicit-any
