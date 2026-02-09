@@ -54,6 +54,8 @@ interface PromptStepEditorProps {
   onSave: (
     stepId: string,
     data: { 
+      step_name?: string;
+      step_description?: string;
       prompt_template?: string; 
       model_override?: string | null; 
       timeout_seconds?: number | null;
@@ -74,6 +76,8 @@ export function PromptStepEditor({
   grantContext,
   onSave,
 }: PromptStepEditorProps) {
+  const [stepName, setStepName] = useState(step.step_name);
+  const [stepDescription, setStepDescription] = useState(step.step_description);
   const [promptTemplate, setPromptTemplate] = useState(step.prompt_template);
   const [modelOverride, setModelOverride] = useState(step.model_override || "");
   const [timeoutSeconds, setTimeoutSeconds] = useState<string>(
@@ -147,6 +151,8 @@ export function PromptStepEditor({
   const stepValidation = validateStep();
 
   useEffect(() => {
+    setStepName(step.step_name);
+    setStepDescription(step.step_description);
     setPromptTemplate(step.prompt_template);
     setModelOverride(step.model_override || "");
     setTimeoutSeconds(step.timeout_seconds ? String(step.timeout_seconds) : "default");
@@ -168,6 +174,8 @@ export function PromptStepEditor({
     setIsSaving(true);
     try {
       await onSave(step.id, {
+        step_name: stepName,
+        step_description: stepDescription,
         prompt_template: promptTemplate,
         model_override: modelOverride || null,
         timeout_seconds: timeoutSeconds === "default" ? null : parseInt(timeoutSeconds, 10),
@@ -258,6 +266,45 @@ export function PromptStepEditor({
 
   return (
     <div className="space-y-4 pt-4">
+      {/* Step Identity - Name and Description */}
+      <div className="space-y-4 border-b pb-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor={`step-name-${step.id}`}>Step Name</Label>
+            <Input
+              id={`step-name-${step.id}`}
+              value={stepName}
+              onChange={(e) => {
+                setStepName(e.target.value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+              placeholder="finalize_report_html"
+              className="font-mono"
+            />
+            <p className="text-xs text-muted-foreground">
+              Internal identifier. Must be unique. Final step must be named "finalize_report_html".
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`step-desc-${step.id}`}>Step Description</Label>
+            <Input
+              id={`step-desc-${step.id}`}
+              value={stepDescription}
+              onChange={(e) => {
+                setStepDescription(e.target.value);
+                setHasChanges(true);
+              }}
+              disabled={!canEdit}
+              placeholder="Assemble final report HTML"
+            />
+            <p className="text-xs text-muted-foreground">
+              Human-readable description shown in the pipeline list.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Step Type Editor - Super Admin only */}
       {isSuperAdmin && (
         <StepTypeEditor
