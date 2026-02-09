@@ -54,7 +54,7 @@ const reportItems = [
 ];
 
 const systemItems = [
-  { title: "Manual Queue", url: "/admin/manual-queue", icon: ClipboardList },
+  { title: "Applications", url: "/admin/manual-queue", icon: ClipboardList },
   { title: "System Health", url: "/admin/system-health", icon: Activity },
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
 ];
