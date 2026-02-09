@@ -1,57 +1,112 @@
 
 
-# Fix Backend Validation for Optional Public Article URL
+# Handle Empty URL in Firecrawl Scrape - Use Summary as Fallback
 
 ## Problem
 
-The frontend now allows submitting reports without a Public Article URL, but the `generate-report` Edge Function still requires it at line 393:
+When a user generates a report without providing a Public Article URL, the pipeline fails at the `firecrawl_scrape` step because the worker-proxy rejects empty URLs:
 
-```typescript
-if (!publicArticleUrl || !summary) {
-  return new Response(
-    JSON.stringify({ error: "Article URL and summary are required" }),
-    ...
-  );
-}
 ```
-
-This causes a 400 error when a user tries to generate a report without providing an article URL.
+Step 1 failed: scrape_article
+Error: Firecrawl scrape: URL variable 'publicArticleUrl' not found in application inputs
+```
 
 ---
 
 ## Solution
 
-Update the backend validation to only require the `summary` field, matching the frontend change.
+Modify the `handleFirecrawlScrape` function in `worker-proxy` to accept a `fallback_content` parameter. When the URL is empty but fallback content (the researcher's 100-word summary) is provided, return a successful response using that content instead of calling Firecrawl.
 
 ---
 
-## Change Required
+## Changes Required
 
-**File:** `supabase/functions/generate-report/index.ts`
+### File: `supabase/functions/worker-proxy/index.ts`
 
-**Location:** Lines 393-398
+**Location:** `handleFirecrawlScrape` function (lines 1145-1212)
 
-| Before | After |
-|--------|-------|
-| `if (!publicArticleUrl \|\| !summary)` | `if (!summary)` |
-| `"Article URL and summary are required"` | `"Summary is required"` |
+**Before:**
+```typescript
+async function handleFirecrawlScrape(params: Record<string, unknown>) {
+  const { url, formats } = params;
+
+  if (!url || typeof url !== "string") {
+    return errorResponse("url is required and must be a string");
+  }
+  // ... rest of function
+}
+```
+
+**After:**
+```typescript
+async function handleFirecrawlScrape(params: Record<string, unknown>) {
+  const { url, formats, fallback_content } = params;
+
+  // If no URL provided but fallback content exists, use summary as article content
+  if (!url || (typeof url === "string" && url.trim() === "")) {
+    if (fallback_content && typeof fallback_content === "string" && fallback_content.trim()) {
+      console.log(`[FIRECRAWL] No URL provided, using fallback content (${fallback_content.length} chars)`);
+      return jsonResponse({
+        success: true,
+        url: "",
+        title: "Researcher Summary",
+        description: "Content derived from researcher-provided summary",
+        content: fallback_content,
+        metadata: {},
+        source: {
+          source_id: "SUMMARY-1",
+          url: "",
+          title: "Researcher-provided summary",
+          confidence: "high",
+        },
+        used_fallback: true,
+      });
+    }
+    return errorResponse("url is required (or provide fallback_content)");
+  }
+  // ... rest of function unchanged
+}
+```
 
 ---
 
-## Additional Consideration
+## How It Works
 
-The pipeline may also need to handle empty `publicArticleUrl` gracefully. Looking at the code:
+1. **External Worker** calls `execute_firecrawl_scrape` with:
+   - `url`: the `publicArticleUrl` (may be empty)
+   - `fallback_content`: the `summary` field
 
-1. **Line 390:** `const publicArticleUrl = inputs.publicArticleUrl as string;` - This will be `undefined` or empty string
-2. **Firecrawl steps:** The external worker uses `publicArticleUrl` for article scraping - it should skip this step if no URL is provided
+2. **Worker-proxy** checks if URL is empty:
+   - If empty but `fallback_content` exists → return success with summary as content
+   - If empty with no fallback → return error (maintains safety)
+   - If URL exists → scrape normally via Firecrawl
 
-The worker likely already handles this, but we should verify the behavior when `articleContent` is empty throughout the pipeline prompts.
+3. **Downstream steps** receive `{{articleContent}}` populated with either:
+   - Scraped web content (if URL was provided)
+   - Researcher's summary (if no URL provided)
 
 ---
 
-## Summary
+## Technical Details
 
-| File | Change |
-|------|--------|
-| `supabase/functions/generate-report/index.ts` | Update validation to only require `summary` (lines 393-398) |
+| Aspect | Detail |
+|--------|--------|
+| File | `supabase/functions/worker-proxy/index.ts` |
+| Function | `handleFirecrawlScrape` |
+| New parameter | `fallback_content: string` (optional) |
+| Response flag | `used_fallback: true` for audit trail |
+
+---
+
+## Compatibility
+
+- **External worker** needs to pass `fallback_content: inputs.summary` when calling the scrape action
+- **Existing pipelines** with URLs continue to work unchanged
+- **New pipelines** without URLs will gracefully use the summary
+
+---
+
+## Note on External Worker
+
+The external Cloud Run worker also needs to be updated to pass `fallback_content` when calling the scrape action. This is handled outside of Lovable's codebase, but the worker-proxy change enables the behavior.
 
