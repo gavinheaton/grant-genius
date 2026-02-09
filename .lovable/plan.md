@@ -1,34 +1,29 @@
 
 
-## Add Grant Tags to Prompt Bundle Cards
+## Favicon and Google Analytics Update
 
-Show which grant (if any) each bundle is linked to, directly on the bundle list cards.
+### Changes to `index.html`
 
-### Approach
-
-**1. Fetch grant linkage data in `usePromptBundles` hook (`src/hooks/usePromptBundles.ts`)**
-
-Update the query to also fetch linked grant versions and their parent grant name. Since PostgREST supports reverse foreign key joins, we can query `grant_versions` that reference each bundle:
-
-```ts
-.select("*, prompt_bundle_steps(count), grant_versions(id, version_number, is_published, grants(name))")
+**1. Favicon**
+Replace the existing favicon reference with:
+```html
+<link rel="icon" href="https://disruptorsco.com/wp-content/uploads/2023/10/cropped-dc-stacked-icon-180x180.png" type="image/png" />
 ```
 
-Map the result to add a `linked_grants` array to each `PromptBundle`, e.g.:
-```ts
-linked_grants: [{ grant_name: "AEA Ignite", version_number: 1, is_published: true }]
+**2. Google Analytics (GA4)**
+Add the gtag.js snippet to the `<head>` using Measurement ID `G-BY7T9G87NW`:
+```html
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-BY7T9G87NW"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-BY7T9G87NW');
+</script>
 ```
-
-Update the `PromptBundle` type to include this optional array.
-
-**2. Display grant tags on bundle cards (`src/pages/admin/PromptBundles.tsx`)**
-
-In each bundle's `CardContent` area, render a `Badge` for each linked grant. Show the grant name and version number. Use a muted/outline style for draft versions and a colored style for published ones. Bundles with no linked grant show a subtle "Unlinked" label.
 
 ### Technical Details
-
-- **Files changed**: `src/hooks/usePromptBundles.ts`, `src/pages/admin/PromptBundles.tsx`
-- No database changes needed -- the `grant_versions.prompt_bundle_id` foreign key already exists
-- Badges will show format like: `AEA Ignite (v1)` with a secondary variant for published, outline for draft
-- Unlinked bundles show a small muted "No grant linked" text (not a badge) to keep it clean
+- **File**: `index.html` (single file change)
+- Remove the old `<link rel="icon" href="/favicon.ico">` line
+- Add both the favicon link and GA4 scripts into the `<head>` section
 
