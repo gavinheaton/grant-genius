@@ -1,90 +1,163 @@
 
-# Dashboard Card Layout Improvements
+# Report Export Quality Improvements
 
-## Overview
-Restructure the application cards on the Dashboard to prioritize the user's project/business name as the primary heading, with the grant name as supporting context. Also improve the call-to-action for opening applications.
+## Problem Summary
+
+The PDF and DOCX exports have three key issues:
+
+1. **Duplicate "References" Sections**: The report HTML from the AI pipeline already contains a references section, but the export functions add their own references sections, causing duplication.
+
+2. **PDF Lacks Design/Template Elements**: The current PDF export uses a basic print-to-browser approach rather than the configured PDF template with branding, fonts, colors, and cover page.
+
+3. **Citations/Hyperlinks Break in Exports**: Links are stripped to plain text in DOCX, and citation formatting is inconsistent between formats.
 
 ---
 
-## Current vs. Proposed Layout
+## Proposed Solution
 
-```text
-CURRENT LAYOUT:                      PROPOSED LAYOUT:
-┌─────────────────────────┐          ┌─────────────────────────┐
-│ AEA Ignite Grant  [🗑️]  │          │ My Research Project [🗑️]│  ← Clickable link
-│ My Research Project     │          │ AEA Ignite Grant        │  ← Muted badge/text
-│                         │          │                         │
-│ Last updated: 15 Jan    │          │ Last updated: 15 Jan    │
-│ [   Open Application  ] │          │ [     View Details    ] │  ← Clearer button
-└─────────────────────────┘          └─────────────────────────┘
+### Phase 1: Fix Duplicate References (High Impact, Low Effort)
+
+**Problem**: References appear twice because:
+- The AI's `report_html` includes a References section
+- Export functions manually append another References section from `all_sources`
+
+**Solution**: Detect if References section already exists in HTML before appending
+
+**Files to modify**:
+- `src/components/workspace/ReportsList.tsx` - Remove duplicate references in print PDF
+- `src/components/workspace/HtmlReportViewer.tsx` - Conditionally hide sources section if present in HTML
+- `supabase/functions/generate-docx/index.ts` - Check for existing references before adding
+
+**Detection logic**:
+```typescript
+const hasReferencesInHtml = (html: string): boolean => {
+  return /<h[12][^>]*>.*(?:References|Citations|Bibliography).*<\/h[12]>/i.test(html);
+};
+
+// Only append references if not already in the HTML
+if (!hasReferencesInHtml(sanitizedHtml) && sources.length > 0) {
+  // Add references section
+}
 ```
 
 ---
 
-## Changes
+### Phase 2: Upgrade PDF Generation to Use Templates (Medium Effort)
 
-### 1. Reverse Heading Hierarchy
-- **Primary heading (CardTitle)**: Show the application title (project/business name)
-- **Secondary text**: Show the grant name as muted text below
-- **Fallback**: If no title is set, display "Untitled Application" as the heading
+**Problem**: Current PDF uses browser print with minimal styling, ignoring the admin-configured PDF template settings (fonts, colors, logos, cover page).
 
-### 2. Make Heading Clickable
-- Wrap the primary heading in a `Link` component pointing to `/applications/{id}`
-- Add hover underline styling for clear affordance
+**Solution**: Switch from print-to-PDF to using the server-side `generate-pdf` edge function
 
-### 3. Improve the Button
-- Change button text from "Open Application" to "View Details" or "Continue"
-- Change variant from `ghost` to `outline` for better visibility
-- Keep the full-width layout for easy tapping on mobile
+**Option A: Server-Side PDFShift (Recommended)**
+- Modify `generate-pdf/index.ts` to use the actual `report_html` from the AI output instead of building from legacy fields
+- Client calls this function and downloads the resulting PDF
+
+**Option B: Client-Side html2canvas**
+- Use the existing `generatePdfClient.ts` with proper template integration
+- Requires preloading fonts and applying template styles before capture
+
+**Recommended Approach (Option A)**:
+
+1. Update `generate-pdf/index.ts` to:
+   - Extract `report_html` from `content_json` using same logic as viewer
+   - Inject template CSS (fonts, colors, margins) around the HTML
+   - Add cover page with logo and branding
+   - Pass to PDFShift for professional conversion
+
+2. Update `ReportsList.tsx` to:
+   - Call the server-side function instead of window.print()
+   - Download the returned PDF blob
+
+**Files to modify**:
+- `supabase/functions/generate-pdf/index.ts` - Major refactor to use report_html
+- `src/components/workspace/ReportsList.tsx` - Switch to server-side generation
+
+---
+
+### Phase 3: Fix Hyperlinks in DOCX (Medium Effort)
+
+**Problem**: The `parseInlineFormatting` function in `generate-docx/index.ts` extracts link text but discards the URL, creating plain text instead of clickable links.
+
+**Solution**: Use docx library's `ExternalHyperlink` component for proper link support
+
+**Current Code (broken)**:
+```typescript
+if (match[4]) {
+  // Link [text](url) - just extract text
+  runs.push(new TextRun({ text: match[4], size: STYLES.fontSize.body }));
+}
+```
+
+**Fixed Code**:
+```typescript
+import { ExternalHyperlink } from "docx";
+
+// In parseInlineFormatting, return a union type:
+if (match[4] && match[5]) { // match[5] is the URL
+  return new ExternalHyperlink({
+    link: match[5],
+    children: [
+      new TextRun({
+        text: match[4],
+        style: "Hyperlink",
+        size: STYLES.fontSize.body,
+      }),
+    ],
+  });
+}
+```
+
+**Files to modify**:
+- `supabase/functions/generate-docx/index.ts` - Update link parsing logic
+
+---
+
+### Phase 4: Improve Citation Formatting (Low-Medium Effort)
+
+**Problem**: In-text citations like `[1]` may not be properly hyperlinked to the references section.
+
+**Solution**: 
+1. For HTML/PDF: Citations should be `<a href="#ref-1">[1]</a>` linking to `<p id="ref-1">...</p>`
+2. For DOCX: Use Word's internal bookmark/hyperlink system
+
+This may require updates to the AI prompt to ensure citations are generated with proper anchor tags, or post-processing in the export functions.
+
+---
+
+## Implementation Priority
+
+| Phase | Impact | Effort | Recommendation |
+|-------|--------|--------|----------------|
+| 1. Fix Duplicate References | High | Low | Do First |
+| 2. PDF Template Support | High | Medium | Do Second |
+| 3. DOCX Hyperlinks | Medium | Medium | Do Third |
+| 4. Citation Anchoring | Medium | Medium | Do Fourth (Optional) |
 
 ---
 
 ## Technical Details
 
-**File to modify:** `src/pages/Dashboard.tsx`
+### Files Requiring Changes
 
-**Changes in the card render section (lines ~316-351):**
+**Frontend (TypeScript/React)**:
+- `src/components/workspace/ReportsList.tsx` - PDF generation flow
+- `src/components/workspace/HtmlReportViewer.tsx` - Conditional sources display
 
-```tsx
-<CardHeader className="pb-2">
-  <div className="flex items-start justify-between">
-    {/* Primary: Project/Business Name - now clickable */}
-    <Link 
-      to={`/applications/${app.id}`}
-      className="hover:underline"
-    >
-      <CardTitle className="text-lg">
-        {app.title || "Untitled Application"}
-      </CardTitle>
-    </Link>
-    <div className="flex items-center gap-2">
-      {/* Delete button + Status badge (unchanged) */}
-    </div>
-  </div>
-  {/* Secondary: Grant name as muted text */}
-  <p className="text-sm text-muted-foreground truncate">
-    {app.grant_version?.grant?.name || "Unknown Grant"}
-  </p>
-</CardHeader>
-<CardContent>
-  <CardDescription>
-    Last updated: {new Date(app.updated_at).toLocaleDateString()}
-  </CardDescription>
-  {/* Clearer button styling */}
-  <Button variant="outline" size="sm" className="mt-4 w-full" asChild>
-    <Link to={`/applications/${app.id}`}>
-      View Details
-    </Link>
-  </Button>
-</CardContent>
-```
+**Backend (Edge Functions)**:
+- `supabase/functions/generate-pdf/index.ts` - Major refactor to use report_html
+- `supabase/functions/generate-docx/index.ts` - Fix links, dedupe references
 
-**Also update the delete confirmation dialog** to reference the project title instead of grant name for consistency.
+**Shared Utilities**:
+- `src/lib/htmlReportUtils.ts` - Add references detection helper
 
 ---
 
 ## Summary
-- Project/business name becomes the prominent, clickable heading
-- Grant name moves to secondary supporting text
-- Button gets clearer styling with `outline` variant and "View Details" label
-- Maintains all existing functionality (delete, status badges, search filtering)
+
+The core fix involves:
+1. Adding detection logic to prevent duplicate references sections
+2. Upgrading PDF to use the server-side generator with template support
+3. Fixing the DOCX link parser to preserve hyperlinks
+4. Ensuring consistent citation formatting across all export formats
+
+This will result in professionally formatted exports that match the admin-configured branding and don't have duplicated content.
