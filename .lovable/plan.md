@@ -1,104 +1,85 @@
 
-# Restrict User Applications & Extend Admin Applications Overview
+# Fix Prompt Pipeline Editor - Empty SelectItem Value Error
 
-## Summary
+## Problem
 
-This plan addresses two related requirements:
-1. **Researchers** should only see their own applications on the Dashboard
-2. **Admins** should have visibility into all applications (not just manual queue) for monitoring volume and activity
+The Prompt Pipeline editor crashes when editing a step with the error:
+```
+A <Select.Item /> must have a value prop that is not an empty string
+```
 
-## Current State Analysis
+## Root Cause
 
-### RLS Policies (Database)
-The `applications` table already has proper RLS policies:
-- `Users can view own applications`: Only returns rows where `user_id = auth.uid()`
-- `Admins can view all applications`: Returns all rows for admin users
+In `src/components/admin/PromptStepEditor.tsx`, the `OUTPUT_TOKEN_OPTIONS` array contains an empty string value for the default option:
 
-**The database security is already correct** - users can only see their own data at the database level.
+```typescript
+const OUTPUT_TOKEN_OPTIONS = [
+  { value: "", label: "Default (8K)" },  // <-- Empty string causes crash
+  { value: "8192", label: "8K tokens" },
+  ...
+];
+```
 
-### Dashboard Code Issue
-The Dashboard (`src/pages/Dashboard.tsx`) doesn't apply any additional filtering because RLS handles it. However, if a user has an admin role, the "Admins can view all applications" RLS policy kicks in and they see ALL applications - including other users' applications on their personal "My Applications" page.
-
-### Current Admin Manual Queue
-The `/admin/manual-queue` page only shows applications with `manual_status IS NOT NULL`, which limits visibility to manually-processed grants only.
+Radix UI's `Select.Item` component requires all values to be non-empty strings. This restriction exists because an empty string is reserved for clearing the selection and showing the placeholder.
 
 ## Solution
 
-### Part 1: Filter Dashboard to User's Own Applications
+Change the empty string to a semantic value like `"default"`, then handle this value appropriately when saving:
 
-Even though admins CAN see all applications via RLS, the "My Applications" Dashboard should only show the logged-in user's own applications. This requires adding a client-side filter:
+### File: `src/components/admin/PromptStepEditor.tsx`
 
-**File**: `src/pages/Dashboard.tsx`
-- Add `.eq("user_id", session.user.id)` to the Supabase query
-- This ensures admins see only their own work on the Dashboard, while still having full visibility in the Admin Console
+**Change 1**: Update the `OUTPUT_TOKEN_OPTIONS` constant (line 33)
+- Before: `{ value: "", label: "Default (8K)" }`
+- After: `{ value: "default", label: "Default (8K)" }`
 
-### Part 2: Extend Admin Manual Queue to "All Applications"
+**Change 2**: Update the initial state (line 86-87)
+- When `step.max_output_tokens` is null/undefined, use `"default"` instead of `""`
 
-Rename and expand the Manual Queue page to become a comprehensive "Applications" overview:
-
-**File**: `src/pages/admin/ManualQueue.tsx` → Extend with tabbed interface
-- **Tab 1: All Applications** - Shows all applications across the platform with status, user, grant, and date info
-- **Tab 2: Manual Queue** - Existing functionality for manual submissions
-
-**Add new summary cards**:
-- Total Applications
-- By Status breakdown (Draft / In Progress / Ready / Failed)
-- Recent activity trends
-
-**File**: `src/components/admin/AdminSidebar.tsx`
-- Rename "Manual Queue" to "Applications" for clarity
+**Change 3**: Update the save handler (lines 147-164)
+- When `maxOutputTokens === "default"`, save as `null` (not as `0` or any numeric value)
 
 ## Technical Details
 
-### Dashboard.tsx Changes
+| Location | Change |
+|----------|--------|
+| Line 33 | Change `value: ""` to `value: "default"` |
+| Line 86-87 | Change `""` fallback to `"default"` |
+| Line 156 | Check for `"default"` instead of falsy value |
+| Line 194 | Same check in `handleApplyRegenerated` |
+
+## Code Changes
+
 ```typescript
-// Current (line ~97-108)
-const { data, error } = await supabase
-  .from("applications")
-  .select(`...`)
-  .order("updated_at", { ascending: false });
+// Line 33: Fix the options array
+const OUTPUT_TOKEN_OPTIONS = [
+  { value: "default", label: "Default (8K)" },  // Changed from ""
+  { value: "8192", label: "8K tokens" },
+  // ... rest unchanged
+];
 
-// Updated - add user filter
-const { data, error } = await supabase
-  .from("applications")
-  .select(`...`)
-  .eq("user_id", session.user.id)  // <-- Add this filter
-  .order("updated_at", { ascending: false });
+// Line 86-87: Fix initial state
+const [maxOutputTokens, setMaxOutputTokens] = useState<string>(
+  step.max_output_tokens ? String(step.max_output_tokens) : "default"  // Changed from ""
+);
+
+// Line 135: Fix effect reset
+setMaxOutputTokens(step.max_output_tokens ? String(step.max_output_tokens) : "default");
+
+// Line 156: Fix save handler
+max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
+
+// Line 194: Fix apply regenerated handler
+max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
 ```
-
-### ManualQueue.tsx Changes
-1. Add Tabs component with "All Applications" and "Manual Queue" tabs
-2. Create a new query for all applications:
-```typescript
-const { data: allApplications } = useQuery({
-  queryKey: ["admin-all-applications"],
-  queryFn: async () => {
-    const { data, error } = await supabase
-      .from("applications")
-      .select(`
-        id, title, status, created_at, updated_at,
-        grant_version:grant_versions!inner(grant:grants!inner(id, name)),
-        profile:profiles!applications_user_id_profiles_fkey(email, full_name)
-      `)
-      .order("updated_at", { ascending: false });
-    if (error) throw error;
-    return data;
-  },
-});
-```
-3. Add summary cards showing status breakdown
-4. Add a table displaying all applications with filtering
-
-### Sidebar Update
-Change the menu item label from "Manual Queue" to "Applications" to reflect the expanded scope.
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/pages/Dashboard.tsx` | Add `.eq("user_id", session.user.id)` filter |
-| `src/pages/admin/ManualQueue.tsx` | Add tabs, "All Applications" view, summary cards |
-| `src/components/admin/AdminSidebar.tsx` | Rename "Manual Queue" to "Applications" |
+| `src/components/admin/PromptStepEditor.tsx` | Replace empty string values with "default" |
 
-## No Database Changes Required
-The existing RLS policies are correctly configured. This is a UI/UX change only.
+## Impact
+
+- No database changes required
+- No changes to other components
+- The fix is isolated to the step editor component
