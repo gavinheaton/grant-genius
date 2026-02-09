@@ -538,6 +538,19 @@ export default function ApplicationWorkspace() {
           </div>
         )}
 
+        {/* In Review Status Card */}
+        {!isLoadingReports && reports.length > 0 && 
+          (reports[0] as any).review_status && 
+          ["pending_review", "in_review"].includes((reports[0] as any).review_status) && (
+          <div className="flex flex-col items-center gap-2 p-6 rounded-lg border bg-muted/50">
+            <Clock className="h-8 w-8 text-muted-foreground" />
+            <h3 className="font-semibold">Report Under Review</h3>
+            <p className="text-sm text-muted-foreground text-center max-w-md">
+              Your report is currently being reviewed by our team. You'll receive an email once it's ready.
+            </p>
+          </div>
+        )}
+
         {/* Reports List */}
         <ReportsList
           reports={reports}

@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useLocation, Link } from "react-router-dom";
 import {
   FileText,
@@ -31,6 +32,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 
@@ -75,6 +77,27 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
   const collapsed = state === "collapsed";
   const location = useLocation();
   const navigate = useNavigate();
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+
+  // Fetch pending review count for the current admin
+  useEffect(() => {
+    const fetchPendingReviews = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) return;
+
+      const { count, error } = await supabase
+        .from("report_reviews")
+        .select("*", { count: "exact", head: true })
+        .eq("reviewer_user_id", session.user.id)
+        .eq("status", "pending");
+
+      if (!error && count !== null) {
+        setPendingReviewCount(count);
+      }
+    };
+
+    fetchPendingReviews();
+  }, []);
 
   const isActive = (path: string) => {
     if (path === "/admin") {
@@ -212,7 +235,16 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
                       activeClassName="bg-accent text-accent-foreground"
                     >
                       <item.icon className="h-4 w-4" />
-                      {!collapsed && <span>{item.title}</span>}
+                      {!collapsed && (
+                        <span className="flex items-center gap-2">
+                          {item.title}
+                          {item.title === "Reviews" && pendingReviewCount > 0 && (
+                            <Badge variant="destructive" className="h-5 min-w-5 px-1.5 text-[10px] leading-none">
+                              {pendingReviewCount}
+                            </Badge>
+                          )}
+                        </span>
+                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
