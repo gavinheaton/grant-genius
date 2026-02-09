@@ -4,9 +4,9 @@ import { useToast } from "@/hooks/use-toast";
 
 // Stripe price IDs (GST-inclusive amounts charged by Stripe)
 // Single Report: $45 + GST = $49.50 AUD
-export const SINGLE_REPORT_PRICE_ID = "price_SINGLE_REPORT_NEW"; // TODO: Replace with actual Stripe price ID
+export const SINGLE_REPORT_PRICE_ID = "price_1SysnyAGMXEI4spPmb4Eez7k";
 // Report 10-Pack: $400 + GST = $440 AUD
-export const BUNDLE_10_PRICE_ID = "price_BUNDLE_10_NEW"; // TODO: Replace with actual Stripe price ID
+export const BUNDLE_10_PRICE_ID = "price_1SysqIAGMXEI4spPuoAMOZTm";
 
 export type ProductKey = "REPORT_ONE_OFF" | "REPORT_BUNDLE_10";
 
