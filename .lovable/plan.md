@@ -1,60 +1,57 @@
 
 
-# Make Public Article URL Optional
+# Fix Backend Validation for Optional Public Article URL
 
-## Overview
+## Problem
 
-This change removes the "required" status from the Public Article URL field in the grant application form, making only the 100-word Summary a required input.
+The frontend now allows submitting reports without a Public Article URL, but the `generate-report` Edge Function still requires it at line 393:
+
+```typescript
+if (!publicArticleUrl || !summary) {
+  return new Response(
+    JSON.stringify({ error: "Article URL and summary are required" }),
+    ...
+  );
+}
+```
+
+This causes a 400 error when a user tries to generate a report without providing an article URL.
 
 ---
 
-## Changes Required
+## Solution
 
-### 1. Update Form Label (UI)
+Update the backend validation to only require the `summary` field, matching the frontend change.
 
-**File:** `src/components/workspace/ReportInputs.tsx`
+---
 
-Remove the red asterisk from the Public Article URL label to indicate it's now optional.
+## Change Required
+
+**File:** `supabase/functions/generate-report/index.ts`
+
+**Location:** Lines 393-398
 
 | Before | After |
 |--------|-------|
-| `Public Article URL *` | `Public Article URL` |
-
-Also update the helper text to clarify the field is optional.
-
----
-
-### 2. Update Validation Logic
-
-**File:** `src/pages/ApplicationWorkspace.tsx`
-
-Change the `inputsComplete` check to only require the summary field.
-
-| Before | After |
-|--------|-------|
-| `publicArticleUrl.trim() !== "" && summary.trim() !== ""` | `summary.trim() !== ""` |
+| `if (!publicArticleUrl \|\| !summary)` | `if (!summary)` |
+| `"Article URL and summary are required"` | `"Summary is required"` |
 
 ---
 
-## Technical Details
+## Additional Consideration
 
-### Files Modified
+The pipeline may also need to handle empty `publicArticleUrl` gracefully. Looking at the code:
 
-| File | Change |
-|------|--------|
-| `src/components/workspace/ReportInputs.tsx` | Remove `*` from label, update helper text |
-| `src/pages/ApplicationWorkspace.tsx` | Update `inputsComplete` validation (line 282) |
+1. **Line 390:** `const publicArticleUrl = inputs.publicArticleUrl as string;` - This will be `undefined` or empty string
+2. **Firecrawl steps:** The external worker uses `publicArticleUrl` for article scraping - it should skip this step if no URL is provided
 
-### Impact on Pipeline
-
-The AI pipeline already handles missing `publicArticleUrl` gracefully:
-- The `firecrawl_scrape` step that uses `{{publicArticleUrl}}` will receive an empty string
-- Prompts should already handle "if provided" scenarios per the minimal input philosophy
-- The `articleContent` variable will be empty if no URL is provided
+The worker likely already handles this, but we should verify the behavior when `articleContent` is empty throughout the pipeline prompts.
 
 ---
 
 ## Summary
 
-Two simple changes make the Public Article URL optional while keeping the 100-word Summary as the only required input for researchers.
+| File | Change |
+|------|--------|
+| `supabase/functions/generate-report/index.ts` | Update validation to only require `summary` (lines 393-398) |
 
