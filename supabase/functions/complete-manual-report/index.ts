@@ -7,6 +7,67 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+// Extract just the Executive Summary section from report HTML
+function extractExecutiveSummary(html: string): string {
+  if (!html) return "";
+
+  const startIndex = html.search(/<h2[^>]*>[^<]*(?:Executive\s*)?Summary[^<]*<\/h2>/i);
+  if (startIndex === -1) return "";
+
+  const afterHeading = html.slice(startIndex);
+  const headingMatch = afterHeading.match(/<h2[^>]*>/i);
+  if (!headingMatch) return "";
+
+  const afterContent = afterHeading.slice(headingMatch[0].length + (headingMatch.index || 0));
+  const nextH2 = afterContent.search(/<h2[^>]*>/i);
+
+  let summaryContent: string;
+  if (nextH2 === -1) {
+    summaryContent = afterHeading;
+  } else {
+    summaryContent = afterHeading.slice(0, nextH2 + headingMatch[0].length + (headingMatch.index || 0));
+  }
+
+  return summaryContent.trim();
+}
+
+// Sanitize HTML for email compatibility
+function sanitizeForEmail(html: string): string {
+  if (!html) return "";
+  let sanitized = html;
+  sanitized = sanitized.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+  sanitized = sanitized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+  sanitized = sanitized.replace(/<img([^>]*)>/gi, '<img$1 style="max-width: 100%; height: auto; display: block;">');
+  sanitized = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333;">${sanitized}</div>`;
+  return sanitized;
+}
+
+// Replace template variables with actual values
+function substituteVariables(content: string, variables: Record<string, string>): string {
+  let result = content;
+  for (const [key, value] of Object.entries(variables)) {
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+  }
+  return result;
+}
+
+// Hardcoded fallback template
+function getFallbackHtml(userName: string, grantName: string, reportLink: string): string {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="text-align: center; margin-bottom: 30px;"><h1 style="color: #4F46E5;">🎓 Grant Genius</h1></div>
+  <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; border-radius: 12px; margin-bottom: 30px;">
+    <h2 style="color: white; margin: 0 0 10px 0;">Your Report is Ready!</h2>
+    <p style="color: rgba(255,255,255,0.9); margin: 0;">Hi ${userName},</p>
+  </div>
+  <p>Great news! Your commercialisation research report for <strong>${grantName}</strong> is now complete.</p>
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="${reportLink}" style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block;">View Your Report</a>
+  </div>
+  <p style="color: #666; font-size: 14px;">Link: <a href="${reportLink}" style="color: #4F46E5;">${reportLink}</a></p>
+</body></html>`;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -293,26 +354,33 @@ ${report_html}
         .eq("id", reportId);
     }
 
-    // Send email to user with attachments
+    // Send email to user with attachments using REPORT_READY template
     if (brevoApiKey && userProfile.email) {
       const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
-      
-      const emailHtml = `
-        <h2>Your Report is Ready!</h2>
-        <p>Hi ${userProfile.full_name || "there"},</p>
-        <p>Great news! Your commercialisation research report for <strong>${application.title || "your application"}</strong> (${grant?.name}) is now complete.</p>
-        <p>You can view your report in your dashboard:</p>
-        <p>
-          <a href="${appUrl}/applications/${application_id}" 
-             style="background: #2563eb; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
-            View Your Report
-          </a>
-        </p>
-        <p>The PDF and DOCX versions are also attached to this email for your convenience.</p>
-        <p>Best regards,<br/>The Grant Genius Team</p>
-      `;
+      const reportLink = `${appUrl}/applications/${application_id}`;
+      const userName = userProfile.full_name || userProfile.email.split("@")[0];
+      const grantName = grant?.name || "Your Research";
 
-      const attachments = [];
+      // Sanitize and extract report content for shortcodes
+      const sanitizedReportHtml = sanitizeForEmail(report_html);
+      const sanitizedSummary = sanitizeForEmail(extractExecutiveSummary(report_html));
+
+      const templateVariables: Record<string, string> = {
+        user_name: userName,
+        grant_name: grantName,
+        report_link: reportLink,
+        report_html: sanitizedReportHtml,
+        report_summary: sanitizedSummary,
+      };
+
+      // Fetch REPORT_READY template from database
+      const { data: emailTemplate } = await serviceClient
+        .from("email_templates")
+        .select("brevo_template_id, subject, html_content, sender_name, sender_email")
+        .eq("template_key", "REPORT_READY")
+        .maybeSingle();
+
+      const attachments: Array<{ content: string; name: string }> = [];
       if (pdfBase64) {
         attachments.push({
           content: pdfBase64,
@@ -326,41 +394,112 @@ ${report_html}
         });
       }
 
-      const emailPayload: any = {
-        sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
-        to: [{ email: userProfile.email, name: userProfile.full_name || undefined }],
-        subject: `Your Report is Ready: ${application.title || grant?.name}`,
-        htmlContent: emailHtml,
-      };
+      let emailSent = false;
+      let brevoMessageId: string | null = null;
+      let subjectUsed = `Your Report is Ready: ${application.title || grantName}`;
 
-      if (attachments.length > 0) {
-        emailPayload.attachment = attachments;
+      // Priority 1: Custom html_content from DB
+      if (emailTemplate?.html_content) {
+        const htmlContent = substituteVariables(emailTemplate.html_content, templateVariables);
+        const subject = emailTemplate.subject
+          ? substituteVariables(emailTemplate.subject, templateVariables)
+          : subjectUsed;
+        subjectUsed = subject;
+
+        const senderName = emailTemplate.sender_name || "Grant Genius";
+        const senderEmail = emailTemplate.sender_email || "grantgenius@disruptorsco.com";
+
+        console.log("Manual report: using custom HTML template from database");
+
+        const emailPayload: Record<string, unknown> = {
+          sender: { name: senderName, email: senderEmail },
+          to: [{ email: userProfile.email, name: userName }],
+          subject: subject,
+          htmlContent: htmlContent,
+        };
+        if (attachments.length > 0) emailPayload.attachment = attachments;
+
+        const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify(emailPayload),
+        });
+
+        if (emailResponse.ok) {
+          const data = await emailResponse.json();
+          brevoMessageId = data.messageId;
+          emailSent = true;
+        } else {
+          console.error("Brevo custom template failed:", await emailResponse.text());
+        }
       }
 
-      const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "api-key": brevoApiKey,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(emailPayload),
-      });
+      // Priority 2: Brevo template ID
+      if (!emailSent && emailTemplate?.brevo_template_id && emailTemplate.brevo_template_id > 0) {
+        console.log("Manual report: using Brevo template ID:", emailTemplate.brevo_template_id);
 
-      if (!emailResponse.ok) {
-        console.error("Failed to send user email:", await emailResponse.text());
+        const emailPayload: Record<string, unknown> = {
+          templateId: emailTemplate.brevo_template_id,
+          to: [{ email: userProfile.email, name: userName }],
+          params: templateVariables,
+        };
+        if (attachments.length > 0) emailPayload.attachment = attachments;
+
+        const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify(emailPayload),
+        });
+
+        if (emailResponse.ok) {
+          const data = await emailResponse.json();
+          brevoMessageId = data.messageId;
+          emailSent = true;
+        } else {
+          console.error("Brevo template email failed:", await emailResponse.text());
+        }
+      }
+
+      // Priority 3: Hardcoded fallback
+      if (!emailSent) {
+        console.log("Manual report: using hardcoded fallback template");
+
+        const fallbackHtml = getFallbackHtml(userName, grantName, reportLink);
+        const emailPayload: Record<string, unknown> = {
+          sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+          to: [{ email: userProfile.email, name: userName }],
+          subject: subjectUsed,
+          htmlContent: fallbackHtml,
+        };
+        if (attachments.length > 0) emailPayload.attachment = attachments;
+
+        const emailResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify(emailPayload),
+        });
+
+        if (emailResponse.ok) {
+          const data = await emailResponse.json();
+          brevoMessageId = data.messageId;
+          emailSent = true;
+        } else {
+          console.error("Brevo fallback email failed:", await emailResponse.text());
+        }
       }
 
       // Log the email
       await serviceClient.from("email_outbox").insert({
         user_id: application.user_id,
         to_email: userProfile.email,
-        template_key: "MANUAL_REPORT_READY",
-        subject: `Your Report is Ready: ${application.title || grant?.name}`,
-        status: emailResponse.ok ? "sent" : "failed",
-        sent_at: emailResponse.ok ? new Date().toISOString() : null,
+        template_key: "REPORT_READY",
+        subject: subjectUsed,
+        brevo_message_id: brevoMessageId,
+        status: emailSent ? "sent" : "failed",
+        sent_at: emailSent ? new Date().toISOString() : null,
         variables_json: {
-          grant_name: grant?.name,
-          project_name: application.title,
+          ...templateVariables,
+          report_id: reportId,
           has_pdf: !!pdfBase64,
           has_docx: !!docxBase64,
         },
