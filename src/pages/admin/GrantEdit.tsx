@@ -500,6 +500,10 @@ export default function GrantEdit() {
           </TabsTrigger>
           <TabsTrigger value="inputs">Required Inputs</TabsTrigger>
           <TabsTrigger value="rubric">Rubric</TabsTrigger>
+          <TabsTrigger value="workflow">
+            <Users className="h-4 w-4 mr-1" />
+            Workflow
+          </TabsTrigger>
           {isSuperAdmin && (
             <TabsTrigger value="advanced">
               <Settings2 className="h-4 w-4 mr-1" />
