@@ -133,7 +133,7 @@ export function InlinePipelineEditor({
   className,
   grantContext,
 }: InlinePipelineEditorProps) {
-  const { isSuperAdmin } = useAdminAuth();
+  const { isSuperAdmin, isAdmin } = useAdminAuth();
   const { data: bundle, isLoading } = usePromptBundle(bundleId);
   const updateBundle = useUpdatePromptBundle();
   const updateStep = useUpdatePromptStep();
@@ -295,7 +295,7 @@ export function InlinePipelineEditor({
     );
   }
 
-  const canEdit = isSuperAdmin;
+  const canEdit = isAdmin;
 
   return (
     <div className={`space-y-4 ${className}`}>

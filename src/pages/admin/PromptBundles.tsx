@@ -55,7 +55,7 @@ const formatBundleForExport = (bundle: PromptBundleWithSteps): string => {
 };
 
 export default function PromptBundles() {
-  const { isSuperAdmin } = useAdminAuth();
+  const { isSuperAdmin, isAdmin } = useAdminAuth();
   const { data: bundles, isLoading } = usePromptBundles();
   const createBundle = useCreatePromptBundle();
   const deleteBundle = useDeletePromptBundle();
@@ -157,7 +157,7 @@ export default function PromptBundles() {
             Manage the prompts used in the 10-step report generation pipeline.
           </p>
         </div>
-        {isSuperAdmin && (
+        {isAdmin && (
           <Button onClick={() => setCreateDialogOpen(true)}>
             <Plus className="h-4 w-4 mr-2" />
             New Bundle
@@ -197,7 +197,7 @@ export default function PromptBundles() {
                         <FileDown className="h-4 w-4 mr-1" />
                         Export
                       </Button>
-                      {isSuperAdmin && (
+                      {isAdmin && (
                         <>
                           <Button
                             variant="outline"
