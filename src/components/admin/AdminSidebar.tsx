@@ -235,7 +235,16 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
                       activeClassName="bg-accent text-accent-foreground"
                     >
                       <item.icon className="h-4 w-4" />
-                      {!collapsed && <span>{item.title}</span>}
+                      {!collapsed && (
+                        <span className="flex items-center gap-2">
+                          {item.title}
+                          {item.title === "Reviews" && pendingReviewCount > 0 && (
+                            <Badge variant="destructive" className="h-5 min-w-5 px-1.5 text-[10px] leading-none">
+                              {pendingReviewCount}
+                            </Badge>
+                          )}
+                        </span>
+                      )}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
