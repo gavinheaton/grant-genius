@@ -133,7 +133,7 @@ export function InlinePipelineEditor({
   className,
   grantContext,
 }: InlinePipelineEditorProps) {
-  const { isSuperAdmin } = useAdminAuth();
+  const { isSuperAdmin, isAdmin } = useAdminAuth();
   const { data: bundle, isLoading } = usePromptBundle(bundleId);
   const updateBundle = useUpdatePromptBundle();
   const updateStep = useUpdatePromptStep();
