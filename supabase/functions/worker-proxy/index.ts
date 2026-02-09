@@ -1143,10 +1143,29 @@ async function handleFirecrawlSearch(params: Record<string, unknown>) {
 }
 
 async function handleFirecrawlScrape(params: Record<string, unknown>) {
-  const { url, formats } = params;
+  const { url, formats, fallback_content } = params;
 
-  if (!url || typeof url !== "string") {
-    return errorResponse("url is required and must be a string");
+  // If no URL provided but fallback content exists, use summary as article content
+  if (!url || (typeof url === "string" && url.trim() === "")) {
+    if (fallback_content && typeof fallback_content === "string" && fallback_content.trim()) {
+      console.log(`[FIRECRAWL] No URL provided, using fallback content (${fallback_content.length} chars)`);
+      return jsonResponse({
+        success: true,
+        url: "",
+        title: "Researcher Summary",
+        description: "Content derived from researcher-provided summary",
+        content: fallback_content,
+        metadata: {},
+        source: {
+          source_id: "SUMMARY-1",
+          url: "",
+          title: "Researcher-provided summary",
+          confidence: "high",
+        },
+        used_fallback: true,
+      });
+    }
+    return errorResponse("url is required (or provide fallback_content)");
   }
 
   const apiKey = Deno.env.get("FIRECRAWL_API_KEY");
