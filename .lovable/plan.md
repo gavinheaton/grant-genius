@@ -136,4 +136,3 @@ After implementation, admins can create templates like:
 3. **Images**: External images (from sources like Google, etc.) will display if they're absolute URLs. Self-hosted images may need adjustment.
 
 4. **Recommendation**: The admin UI will highlight `{{report_summary}}` as the recommended option for emails, with a warning on `{{report_html}}` about size limits.
-

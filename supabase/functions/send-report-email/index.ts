@@ -23,6 +23,117 @@ interface EmailTemplate {
   sender_email: string | null;
 }
 
+// deno-lint-ignore no-explicit-any
+interface ReportContentJson {
+  manual_report_html?: string;
+  report_html?: string;
+  assembledReport?: {
+    report_html?: string;
+  };
+  [key: string]: any;
+}
+
+// Extract the full report HTML from content_json
+function extractReportHtml(contentJson: ReportContentJson | null, manualReportHtml: string | null): string {
+  // Priority 1: Manual report HTML
+  if (manualReportHtml) {
+    return manualReportHtml;
+  }
+
+  if (!contentJson) return "";
+
+  // Priority 2: Check for report_html at root
+  if (typeof contentJson.report_html === "string") {
+    return contentJson.report_html;
+  }
+
+  // Priority 3: Check assembledReport.report_html
+  if (contentJson.assembledReport?.report_html) {
+    return contentJson.assembledReport.report_html;
+  }
+
+  // Priority 4: Check step-based keys
+  const stepKeys = ["finalize_report_html", "assemble_sections_html", "finalize_citations"];
+  for (const key of stepKeys) {
+    const stepData = contentJson[key];
+    if (stepData) {
+      // Handle string or object with report_html
+      if (typeof stepData === "string") {
+        try {
+          const parsed = JSON.parse(stepData);
+          if (parsed.report_html) return parsed.report_html;
+        } catch {
+          // Not JSON, could be raw HTML
+          if (stepData.includes("<")) return stepData;
+        }
+      } else if (typeof stepData === "object" && stepData.report_html) {
+        return stepData.report_html;
+      }
+    }
+  }
+
+  return "";
+}
+
+// Extract just the Executive Summary section from the report HTML
+function extractExecutiveSummary(html: string): string {
+  if (!html) return "";
+
+  // Find the Executive Summary section (case-insensitive)
+  const summaryMatch = html.match(/<h2[^>]*>([^<]*Executive\s*Summary[^<]*)<\/h2>/i);
+  if (!summaryMatch) {
+    // Try alternative patterns
+    const altMatch = html.match(/<h2[^>]*>([^<]*Summary[^<]*)<\/h2>/i);
+    if (!altMatch) return "";
+  }
+
+  // Get the position of the Executive Summary heading
+  const startIndex = html.search(/<h2[^>]*>[^<]*(?:Executive\s*)?Summary[^<]*<\/h2>/i);
+  if (startIndex === -1) return "";
+
+  // Find the next h2 after the summary section
+  const afterHeading = html.slice(startIndex);
+  const headingMatch = afterHeading.match(/<h2[^>]*>/i);
+  if (!headingMatch) return "";
+
+  const afterContent = afterHeading.slice(headingMatch[0].length + (headingMatch.index || 0));
+  const nextH2 = afterContent.search(/<h2[^>]*>/i);
+
+  // Extract content from start of heading to next h2 (or end)
+  let summaryContent: string;
+  if (nextH2 === -1) {
+    summaryContent = afterHeading;
+  } else {
+    summaryContent = afterHeading.slice(0, nextH2 + headingMatch[0].length + (headingMatch.index || 0));
+  }
+
+  return summaryContent.trim();
+}
+
+// Sanitize HTML for email compatibility
+function sanitizeForEmail(html: string): string {
+  if (!html) return "";
+
+  let sanitized = html;
+
+  // Remove <style> blocks
+  sanitized = sanitized.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+
+  // Remove <script> blocks
+  sanitized = sanitized.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+
+  // Add inline styles to images for email compatibility
+  sanitized = sanitized.replace(
+    /<img([^>]*)>/gi,
+    '<img$1 style="max-width: 100%; height: auto; display: block;">'
+  );
+
+  // Wrap in a container with safe email styles
+  sanitized = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333;">${sanitized}</div>`;
+
+  return sanitized;
+}
+
 // Replace template variables with actual values
 function substituteVariables(
   content: string,
@@ -152,11 +263,34 @@ serve(async (req) => {
       Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
     const reportLink = `${appUrl}/applications/${applicationId}`;
 
+    // Fetch the report to extract HTML content for shortcodes
+    let reportHtml = "";
+    let reportSummary = "";
+    
+    if (reportId) {
+      const { data: report } = await supabase
+        .from("reports")
+        .select("content_json, manual_report_html")
+        .eq("id", reportId)
+        .maybeSingle();
+
+      if (report) {
+        const fullHtml = extractReportHtml(
+          report.content_json as ReportContentJson,
+          report.manual_report_html
+        );
+        reportHtml = sanitizeForEmail(fullHtml);
+        reportSummary = sanitizeForEmail(extractExecutiveSummary(fullHtml));
+      }
+    }
+
     // Template variables for substitution
     const templateVariables = {
       user_name: userName,
       grant_name: grantName,
       report_link: reportLink,
+      report_html: reportHtml,
+      report_summary: reportSummary,
     };
 
     // Get the template from email_templates table

@@ -163,6 +163,19 @@ export default function EmailTemplates() {
     html = html.replace(/\{\{user_name\}\}/g, "John Smith");
     html = html.replace(/\{\{grant_name\}\}/g, "AEA Ignite");
     html = html.replace(/\{\{report_link\}\}/g, "https://grantgenius.disruptorsco.com/applications/123");
+    html = html.replace(
+      /\{\{report_summary\}\}/g,
+      `<div style="border: 2px dashed #6b7280; padding: 16px; border-radius: 8px; background: #f9fafb; margin: 8px 0;">
+        <p style="color: #6b7280; font-style: italic; margin: 0;">📋 Executive Summary content will appear here (~2-5KB)</p>
+      </div>`
+    );
+    html = html.replace(
+      /\{\{report_html\}\}/g,
+      `<div style="border: 2px dashed #f59e0b; padding: 16px; border-radius: 8px; background: #fffbeb; margin: 8px 0;">
+        <p style="color: #b45309; font-style: italic; margin: 0;">📄 Full report content will appear here (50-80KB)</p>
+        <p style="color: #92400e; font-size: 12px; margin: 8px 0 0 0;">⚠️ Note: Gmail may clip emails larger than 102KB</p>
+      </div>`
+    );
     return html;
   };
 
@@ -172,6 +185,8 @@ export default function EmailTemplates() {
         ["user_name", "Recipient's name"],
         ["grant_name", "Name of the grant"],
         ["report_link", "URL to view the report"],
+        ["report_summary", "Executive summary section (recommended, ~2-5KB)"],
+        ["report_html", "Full report content (⚠️ 50-80KB, Gmail clips >102KB)"],
       ];
 
   return (
