@@ -1,163 +1,208 @@
 
-# Report Export Quality Improvements
+# Simple CMS for Static Pages
 
-## Problem Summary
-
-The PDF and DOCX exports have three key issues:
-
-1. **Duplicate "References" Sections**: The report HTML from the AI pipeline already contains a references section, but the export functions add their own references sections, causing duplication.
-
-2. **PDF Lacks Design/Template Elements**: The current PDF export uses a basic print-to-browser approach rather than the configured PDF template with branding, fonts, colors, and cover page.
-
-3. **Citations/Hyperlinks Break in Exports**: Links are stripped to plain text in DOCX, and citation formatting is inconsistent between formats.
+## Overview
+Create a lightweight content management system that allows admins to create and manage static pages (privacy policy, disclaimer, terms of service, etc.) with control over visibility in navigation and authentication requirements.
 
 ---
 
-## Proposed Solution
+## Features Summary
 
-### Phase 1: Fix Duplicate References (High Impact, Low Effort)
+| Feature | Description |
+|---------|-------------|
+| **Page Title** | Display title shown in navigation and as page heading |
+| **Rich Text Body** | WYSIWYG-style content editor for page content |
+| **Show in Menu** | Toggle whether page link appears in the header navigation |
+| **Menu Position** | Control ordering of menu items (optional enhancement) |
+| **Visibility** | Public (anyone) or Authenticated (logged-in users only) |
+| **URL Slug** | Auto-generated from title, editable for SEO-friendly URLs |
+| **Status** | Draft/Published to allow editing before going live |
 
-**Problem**: References appear twice because:
-- The AI's `report_html` includes a References section
-- Export functions manually append another References section from `all_sources`
+---
 
-**Solution**: Detect if References section already exists in HTML before appending
+## Additional Suggestions
 
-**Files to modify**:
-- `src/components/workspace/ReportsList.tsx` - Remove duplicate references in print PDF
-- `src/components/workspace/HtmlReportViewer.tsx` - Conditionally hide sources section if present in HTML
-- `supabase/functions/generate-docx/index.ts` - Check for existing references before adding
+Based on your requirements, here are a few enhancements to consider:
 
-**Detection logic**:
-```typescript
-const hasReferencesInHtml = (html: string): boolean => {
-  return /<h[12][^>]*>.*(?:References|Citations|Bibliography).*<\/h[12]>/i.test(html);
-};
+1. **URL Slug Field** - Auto-generate from title (e.g., "Privacy Policy" → `/privacy-policy`) but allow manual override for SEO control
 
-// Only append references if not already in the HTML
-if (!hasReferencesInHtml(sanitizedHtml) && sources.length > 0) {
-  // Add references section
-}
+2. **Draft/Published Status** - Save pages as drafts before publishing, preventing incomplete content from appearing
+
+3. **Menu Order** - Numeric field to control the order of menu items when multiple pages are shown in the header
+
+4. **Footer Links** - Option to show the page link in the footer (like the existing Privacy/Terms links) in addition to or instead of the header
+
+5. **Meta Description** - For SEO, allow setting a meta description for each page
+
+---
+
+## Data Model
+
+### New Table: `cms_pages`
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ cms_pages                                                    │
+├─────────────────────────────────────────────────────────────┤
+│ id              UUID PRIMARY KEY                            │
+│ title           TEXT NOT NULL (page title)                  │
+│ slug            TEXT UNIQUE NOT NULL (URL path)             │
+│ content_html    TEXT (rich text content)                    │
+│ is_published    BOOLEAN DEFAULT false                       │
+│ show_in_menu    BOOLEAN DEFAULT false                       │
+│ show_in_footer  BOOLEAN DEFAULT false                       │
+│ menu_order      INTEGER DEFAULT 0                           │
+│ requires_auth   BOOLEAN DEFAULT false                       │
+│ meta_description TEXT (optional SEO)                        │
+│ created_at      TIMESTAMPTZ                                 │
+│ updated_at      TIMESTAMPTZ                                 │
+│ created_by      UUID (admin who created)                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### RLS Policies
+
+- **Public SELECT**: Allow anyone to read published pages that don't require auth
+- **Authenticated SELECT**: Allow logged-in users to read published pages requiring auth
+- **Admin ALL**: Admins can create, update, delete all pages
+
+---
+
+## Architecture
+
+```text
+┌──────────────────────────────────────────────────────────────────────┐
+│                           ADMIN CONSOLE                              │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  /admin/pages - Page list with CRUD                            │  │
+│  │  - Create/Edit dialog with rich text editor                    │  │
+│  │  - Toggle visibility, menu position, auth requirement          │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                          DATABASE                                     │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  cms_pages table with RLS policies                             │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                         PUBLIC SITE                                   │
+│  ┌─────────────────────┐    ┌─────────────────────────────────────┐  │
+│  │  Header.tsx         │    │  /page/:slug - Dynamic page render  │  │
+│  │  - Fetches menu     │    │  - Renders content_html             │  │
+│  │    pages            │    │  - Handles auth redirect if needed  │  │
+│  └─────────────────────┘    └─────────────────────────────────────┘  │
+│  ┌─────────────────────┐                                             │
+│  │  Footer.tsx         │                                             │
+│  │  - Fetches footer   │                                             │
+│  │    pages            │                                             │
+│  └─────────────────────┘                                             │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### Phase 2: Upgrade PDF Generation to Use Templates (Medium Effort)
+## Implementation Plan
 
-**Problem**: Current PDF uses browser print with minimal styling, ignoring the admin-configured PDF template settings (fonts, colors, logos, cover page).
+### Phase 1: Database Setup
+1. Create `cms_pages` table with migration
+2. Add RLS policies for public/auth/admin access
+3. Create index on `slug` for fast lookups
 
-**Solution**: Switch from print-to-PDF to using the server-side `generate-pdf` edge function
+### Phase 2: Admin Interface
+1. Add "Pages" link to admin sidebar under a new "Content" group
+2. Create `src/pages/admin/CmsPages.tsx` - list view with table
+3. Add create/edit dialog with:
+   - Title input
+   - Slug input (auto-generated from title)
+   - Rich text editor (using react-markdown for preview, textarea for input)
+   - Toggle switches for: Published, Show in Menu, Show in Footer, Requires Auth
+   - Menu order number input
+   - Meta description textarea
 
-**Option A: Server-Side PDFShift (Recommended)**
-- Modify `generate-pdf/index.ts` to use the actual `report_html` from the AI output instead of building from legacy fields
-- Client calls this function and downloads the resulting PDF
+### Phase 3: Frontend Display
+1. Create `src/pages/CmsPage.tsx` - dynamic page component
+2. Add route `/page/:slug` to App.tsx
+3. Update `Header.tsx` to fetch and display menu pages
+4. Update `Footer.tsx` to fetch and display footer pages
+5. Handle auth requirement (redirect to login if not authenticated)
 
-**Option B: Client-Side html2canvas**
-- Use the existing `generatePdfClient.ts` with proper template integration
-- Requires preloading fonts and applying template styles before capture
+### Phase 4: Rich Text Editor
+For the rich text body, we have options:
+- **Simple**: Textarea with Markdown preview (use existing `react-markdown`)
+- **Enhanced**: Add a WYSIWYG library like `@tiptap/react` or `react-quill`
 
-**Recommended Approach (Option A)**:
-
-1. Update `generate-pdf/index.ts` to:
-   - Extract `report_html` from `content_json` using same logic as viewer
-   - Inject template CSS (fonts, colors, margins) around the HTML
-   - Add cover page with logo and branding
-   - Pass to PDFShift for professional conversion
-
-2. Update `ReportsList.tsx` to:
-   - Call the server-side function instead of window.print()
-   - Download the returned PDF blob
-
-**Files to modify**:
-- `supabase/functions/generate-pdf/index.ts` - Major refactor to use report_html
-- `src/components/workspace/ReportsList.tsx` - Switch to server-side generation
-
----
-
-### Phase 3: Fix Hyperlinks in DOCX (Medium Effort)
-
-**Problem**: The `parseInlineFormatting` function in `generate-docx/index.ts` extracts link text but discards the URL, creating plain text instead of clickable links.
-
-**Solution**: Use docx library's `ExternalHyperlink` component for proper link support
-
-**Current Code (broken)**:
-```typescript
-if (match[4]) {
-  // Link [text](url) - just extract text
-  runs.push(new TextRun({ text: match[4], size: STYLES.fontSize.body }));
-}
-```
-
-**Fixed Code**:
-```typescript
-import { ExternalHyperlink } from "docx";
-
-// In parseInlineFormatting, return a union type:
-if (match[4] && match[5]) { // match[5] is the URL
-  return new ExternalHyperlink({
-    link: match[5],
-    children: [
-      new TextRun({
-        text: match[4],
-        style: "Hyperlink",
-        size: STYLES.fontSize.body,
-      }),
-    ],
-  });
-}
-```
-
-**Files to modify**:
-- `supabase/functions/generate-docx/index.ts` - Update link parsing logic
+Recommendation: Start with Markdown textarea + preview, upgrade to WYSIWYG later if needed.
 
 ---
 
-### Phase 4: Improve Citation Formatting (Low-Medium Effort)
+## Files to Create/Modify
 
-**Problem**: In-text citations like `[1]` may not be properly hyperlinked to the references section.
+### New Files
+- `src/pages/admin/CmsPages.tsx` - Admin page management
+- `src/pages/CmsPage.tsx` - Public page renderer
+- `src/hooks/useCmsPages.ts` - Data fetching hook
 
-**Solution**: 
-1. For HTML/PDF: Citations should be `<a href="#ref-1">[1]</a>` linking to `<p id="ref-1">...</p>`
-2. For DOCX: Use Word's internal bookmark/hyperlink system
+### Modified Files
+- `src/App.tsx` - Add routes for `/page/:slug` and `/admin/pages`
+- `src/components/admin/AdminSidebar.tsx` - Add "Pages" menu item
+- `src/components/landing/Header.tsx` - Fetch and display menu pages
+- `src/components/landing/Footer.tsx` - Fetch and display footer pages
 
-This may require updates to the AI prompt to ensure citations are generated with proper anchor tags, or post-processing in the export functions.
-
----
-
-## Implementation Priority
-
-| Phase | Impact | Effort | Recommendation |
-|-------|--------|--------|----------------|
-| 1. Fix Duplicate References | High | Low | Do First |
-| 2. PDF Template Support | High | Medium | Do Second |
-| 3. DOCX Hyperlinks | Medium | Medium | Do Third |
-| 4. Citation Anchoring | Medium | Medium | Do Fourth (Optional) |
+### Database Migration
+- Create `cms_pages` table
+- Add RLS policies
 
 ---
 
 ## Technical Details
 
-### Files Requiring Changes
+### Slug Generation
+```typescript
+const generateSlug = (title: string): string => {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+};
+```
 
-**Frontend (TypeScript/React)**:
-- `src/components/workspace/ReportsList.tsx` - PDF generation flow
-- `src/components/workspace/HtmlReportViewer.tsx` - Conditional sources display
+### Header Menu Query
+```typescript
+const { data: menuPages } = useQuery({
+  queryKey: ['cms-menu-pages'],
+  queryFn: async () => {
+    const { data } = await supabase
+      .from('cms_pages')
+      .select('id, title, slug, requires_auth')
+      .eq('is_published', true)
+      .eq('show_in_menu', true)
+      .order('menu_order');
+    return data;
+  }
+});
+```
 
-**Backend (Edge Functions)**:
-- `supabase/functions/generate-pdf/index.ts` - Major refactor to use report_html
-- `supabase/functions/generate-docx/index.ts` - Fix links, dedupe references
-
-**Shared Utilities**:
-- `src/lib/htmlReportUtils.ts` - Add references detection helper
+### Auth Protection for Pages
+```typescript
+// In CmsPage.tsx
+if (page.requires_auth && !isAuthenticated) {
+  navigate('/auth', { state: { from: `/page/${slug}` } });
+  return null;
+}
+```
 
 ---
 
 ## Summary
-
-The core fix involves:
-1. Adding detection logic to prevent duplicate references sections
-2. Upgrading PDF to use the server-side generator with template support
-3. Fixing the DOCX link parser to preserve hyperlinks
-4. Ensuring consistent citation formatting across all export formats
-
-This will result in professionally formatted exports that match the admin-configured branding and don't have duplicated content.
+This CMS provides:
+- Simple page creation with title and rich text content
+- Flexible visibility controls (menu, footer, public/auth)
+- SEO-friendly slugs
+- Draft/published workflow
+- Seamless integration with existing header/footer
+- RLS-protected data access
