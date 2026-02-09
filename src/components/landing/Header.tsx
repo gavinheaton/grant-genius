@@ -2,9 +2,16 @@ import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
 import { GraduationCap, Shield, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { useCmsMenuPages } from "@/hooks/useCmsPages";
 
 export function Header() {
   const { isAuthenticated, isAdmin, isLoading } = useAuth();
+  const { data: menuPages } = useCmsMenuPages();
+
+  // Filter menu pages based on auth requirement
+  const visibleMenuPages = menuPages?.filter(
+    (page) => !page.requires_auth || isAuthenticated
+  );
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -32,6 +39,17 @@ export function Header() {
           >
             Pricing
           </a>
+          
+          {/* Dynamic CMS menu pages */}
+          {visibleMenuPages?.map((page) => (
+            <Link
+              key={page.id}
+              to={`/page/${page.slug}`}
+              className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors hidden sm:block"
+            >
+              {page.title}
+            </Link>
+          ))}
           
           {isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />

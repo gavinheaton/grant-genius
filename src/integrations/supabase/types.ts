@@ -135,6 +135,54 @@ export type Database = {
         }
         Relationships: []
       }
+      cms_pages: {
+        Row: {
+          content_html: string | null
+          created_at: string
+          created_by: string | null
+          id: string
+          is_published: boolean | null
+          menu_order: number | null
+          meta_description: string | null
+          requires_auth: boolean | null
+          show_in_footer: boolean | null
+          show_in_menu: boolean | null
+          slug: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          content_html?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_published?: boolean | null
+          menu_order?: number | null
+          meta_description?: string | null
+          requires_auth?: boolean | null
+          show_in_footer?: boolean | null
+          show_in_menu?: boolean | null
+          slug: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          content_html?: string | null
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          is_published?: boolean | null
+          menu_order?: number | null
+          meta_description?: string | null
+          requires_auth?: boolean | null
+          show_in_footer?: boolean | null
+          show_in_menu?: boolean | null
+          slug?: string
+          title?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       color_palettes: {
         Row: {
           created_at: string
