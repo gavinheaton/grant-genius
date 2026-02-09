@@ -1,86 +1,76 @@
 
 
-# Fix Export Prompt Bundle - Only Shows 1 Step
+# Fix Duplicate Bundle Confusion - Add Step Count to Bundle List
 
-## Investigation Summary
+## Problem
 
-After extensive analysis, I've identified the root cause and a potential issue:
+You have **two bundles** both named "AEA Single Prompt":
 
-### Root Cause: Redundant Column Selection in Query
+| Created | Bundle ID | Steps |
+|---------|-----------|-------|
+| Feb 9 (newer) | `16a9204a-...` | **8 steps** |
+| Feb 4 (older) | `6abbcd3f-...` | **1 step** |
 
-In `src/hooks/usePromptBundles.ts` (line 121), the steps query uses:
-
-```typescript
-.select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
-```
-
-This is problematic because:
-1. `*` already includes all columns
-2. Listing specific columns after `*` is redundant and can cause issues in some PostgREST versions
-3. May lead to unexpected query behavior
-
-### Additional Context
-
-There are two bundles named "AEA Single Prompt":
-- Older one (Feb 4): Has only 1 step
-- Newer one (Feb 9): Has 7 steps
-
-If you're seeing only 1 step, you may have been looking at the older bundle. However, the redundant select statement should still be fixed for reliability.
+The bundle list currently shows only the name and "last updated" date, making it impossible to distinguish between them. You're likely clicking export on the older one.
 
 ## Solution
 
+Add a **step count** to each bundle card so you can easily see which bundle has more steps. Optionally, also add the creation date for disambiguation.
+
+## Technical Changes
+
+### File: `src/pages/admin/PromptBundles.tsx`
+
+**Change 1**: Update the bundles query to include step count
+
+The current `usePromptBundles` hook only fetches bundle metadata. We need to either:
+- A) Add a joined query to count steps (preferred)
+- B) Fetch steps separately for display
+
+**Change 2**: Display step count on each bundle card
+
+```tsx
+<CardContent>
+  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+    <span>{stepCount} steps</span>
+    <span>Created: {new Date(bundle.created_at).toLocaleDateString()}</span>
+    <span>Updated: {new Date(bundle.updated_at).toLocaleDateString()}</span>
+  </div>
+</CardContent>
+```
+
 ### File: `src/hooks/usePromptBundles.ts`
 
-Simplify the select statement to use only `*`:
+Update `usePromptBundles` to fetch step counts alongside bundles:
 
 ```typescript
-// Before (line 119-123)
-const { data: steps, error: stepsError } = await supabase
-  .from("prompt_bundle_steps")
-  .select("*, is_heavy, max_expected_seconds, max_output_tokens, step_type, step_config_json")
-  .eq("bundle_id", id)
-  .order("step_number", { ascending: true });
-
-// After
-const { data: steps, error: stepsError } = await supabase
-  .from("prompt_bundle_steps")
-  .select("*")
-  .eq("bundle_id", id)
-  .order("step_number", { ascending: true });
+// Option A: Use Postgres count aggregation via RPC or
+// Option B: Fetch with joined count
+const { data, error } = await supabase
+  .from("prompt_bundles")
+  .select("*, prompt_bundle_steps(count)")
+  .order("created_at", { ascending: false });
 ```
 
-### Additional Fix: Reset Export State on Dialog Close
+This returns each bundle with a nested `prompt_bundle_steps` array containing `[{ count: N }]`.
 
-To prevent stale data issues, clear the export bundle ID when the dialog closes:
+## Immediate Workaround
 
-In `src/pages/admin/PromptBundles.tsx`, update the dialog `onOpenChange`:
+Until this fix is implemented, you can identify the correct bundle by:
+1. Looking at the **updated date** - the Feb 9 bundle will show a more recent date
+2. Clicking **Edit** on each to see the step count in the editor
+3. Or simply **delete the old 1-step bundle** if it's no longer needed
 
-```typescript
-// Before
-<Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
-
-// After
-<Dialog 
-  open={exportDialogOpen} 
-  onOpenChange={(open) => {
-    setExportDialogOpen(open);
-    if (!open) {
-      setExportBundleId(null); // Clear on close
-    }
-  }}
->
-```
-
-## Technical Details
+## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/hooks/usePromptBundles.ts` | Simplify `.select()` to just `*` |
-| `src/pages/admin/PromptBundles.tsx` | Reset `exportBundleId` when dialog closes |
+| `src/hooks/usePromptBundles.ts` | Add step count to bundle query |
+| `src/pages/admin/PromptBundles.tsx` | Display step count on bundle cards |
 
 ## Impact
 
-- Cleaner, more reliable Supabase query
-- Prevents potential stale cache issues on export dialog
+- Users can easily distinguish between bundles with the same name
+- Shows creation date alongside update date for better context
 - No database changes required
 
