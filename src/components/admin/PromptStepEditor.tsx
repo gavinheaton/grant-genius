@@ -110,38 +110,38 @@ export function PromptStepEditor({
     /expects:\s*JSON\s*object/i,
   ];
 
-  // Step-type-aware validation
-  const validateStep = (): { valid: boolean; warning: string | null } => {
+  // Step-type-aware validation - warnings only, never blocks saving
+  const validateStep = (): { warning: string | null } => {
     // For Firecrawl search steps, validate the query template instead
     if (stepType === "firecrawl_search") {
       const query = (stepConfig.query_template as string) || "";
       if (query.length < 10) {
-        return { valid: false, warning: "Search query is too short (minimum 10 characters)" };
+        return { warning: "Search query is short (minimum 10 characters recommended)" };
       }
-      return { valid: true, warning: null };
+      return { warning: null };
     }
     
     // For Firecrawl scrape steps, validate URL variable is set
     if (stepType === "firecrawl_scrape") {
       const urlVar = stepConfig.url_variable as string;
       if (!urlVar) {
-        return { valid: false, warning: "URL variable must be specified" };
+        return { warning: "URL variable should be specified for scrape steps" };
       }
-      return { valid: true, warning: null };
+      return { warning: null };
     }
     
-    // For AI steps, use existing prompt validation
+    // For AI steps, show warnings but don't block
     if (promptTemplate.length < 50) {
-      return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
+      return { warning: "Prompt is short (minimum 50 characters recommended for quality)" };
     }
     
     for (const pattern of SUSPICIOUS_PATTERNS) {
       if (pattern.test(promptTemplate)) {
-        return { valid: false, warning: "Prompt contains suspicious schema-like content instead of instructions" };
+        return { warning: "Prompt may contain schema-like content instead of instructions" };
       }
     }
     
-    return { valid: true, warning: null };
+    return { warning: null };
   };
 
   const stepValidation = validateStep();
@@ -432,9 +432,9 @@ export function PromptStepEditor({
         </div>
       )}
 
-      {/* Validation warning */}
-      {!stepValidation.valid && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+      {/* Validation warning - informational only, doesn't block saving */}
+      {stepValidation.warning && (
+        <div className="flex items-center gap-2 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm text-warning">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>{stepValidation.warning}</span>
         </div>
@@ -459,11 +459,11 @@ export function PromptStepEditor({
           </Button>
         )}
         
-        {/* Save button */}
+        {/* Save button - always enabled when there are changes */}
         {canEdit && hasChanges && (
           <Button 
             onClick={handleSave} 
-            disabled={isSaving || !stepValidation.valid} 
+            disabled={isSaving} 
             size="sm"
           >
             <Save className="h-4 w-4 mr-2" />
