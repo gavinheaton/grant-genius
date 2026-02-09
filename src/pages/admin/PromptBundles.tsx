@@ -197,7 +197,7 @@ export default function PromptBundles() {
                         <FileDown className="h-4 w-4 mr-1" />
                         Export
                       </Button>
-                      {isSuperAdmin && (
+                      {isAdmin && (
                         <>
                           <Button
                             variant="outline"

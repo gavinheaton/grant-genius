@@ -295,7 +295,7 @@ export function InlinePipelineEditor({
     );
   }
 
-  const canEdit = isSuperAdmin;
+  const canEdit = isAdmin;
 
   return (
     <div className={`space-y-4 ${className}`}>
