@@ -278,8 +278,8 @@ export default function ApplicationWorkspace() {
     }
   };
 
-  // Check if base required inputs are complete
-  const inputsComplete = (inputs.publicArticleUrl || '').trim() !== "" && (inputs.summary || '').trim() !== "";
+  // Check if base required inputs are complete (only summary is required)
+  const inputsComplete = (inputs.summary || '').trim() !== "";
   
   // Check if this is a manual processing grant
   const isManualGrant = application?.grant_version?.grant?.processing_mode === "manual";
@@ -478,7 +478,7 @@ export default function ApplicationWorkspace() {
           
           {!inputsComplete && !isGenerating && !isStarting && !manualStatus && (
             <p className="text-sm text-muted-foreground">
-              Please fill in the Article URL and Summary to {isManualGrant ? "submit for review" : "generate your report"}.
+              Please fill in the Summary to {isManualGrant ? "submit for review" : "generate your report"}.
             </p>
           )}
         </div>
