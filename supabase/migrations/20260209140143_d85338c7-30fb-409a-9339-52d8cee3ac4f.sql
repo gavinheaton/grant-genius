@@ -1,0 +1,1 @@
+ALTER TABLE public.grants ADD COLUMN is_testing boolean NOT NULL DEFAULT false;

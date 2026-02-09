@@ -45,6 +45,7 @@ export default function GrantEdit() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isActive, setIsActive] = useState(true);
+  const [isTesting, setIsTesting] = useState(false);
   const [processingMode, setProcessingMode] = useState<"automated" | "manual">("automated");
   const [adminNotificationEmail, setAdminNotificationEmail] = useState("");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -125,6 +126,7 @@ export default function GrantEdit() {
       setName(grantData.name);
       setDescription(grantData.description || "");
       setIsActive(grantData.is_active);
+      setIsTesting(grantData.is_testing || false);
       setProcessingMode(grantData.processing_mode || "automated");
       setAdminNotificationEmail(grantData.admin_notification_email || "");
 
@@ -269,6 +271,7 @@ export default function GrantEdit() {
           name, 
           description, 
           is_active: isActive,
+          is_testing: isTesting,
           processing_mode: processingMode,
           admin_notification_email: adminNotificationEmail || null,
         })
@@ -588,6 +591,19 @@ export default function GrantEdit() {
                   onCheckedChange={setIsActive}
                 />
                 <Label htmlFor="active">Active</Label>
+              </div>
+              <div className="flex items-center gap-3">
+                <Switch
+                  id="testing"
+                  checked={isTesting}
+                  onCheckedChange={setIsTesting}
+                />
+                <div>
+                  <Label htmlFor="testing">Testing Mode</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Only admins can see this grant in the application dropdown
+                  </p>
+                </div>
               </div>
               <Button
                 onClick={() => updateGrantMutation.mutate()}

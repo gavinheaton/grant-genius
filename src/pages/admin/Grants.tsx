@@ -256,9 +256,16 @@ export default function Grants() {
                       {grant.description || "-"}
                     </TableCell>
                     <TableCell>
-                      <Badge variant={grant.is_active ? "default" : "secondary"}>
-                        {grant.is_active ? "Active" : "Archived"}
-                      </Badge>
+                      <div className="flex items-center gap-1.5">
+                        <Badge variant={grant.is_active ? "default" : "secondary"}>
+                          {grant.is_active ? "Active" : "Archived"}
+                        </Badge>
+                        {(grant as any).is_testing && (
+                          <Badge variant="outline" className="text-xs border-amber-500 text-amber-600">
+                            Testing
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {latestVersion ? (

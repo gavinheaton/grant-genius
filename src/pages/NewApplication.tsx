@@ -37,18 +37,31 @@ export default function NewApplication() {
         return;
       }
 
+      // Check if user is admin
+      const { data: roleData } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", session.user.id)
+        .in("role", ["admin", "super_admin"])
+        .maybeSingle();
+
+      const isAdmin = !!roleData;
+
       // Fetch grants with their latest published version
-      const { data, error } = await supabase
+      const query = supabase
         .from("grants")
         .select(`
           id,
           name,
           description,
+          is_testing,
           grant_versions!inner(id)
         `)
         .eq("is_active", true)
         .eq("grant_versions.is_published", true)
         .order("name");
+
+      const { data, error } = await query;
 
       if (error) {
         console.error("Error fetching grants:", error);
@@ -58,8 +71,9 @@ export default function NewApplication() {
           variant: "destructive",
         });
       } else if (data) {
-        // Transform data to include latest version ID
-        const transformedGrants = data.map((grant: any) => ({
+        // Filter out testing grants for non-admin users
+        const filtered = isAdmin ? data : data.filter((g: any) => !g.is_testing);
+        const transformedGrants = filtered.map((grant: any) => ({
           id: grant.id,
           name: grant.name,
           description: grant.description,
