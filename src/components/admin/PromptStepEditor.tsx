@@ -110,13 +110,33 @@ export function PromptStepEditor({
     /expects:\s*JSON\s*object/i,
   ];
 
-  const validatePrompt = (prompt: string): { valid: boolean; warning: string | null } => {
-    if (prompt.length < 50) {
+  // Step-type-aware validation
+  const validateStep = (): { valid: boolean; warning: string | null } => {
+    // For Firecrawl search steps, validate the query template instead
+    if (stepType === "firecrawl_search") {
+      const query = (stepConfig.query_template as string) || "";
+      if (query.length < 10) {
+        return { valid: false, warning: "Search query is too short (minimum 10 characters)" };
+      }
+      return { valid: true, warning: null };
+    }
+    
+    // For Firecrawl scrape steps, validate URL variable is set
+    if (stepType === "firecrawl_scrape") {
+      const urlVar = stepConfig.url_variable as string;
+      if (!urlVar) {
+        return { valid: false, warning: "URL variable must be specified" };
+      }
+      return { valid: true, warning: null };
+    }
+    
+    // For AI steps, use existing prompt validation
+    if (promptTemplate.length < 50) {
       return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
     }
     
     for (const pattern of SUSPICIOUS_PATTERNS) {
-      if (pattern.test(prompt)) {
+      if (pattern.test(promptTemplate)) {
         return { valid: false, warning: "Prompt contains suspicious schema-like content instead of instructions" };
       }
     }
@@ -124,7 +144,7 @@ export function PromptStepEditor({
     return { valid: true, warning: null };
   };
 
-  const promptValidation = validatePrompt(promptTemplate);
+  const stepValidation = validateStep();
 
   useEffect(() => {
     setPromptTemplate(step.prompt_template);
@@ -391,29 +411,32 @@ export function PromptStepEditor({
         </>
       )}
 
-      <div className="space-y-2">
-        <Label>Prompt Template</Label>
-        <Textarea
-          value={promptTemplate}
-          onChange={(e) => {
-            setPromptTemplate(e.target.value);
-            setHasChanges(true);
-          }}
-          disabled={!canEdit}
-          rows={12}
-          className="font-mono text-sm"
-          placeholder="Enter the prompt template..."
-        />
-        <p className="text-xs text-muted-foreground">
-          Use {"{{variableName}}"} syntax for dynamic values. Variables are replaced at runtime.
-        </p>
-      </div>
+      {/* Prompt Template - only show for AI steps */}
+      {!isFirecrawlStep && (
+        <div className="space-y-2">
+          <Label>Prompt Template</Label>
+          <Textarea
+            value={promptTemplate}
+            onChange={(e) => {
+              setPromptTemplate(e.target.value);
+              setHasChanges(true);
+            }}
+            disabled={!canEdit}
+            rows={12}
+            className="font-mono text-sm"
+            placeholder="Enter the prompt template..."
+          />
+          <p className="text-xs text-muted-foreground">
+            Use {"{{variableName}}"} syntax for dynamic values. Variables are replaced at runtime.
+          </p>
+        </div>
+      )}
 
       {/* Validation warning */}
-      {!promptValidation.valid && (
+      {!stepValidation.valid && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span>{promptValidation.warning}</span>
+          <span>{stepValidation.warning}</span>
         </div>
       )}
 
@@ -440,7 +463,7 @@ export function PromptStepEditor({
         {canEdit && hasChanges && (
           <Button 
             onClick={handleSave} 
-            disabled={isSaving || !promptValidation.valid} 
+            disabled={isSaving || !stepValidation.valid} 
             size="sm"
           >
             <Save className="h-4 w-4 mr-2" />
