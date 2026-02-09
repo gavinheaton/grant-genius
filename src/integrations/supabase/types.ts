@@ -575,6 +575,7 @@ export type Database = {
           description: string | null
           id: string
           is_active: boolean
+          is_testing: boolean
           name: string
           processing_mode: string
           updated_at: string
@@ -585,6 +586,7 @@ export type Database = {
           description?: string | null
           id?: string
           is_active?: boolean
+          is_testing?: boolean
           name: string
           processing_mode?: string
           updated_at?: string
@@ -595,6 +597,7 @@ export type Database = {
           description?: string | null
           id?: string
           is_active?: boolean
+          is_testing?: boolean
           name?: string
           processing_mode?: string
           updated_at?: string
