@@ -977,6 +977,10 @@ export default function GrantEdit() {
           </Card>
         </TabsContent>
 
+        <TabsContent value="workflow" className="mt-6">
+          {id && <WorkflowTab grantId={id} />}
+        </TabsContent>
+
         {/* Advanced Tab - Super Admin Only */}
         {isSuperAdmin && (
           <TabsContent value="advanced" className="mt-6">

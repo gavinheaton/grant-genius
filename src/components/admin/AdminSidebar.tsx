@@ -61,6 +61,7 @@ const contentItems = [
 
 const systemItems = [
   { title: "Applications", url: "/admin/manual-queue", icon: ClipboardList },
+  { title: "Reviews", url: "/admin/reviews", icon: Eye },
   { title: "System Health", url: "/admin/system-health", icon: Activity },
   { title: "Audit Logs", url: "/admin/audit-logs", icon: ScrollText },
 ];
