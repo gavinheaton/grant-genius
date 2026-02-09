@@ -171,11 +171,14 @@ export function InlinePipelineEditor({
   const handleStepUpdate = async (
     stepId: string,
     data: { 
+      step_name?: string;
+      step_description?: string;
       prompt_template?: string; 
       model_override?: string | null;
       timeout_seconds?: number | null;
       is_heavy?: boolean;
       max_expected_seconds?: number | null;
+      max_output_tokens?: number | null;
       step_type?: StepType;
       step_config_json?: Record<string, unknown>;
     }
