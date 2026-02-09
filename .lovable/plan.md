@@ -1,25 +1,24 @@
 
 
-## Fix: Markdown Bullets Not Rendering in CMS Pages
+## Remove "Active Bundle" Functionality from Prompt Bundles Page
 
-### Problem
-Bullet points (and other markdown list styles) don't appear because Tailwind CSS strips default list styles. The CMS page wrapper uses `prose` classes to restore them, but the required Tailwind Typography plugin isn't activated.
+Since pipelines are now linked to specific grant versions (rather than using a single globally "active" bundle), the Active Bundle concept is no longer needed.
 
-The package `@tailwindcss/typography` is already installed -- it just needs to be registered in the Tailwind config.
+### Changes
 
-### Solution
-**One-line change** in `tailwind.config.ts`:
+**1. `src/pages/admin/PromptBundles.tsx`**
+- Remove the "Active Bundle" highlight card at the top of the page (lines 185-213)
+- Remove the "Set Active" button from each bundle card (lines 236-245)
+- Remove the "Activate Confirmation" dialog (lines 381-398)
+- Remove the `activateDialogOpen` state and `openActivateDialog`/`handleSetActive` handlers
+- Remove the `activeBundle` derived variable
+- Remove the guard that prevents deleting an active bundle (`!bundle.is_active` check on delete button, line 270)
+- Remove `useSetActiveBundle` from imports
+- Remove `Circle` and `CheckCircle` icon imports (no longer used)
+- Remove the "Active" badge on bundle cards (lines 231-233)
 
-Add `require("@tailwindcss/typography")` to the `plugins` array (line 97):
+**2. `src/hooks/usePromptBundles.ts`**
+- Remove the `useSetActiveBundle` hook entirely (lines 206-233)
+- Keep the `is_active` field in the `PromptBundle` type since it still exists in the database -- we just stop surfacing it in the UI
 
-```ts
-plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
-```
-
-This activates the `prose` / `prose-lg` / `dark:prose-invert` classes already applied in `CmsPage.tsx`, which will correctly render:
-- Bullet lists (`ul > li`)
-- Numbered lists (`ol > li`)
-- Blockquotes, tables, code blocks, and other markdown elements
-
-No other file changes needed.
-
+No database changes needed. The `is_active` column can remain for backward compatibility with the worker-proxy fallback logic.
