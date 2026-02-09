@@ -341,6 +341,8 @@ export function useCreatePromptStep() {
       step_name: string;
       step_description: string;
       prompt_template: string;
+      step_type?: StepType;
+      step_config_json?: Record<string, unknown>;
     }) => {
       const { error } = await supabase
         .from("prompt_bundle_steps")
@@ -350,6 +352,8 @@ export function useCreatePromptStep() {
           step_name: data.step_name,
           step_description: data.step_description,
           prompt_template: data.prompt_template,
+          step_type: data.step_type || 'ai_prompt',
+          step_config_json: (data.step_config_json || null) as Json,
         });
       if (error) throw error;
       return data.bundleId;

@@ -194,6 +194,8 @@ export function InlinePipelineEditor({
     step_description: string;
     prompt_template: string;
     insert_position: number;
+    step_type: import("@/hooks/usePromptBundles").StepType;
+    step_config_json: Record<string, unknown>;
   }) => {
     if (!bundle) return;
 
@@ -216,6 +218,8 @@ export function InlinePipelineEditor({
       step_name: data.step_name,
       step_description: data.step_description,
       prompt_template: data.prompt_template,
+      step_type: data.step_type,
+      step_config_json: data.step_config_json,
     });
 
     setAddDialogOpen(false);
