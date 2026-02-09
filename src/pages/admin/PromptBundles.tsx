@@ -55,7 +55,7 @@ const formatBundleForExport = (bundle: PromptBundleWithSteps): string => {
 };
 
 export default function PromptBundles() {
-  const { isSuperAdmin } = useAdminAuth();
+  const { isSuperAdmin, isAdmin } = useAdminAuth();
   const { data: bundles, isLoading } = usePromptBundles();
   const createBundle = useCreatePromptBundle();
   const deleteBundle = useDeletePromptBundle();
