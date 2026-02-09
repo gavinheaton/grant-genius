@@ -1,85 +1,110 @@
 
-# Fix Prompt Pipeline Editor - Empty SelectItem Value Error
+
+# Fix Firecrawl Step Validation - Allow Empty Prompt Template for Search Steps
 
 ## Problem
 
-The Prompt Pipeline editor crashes when editing a step with the error:
-```
-A <Select.Item /> must have a value prop that is not an empty string
-```
+When creating a Firecrawl search step, you must:
+1. Create the step as an AI step first
+2. Change the step type to "Web Search"
+3. Move the search query from the Prompt Template to the Search Query Template
+
+When you clear the Prompt Template (since the query is now in Search Query Template), you get:
+> "Prompt is too short (minimum 50 characters)"
+
+This prevents saving the step because the Save button is disabled.
 
 ## Root Cause
 
-In `src/components/admin/PromptStepEditor.tsx`, the `OUTPUT_TOKEN_OPTIONS` array contains an empty string value for the default option:
+The `validatePrompt` function in `PromptStepEditor.tsx` always validates the `promptTemplate` field, even for Firecrawl steps where the prompt template is not used - the search query is stored in `stepConfig.query_template` instead.
 
 ```typescript
-const OUTPUT_TOKEN_OPTIONS = [
-  { value: "", label: "Default (8K)" },  // <-- Empty string causes crash
-  { value: "8192", label: "8K tokens" },
-  ...
-];
-```
+// Line 113-125 - Always validates promptTemplate
+const validatePrompt = (prompt: string) => {
+  if (prompt.length < 50) {
+    return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
+  }
+  // ...
+};
 
-Radix UI's `Select.Item` component requires all values to be non-empty strings. This restriction exists because an empty string is reserved for clearing the selection and showing the placeholder.
+// Line 127 - Applied unconditionally
+const promptValidation = validatePrompt(promptTemplate);
+```
 
 ## Solution
 
-Change the empty string to a semantic value like `"default"`, then handle this value appropriately when saving:
+Make the validation step-type-aware:
+
+1. **Skip prompt validation for Firecrawl steps** - They don't use the prompt template field
+2. **Add validation for Firecrawl-specific fields** - Validate the search query template instead
+3. **Update the Save button logic** - Use appropriate validation based on step type
+
+## Technical Changes
 
 ### File: `src/components/admin/PromptStepEditor.tsx`
 
-**Change 1**: Update the `OUTPUT_TOKEN_OPTIONS` constant (line 33)
-- Before: `{ value: "", label: "Default (8K)" }`
-- After: `{ value: "default", label: "Default (8K)" }`
-
-**Change 2**: Update the initial state (line 86-87)
-- When `step.max_output_tokens` is null/undefined, use `"default"` instead of `""`
-
-**Change 3**: Update the save handler (lines 147-164)
-- When `maxOutputTokens === "default"`, save as `null` (not as `0` or any numeric value)
-
-## Technical Details
-
-| Location | Change |
-|----------|--------|
-| Line 33 | Change `value: ""` to `value: "default"` |
-| Line 86-87 | Change `""` fallback to `"default"` |
-| Line 156 | Check for `"default"` instead of falsy value |
-| Line 194 | Same check in `handleApplyRegenerated` |
-
-## Code Changes
+**Change 1**: Create a step-type-aware validation function
 
 ```typescript
-// Line 33: Fix the options array
-const OUTPUT_TOKEN_OPTIONS = [
-  { value: "default", label: "Default (8K)" },  // Changed from ""
-  { value: "8192", label: "8K tokens" },
-  // ... rest unchanged
-];
-
-// Line 86-87: Fix initial state
-const [maxOutputTokens, setMaxOutputTokens] = useState<string>(
-  step.max_output_tokens ? String(step.max_output_tokens) : "default"  // Changed from ""
-);
-
-// Line 135: Fix effect reset
-setMaxOutputTokens(step.max_output_tokens ? String(step.max_output_tokens) : "default");
-
-// Line 156: Fix save handler
-max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
-
-// Line 194: Fix apply regenerated handler
-max_output_tokens: maxOutputTokens !== "default" ? parseInt(maxOutputTokens, 10) : null,
+const validateStep = (): { valid: boolean; warning: string | null } => {
+  // For Firecrawl search steps, validate the query template instead
+  if (stepType === "firecrawl_search") {
+    const query = stepConfig.query_template as string || "";
+    if (query.length < 10) {
+      return { valid: false, warning: "Search query is too short (minimum 10 characters)" };
+    }
+    return { valid: true, warning: null };
+  }
+  
+  // For Firecrawl scrape steps, validate URL variable is set
+  if (stepType === "firecrawl_scrape") {
+    const urlVar = stepConfig.url_variable as string;
+    if (!urlVar) {
+      return { valid: false, warning: "URL variable must be specified" };
+    }
+    return { valid: true, warning: null };
+  }
+  
+  // For AI steps, use existing prompt validation
+  if (promptTemplate.length < 50) {
+    return { valid: false, warning: "Prompt is too short (minimum 50 characters)" };
+  }
+  
+  for (const pattern of SUSPICIOUS_PATTERNS) {
+    if (pattern.test(promptTemplate)) {
+      return { valid: false, warning: "Prompt contains suspicious schema-like content" };
+    }
+  }
+  
+  return { valid: true, warning: null };
+};
 ```
+
+**Change 2**: Use the new validation function
+
+```typescript
+// Replace line 127
+const stepValidation = validateStep();
+```
+
+**Change 3**: Update the warning display and Save button to use `stepValidation`
+
+**Change 4**: Optionally hide the Prompt Template field entirely for Firecrawl steps (since it's not used)
+
+## UX Improvement
+
+For Firecrawl steps, the Prompt Template field could be hidden since it's not relevant. The step-specific configuration (query template, URL variable, etc.) is shown via the `StepTypeEditor` component.
 
 ## Files to Modify
 
 | File | Change |
 |------|--------|
-| `src/components/admin/PromptStepEditor.tsx` | Replace empty string values with "default" |
+| `src/components/admin/PromptStepEditor.tsx` | Add step-type-aware validation, optionally hide prompt template for Firecrawl steps |
 
 ## Impact
 
 - No database changes required
-- No changes to other components
-- The fix is isolated to the step editor component
+- Firecrawl steps can be saved with empty prompt templates
+- AI steps retain their current validation behavior
+- Better UX by hiding irrelevant fields for Firecrawl steps
+
