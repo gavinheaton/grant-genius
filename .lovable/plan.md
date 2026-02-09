@@ -1,31 +1,30 @@
 
 
-## Allow Any Admin to Edit Prompt Bundles
+## Fix: Allow Admins to Edit Prompt Bundles in the UI
 
-Currently only Super Admins can create, update, and delete prompt bundles and their steps. This change updates the RLS policies so any Admin (including Super Admin) has full write access.
+The database RLS policies are already updated correctly. The problem is that two frontend files still gate editing actions behind `isSuperAdmin` instead of `isAdmin`.
 
-### Database Migration
+### Changes Required
 
-Update 6 RLS policies across 2 tables:
+**1. `src/components/admin/InlinePipelineEditor.tsx`**
+- Line 298: Change `const canEdit = isSuperAdmin;` to `const canEdit = isSuperAdmin || isAdmin;` (or simply use the `isAdmin` flag from `useAdminAuth`, which already includes super admins)
 
-**`prompt_bundles`** -- change 3 policies:
-- "Super admins can delete prompt bundles" -> "Admins can delete prompt bundles" (using `is_admin()`)
-- "Super admins can insert prompt bundles" -> "Admins can insert prompt bundles" (using `is_admin()`)
-- "Super admins can update prompt bundles" -> "Admins can update prompt bundles" (using `is_admin()`)
+This single change unlocks: editing bundle settings, editing system prompt, editing step prompts, adding/deleting/reordering steps.
 
-**`prompt_bundle_steps`** -- change 3 policies:
-- "Super admins can delete prompt bundle steps" -> "Admins can delete prompt bundle steps" (using `is_admin()`)
-- "Super admins can insert prompt bundle steps" -> "Admins can insert prompt bundle steps" (using `is_admin()`)
-- "Super admins can update prompt bundle steps" -> "Admins can update prompt bundle steps" (using `is_admin()`)
+**2. `src/pages/admin/PromptBundles.tsx`**  
+- Line 160: Change `{isSuperAdmin && (` to `{isAdmin && (` for the "New Bundle" button
+- Line 200: Change `{isSuperAdmin && (` to `{isAdmin && (` for the "Clone" and "Delete" buttons
 
-### What Changes
+This also requires destructuring `isAdmin` from `useAdminAuth()` on line 58 (currently only destructures `isSuperAdmin`).
 
-| Before | After |
-|--------|-------|
-| `has_role(auth.uid(), 'super_admin')` | `is_admin(auth.uid())` |
-| Only Super Admins can edit | Any Admin or Super Admin can edit |
+### Summary
 
-### No Frontend Changes Required
+| File | Line | Before | After |
+|------|------|--------|-------|
+| `InlinePipelineEditor.tsx` | 298 | `const canEdit = isSuperAdmin` | `const canEdit = isAdmin` |
+| `PromptBundles.tsx` | 58 | `const { isSuperAdmin }` | `const { isSuperAdmin, isAdmin }` |
+| `PromptBundles.tsx` | 160 | `{isSuperAdmin && (` | `{isAdmin && (` |
+| `PromptBundles.tsx` | 200 | `{isSuperAdmin && (` | `{isAdmin && (` |
 
-The frontend already uses the `useAuth` hook which provides `isAdmin` -- no UI gating changes are needed since the admin pages are already accessible to all admins.
+No database changes needed -- the RLS migration from the previous step already handles the backend correctly.
 
