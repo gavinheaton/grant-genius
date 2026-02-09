@@ -418,7 +418,15 @@ export default function PromptBundles() {
       </AlertDialog>
 
       {/* Export Dialog */}
-      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+      <Dialog 
+        open={exportDialogOpen} 
+        onOpenChange={(open) => {
+          setExportDialogOpen(open);
+          if (!open) {
+            setExportBundleId(null);
+          }
+        }}
+      >
         <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>
