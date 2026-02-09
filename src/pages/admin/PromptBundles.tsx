@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Edit, Copy, Trash2, CheckCircle, Circle, FileDown } from "lucide-react";
+import { Plus, Edit, Copy, Trash2, FileDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +33,6 @@ import {
   usePromptBundles,
   usePromptBundle,
   useCreatePromptBundle,
-  useSetActiveBundle,
   useDeletePromptBundle,
   PromptBundle,
   PromptBundleWithSteps,
@@ -59,13 +58,11 @@ export default function PromptBundles() {
   const { isSuperAdmin } = useAdminAuth();
   const { data: bundles, isLoading } = usePromptBundles();
   const createBundle = useCreatePromptBundle();
-  const setActiveBundle = useSetActiveBundle();
   const deleteBundle = useDeletePromptBundle();
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [cloneDialogOpen, setCloneDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [activateDialogOpen, setActivateDialogOpen] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportBundleId, setExportBundleId] = useState<string | null>(null);
   const [selectedBundle, setSelectedBundle] = useState<PromptBundle | null>(null);
@@ -76,8 +73,6 @@ export default function PromptBundles() {
   const { data: exportBundle, isLoading: exportLoading } = usePromptBundle(
     exportDialogOpen ? exportBundleId ?? undefined : undefined
   );
-
-  const activeBundle = bundles?.find((b) => b.is_active);
 
   const handleCreate = async () => {
     await createBundle.mutateAsync({
@@ -104,13 +99,6 @@ export default function PromptBundles() {
     setNewBundleDescription("");
   };
 
-  const handleSetActive = async () => {
-    if (!selectedBundle) return;
-    await setActiveBundle.mutateAsync(selectedBundle.id);
-    setActivateDialogOpen(false);
-    setSelectedBundle(null);
-  };
-
   const handleDelete = async () => {
     if (!selectedBundle) return;
     await deleteBundle.mutateAsync(selectedBundle.id);
@@ -123,11 +111,6 @@ export default function PromptBundles() {
     setNewBundleName(`${bundle.name} (Copy)`);
     setNewBundleDescription(bundle.description || "");
     setCloneDialogOpen(true);
-  };
-
-  const openActivateDialog = (bundle: PromptBundle) => {
-    setSelectedBundle(bundle);
-    setActivateDialogOpen(true);
   };
 
   const openDeleteDialog = (bundle: PromptBundle) => {
@@ -182,36 +165,6 @@ export default function PromptBundles() {
         )}
       </div>
 
-      {activeBundle && (
-        <Card className="border-primary/50 bg-primary/5">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-primary" />
-              <CardTitle className="text-lg">Active Bundle</CardTitle>
-            </div>
-            <CardDescription>
-              This bundle is currently used for all new report generations.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">{activeBundle.name}</p>
-                <p className="text-sm text-muted-foreground">
-                  {activeBundle.description || "No description"}
-                </p>
-              </div>
-              <Button variant="outline" asChild>
-                <Link to={`/admin/prompt-bundles/${activeBundle.id}`}>
-                  <Edit className="h-4 w-4 mr-2" />
-                  Edit
-                </Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">All Bundles</h2>
         {bundles?.length === 0 ? (
@@ -228,21 +181,8 @@ export default function PromptBundles() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <CardTitle className="text-lg">{bundle.name}</CardTitle>
-                      {bundle.is_active && (
-                        <Badge variant="default" className="ml-2">Active</Badge>
-                      )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {isSuperAdmin && !bundle.is_active && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openActivateDialog(bundle)}
-                        >
-                          <Circle className="h-4 w-4 mr-1" />
-                          Set Active
-                        </Button>
-                      )}
                       <Button variant="outline" size="sm" asChild>
                         <Link to={`/admin/prompt-bundles/${bundle.id}`}>
                           <Edit className="h-4 w-4 mr-1" />
@@ -267,15 +207,13 @@ export default function PromptBundles() {
                             <Copy className="h-4 w-4 mr-1" />
                             Clone
                           </Button>
-                          {!bundle.is_active && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => openDeleteDialog(bundle)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" />
-                            </Button>
-                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openDeleteDialog(bundle)}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
                         </>
                       )}
                     </div>
@@ -377,25 +315,6 @@ export default function PromptBundles() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Activate Confirmation */}
-      <AlertDialog open={activateDialogOpen} onOpenChange={setActivateDialogOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Set Active Bundle</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will set "{selectedBundle?.name}" as the active bundle. All new
-              report generations will use the prompts from this bundle.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleSetActive}>
-              Set Active
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
 
       {/* Delete Confirmation */}
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
