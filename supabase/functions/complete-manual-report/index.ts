@@ -354,8 +354,109 @@ ${report_html}
         .eq("id", reportId);
     }
 
-    // Send email to user with attachments using REPORT_READY template
-    if (brevoApiKey && userProfile.email) {
+    // Check for review workflow before sending email to user
+    let workflowTriggered = false;
+    
+    try {
+      // Get grant_id from grant_version
+      const { data: grantVersionData } = await serviceClient
+        .from("grant_versions")
+        .select("grant_id")
+        .eq("id", application.grant_version_id)
+        .single();
+
+      if (grantVersionData) {
+        const { data: workflow } = await serviceClient
+          .from("grant_review_workflows")
+          .select("id, step_count, is_enabled")
+          .eq("grant_id", grantVersionData.grant_id)
+          .eq("is_enabled", true)
+          .maybeSingle();
+
+        if (workflow) {
+          const { data: firstStep } = await serviceClient
+            .from("grant_review_workflow_steps")
+            .select("id, reviewer_user_id")
+            .eq("workflow_id", workflow.id)
+            .eq("step_number", 1)
+            .single();
+
+          if (firstStep) {
+            // Set report to pending review
+            await serviceClient
+              .from("reports")
+              .update({ review_status: "pending_review", current_review_step: 1 })
+              .eq("id", reportId);
+
+            // Create first review record
+            await serviceClient
+              .from("report_reviews")
+              .insert({
+                report_id: reportId,
+                workflow_step_id: firstStep.id,
+                reviewer_user_id: firstStep.reviewer_user_id,
+                step_number: 1,
+                status: "pending",
+              });
+
+            // Send email to reviewer
+            if (brevoApiKey) {
+              const { data: reviewer } = await serviceClient
+                .from("profiles")
+                .select("email, full_name")
+                .eq("user_id", firstStep.reviewer_user_id)
+                .single();
+
+              if (reviewer) {
+                const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+                const { data: reviewRecord } = await serviceClient
+                  .from("report_reviews")
+                  .select("id")
+                  .eq("report_id", reportId)
+                  .eq("step_number", 1)
+                  .order("created_at", { ascending: false })
+                  .limit(1)
+                  .single();
+
+                const reviewLink = reviewRecord 
+                  ? `${appUrl}/admin/reviews/${reviewRecord.id}`
+                  : `${appUrl}/admin/reviews`;
+
+                const reviewerName = reviewer.full_name || reviewer.email.split("@")[0];
+
+                await fetch("https://api.brevo.com/v3/smtp/email", {
+                  method: "POST",
+                  headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+                    to: [{ email: reviewer.email, name: reviewerName }],
+                    subject: `Report Review Required - ${grant?.name || "Unknown Grant"}`,
+                    htmlContent: `<h2>Review Requested</h2><p>Hi ${reviewerName},</p><p>A manual report for <strong>${grant?.name || "Unknown Grant"}</strong> (${application.title || "Untitled"}) is ready for your review (Step 1 of ${workflow.step_count}).</p><p><a href="${reviewLink}">Click here to review the report</a></p>`,
+                  }),
+                });
+
+                await serviceClient.from("email_outbox").insert({
+                  user_id: firstStep.reviewer_user_id,
+                  to_email: reviewer.email,
+                  template_key: "REVIEW_REQUESTED",
+                  subject: `Report Review Required - ${grant?.name || "Unknown Grant"}`,
+                  status: "sent",
+                  sent_at: new Date().toISOString(),
+                });
+              }
+            }
+
+            workflowTriggered = true;
+            console.log(`Manual report ${reportId} sent to review workflow`);
+          }
+        }
+      }
+    } catch (workflowError) {
+      console.error("Workflow check failed, falling back to direct email:", workflowError);
+    }
+
+    // Only send email to user if no workflow was triggered
+    if (!workflowTriggered && brevoApiKey && userProfile.email) {
       const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
       const reportLink = `${appUrl}/applications/${application_id}`;
       const userName = userProfile.full_name || userProfile.email.split("@")[0];
@@ -409,8 +510,6 @@ ${report_html}
         const senderName = emailTemplate.sender_name || "Grant Genius";
         const senderEmail = emailTemplate.sender_email || "grantgenius@disruptorsco.com";
 
-        console.log("Manual report: using custom HTML template from database");
-
         const emailPayload: Record<string, unknown> = {
           sender: { name: senderName, email: senderEmail },
           to: [{ email: userProfile.email, name: userName }],
@@ -429,15 +528,11 @@ ${report_html}
           const data = await emailResponse.json();
           brevoMessageId = data.messageId;
           emailSent = true;
-        } else {
-          console.error("Brevo custom template failed:", await emailResponse.text());
         }
       }
 
       // Priority 2: Brevo template ID
       if (!emailSent && emailTemplate?.brevo_template_id && emailTemplate.brevo_template_id > 0) {
-        console.log("Manual report: using Brevo template ID:", emailTemplate.brevo_template_id);
-
         const emailPayload: Record<string, unknown> = {
           templateId: emailTemplate.brevo_template_id,
           to: [{ email: userProfile.email, name: userName }],
@@ -455,15 +550,11 @@ ${report_html}
           const data = await emailResponse.json();
           brevoMessageId = data.messageId;
           emailSent = true;
-        } else {
-          console.error("Brevo template email failed:", await emailResponse.text());
         }
       }
 
       // Priority 3: Hardcoded fallback
       if (!emailSent) {
-        console.log("Manual report: using hardcoded fallback template");
-
         const fallbackHtml = getFallbackHtml(userName, grantName, reportLink);
         const emailPayload: Record<string, unknown> = {
           sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
@@ -483,8 +574,6 @@ ${report_html}
           const data = await emailResponse.json();
           brevoMessageId = data.messageId;
           emailSent = true;
-        } else {
-          console.error("Brevo fallback email failed:", await emailResponse.text());
         }
       }
 
