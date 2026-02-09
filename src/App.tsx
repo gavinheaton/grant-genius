@@ -31,6 +31,8 @@ import SystemHealth from "./pages/admin/SystemHealth";
 import AdminAssistant from "./pages/admin/AdminAssistant";
 import ManualQueue from "./pages/admin/ManualQueue";
 import CmsPages from "./pages/admin/CmsPages";
+import ReportReview from "./pages/admin/ReportReview";
+import ReviewsList from "./pages/admin/ReviewsList";
 
 const queryClient = new QueryClient();
 
