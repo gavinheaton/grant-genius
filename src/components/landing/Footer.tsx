@@ -1,7 +1,17 @@
 import { GraduationCap } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useCmsFooterPages } from "@/hooks/useCmsPages";
+import { useAuth } from "@/hooks/useAuth";
 
 export function Footer() {
+  const { isAuthenticated } = useAuth();
+  const { data: footerPages } = useCmsFooterPages();
+
+  // Filter footer pages based on auth requirement
+  const visibleFooterPages = footerPages?.filter(
+    (page) => !page.requires_auth || isAuthenticated
+  );
+
   return (
     <footer className="border-t bg-muted/30 py-12">
       <div className="container">
@@ -14,12 +24,29 @@ export function Footer() {
           </div>
           
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
-            <Link to="/privacy" className="hover:text-foreground transition-colors">
-              Privacy Policy
-            </Link>
-            <Link to="/terms" className="hover:text-foreground transition-colors">
-              Terms of Service
-            </Link>
+            {/* Dynamic CMS footer pages */}
+            {visibleFooterPages?.map((page) => (
+              <Link
+                key={page.id}
+                to={`/page/${page.slug}`}
+                className="hover:text-foreground transition-colors"
+              >
+                {page.title}
+              </Link>
+            ))}
+            
+            {/* Fallback links if no CMS pages configured */}
+            {(!visibleFooterPages || visibleFooterPages.length === 0) && (
+              <>
+                <Link to="/page/privacy" className="hover:text-foreground transition-colors">
+                  Privacy Policy
+                </Link>
+                <Link to="/page/terms" className="hover:text-foreground transition-colors">
+                  Terms of Service
+                </Link>
+              </>
+            )}
+            
             <a href="mailto:support@grantgenius.com.au" className="hover:text-foreground transition-colors">
               Support
             </a>

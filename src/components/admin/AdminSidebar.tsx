@@ -13,6 +13,7 @@ import {
   Activity,
   Sparkles,
   ClipboardList,
+  FileStack,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
@@ -51,6 +52,10 @@ const reportItems = [
   { title: "PDF Templates", url: "/admin/pdf-templates", icon: Printer },
   { title: "DOCX Templates", url: "/admin/docx-templates", icon: FileType },
   { title: "AI Prompts", url: "/admin/prompt-bundles", icon: Bot },
+];
+
+const contentItems = [
+  { title: "CMS Pages", url: "/admin/pages", icon: FileStack },
 ];
 
 const systemItems = [
@@ -153,6 +158,28 @@ export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
           <SidebarGroupContent>
             <SidebarMenu>
               {reportItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton asChild isActive={isActive(item.url)}>
+                    <NavLink
+                      to={item.url}
+                      className="flex items-center gap-2"
+                      activeClassName="bg-accent text-accent-foreground"
+                    >
+                      <item.icon className="h-4 w-4" />
+                      {!collapsed && <span>{item.title}</span>}
+                    </NavLink>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel>Content</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {contentItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)}>
                     <NavLink
