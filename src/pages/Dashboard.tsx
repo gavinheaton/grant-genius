@@ -311,11 +311,18 @@ export default function Dashboard() {
               return (
                 <Card
                   key={app.id}
-                  className="shadow-card hover:shadow-elevated transition-all duration-200 cursor-pointer"
+                  className="shadow-card hover:shadow-elevated transition-all duration-200"
                 >
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between">
-                      <CardTitle className="text-lg">{app.grant_version?.grant?.name || "Application"}</CardTitle>
+                      <Link 
+                        to={`/applications/${app.id}`}
+                        className="hover:underline"
+                      >
+                        <CardTitle className="text-lg">
+                          {app.title || "Untitled Application"}
+                        </CardTitle>
+                      </Link>
                       <div className="flex items-center gap-2">
                         <Button
                           variant="ghost"
@@ -335,17 +342,17 @@ export default function Dashboard() {
                         </Badge>
                       </div>
                     </div>
-                    {app.title && (
-                      <p className="text-sm text-muted-foreground truncate">{app.title}</p>
-                    )}
+                    <p className="text-sm text-muted-foreground truncate">
+                      {app.grant_version?.grant?.name || "Unknown Grant"}
+                    </p>
                   </CardHeader>
                   <CardContent>
                     <CardDescription>
                       Last updated: {new Date(app.updated_at).toLocaleDateString()}
                     </CardDescription>
-                    <Button variant="ghost" size="sm" className="mt-4 w-full" asChild>
+                    <Button variant="outline" size="sm" className="mt-4 w-full" asChild>
                       <Link to={`/applications/${app.id}`}>
-                        Open Application
+                        View Details
                       </Link>
                     </Button>
                   </CardContent>
@@ -366,10 +373,10 @@ export default function Dashboard() {
             <AlertDialogTitle>Delete Application?</AlertDialogTitle>
             <AlertDialogDescription>
               {applicationToDelete?.status === "draft" 
-                ? `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" draft.`
+                ? `This will permanently delete "${applicationToDelete?.title || "Untitled Application"}" draft.`
                 : applicationToDelete?.status === "ready"
-                  ? `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" application and all its generated reports.`
-                  : `This will permanently delete the "${applicationToDelete?.grant_version?.grant?.name}" application.`
+                  ? `This will permanently delete "${applicationToDelete?.title || "Untitled Application"}" and all its generated reports.`
+                  : `This will permanently delete "${applicationToDelete?.title || "Untitled Application"}".`
               } This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
