@@ -34,6 +34,7 @@ import { AIAnalysisPanel } from "@/components/admin/AIAnalysisPanel";
 import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
 import { usePromptBundles, usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
+import { WorkflowTab } from "@/components/admin/WorkflowTab";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
