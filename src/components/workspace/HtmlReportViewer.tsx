@@ -125,8 +125,8 @@ export function HtmlReportViewer({
             </>
           )}
 
-          {/* Sources Section */}
-          {extractedReport.sources && extractedReport.sources.length > 0 && (
+          {/* Sources Section - only show if not already in report HTML */}
+          {!extractedReport.hasReferences && extractedReport.sources && extractedReport.sources.length > 0 && (
             <>
               <Separator className="my-6" />
               <div className="py-4">

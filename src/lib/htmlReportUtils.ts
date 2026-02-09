@@ -168,6 +168,16 @@ export function normalizeReportWithCitations(
 }
 
 /**
+ * Detect if the HTML already contains a References/Citations/Bibliography section
+ * Used to prevent duplicate references when exporting
+ */
+export function hasReferencesInHtml(html: string): boolean {
+  if (!html) return false;
+  // Match h1, h2, or h3 headings containing References, Citations, or Bibliography
+  return /<h[123][^>]*>.*(?:References|Citations|Bibliography).*<\/h[123]>/i.test(html);
+}
+
+/**
  * Extract report HTML from content_json
  * Handles both new HTML format and legacy markdown format
  */
@@ -177,6 +187,8 @@ export interface ExtractedHtmlReport {
   sources?: Array<{ id: string; mla_citation: string; url?: string }>;
   dataGaps?: string[];
   isLegacy: boolean;
+  /** True if the HTML already contains a References section */
+  hasReferences: boolean;
 }
 
 interface SectionEntry {
@@ -291,23 +303,27 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
   
   // Case -1: Manual report HTML - check for manual_report_html field first
   if (content.manual_report_html && typeof content.manual_report_html === "string") {
+    const html = content.manual_report_html;
     return {
-      html: content.manual_report_html,
+      html,
       tables: undefined,
       sources: undefined,
       dataGaps: undefined,
       isLegacy: false,
+      hasReferences: hasReferencesInHtml(html),
     };
   }
   
   // Also check inside report_html for manual reports stored as { report_html: "..." }
   if (content.report_html && typeof content.report_html === "string") {
+    const html = content.report_html;
     return {
-      html: content.report_html,
+      html,
       tables: undefined,
       sources: undefined,
       dataGaps: undefined,
       isLegacy: false,
+      hasReferences: hasReferencesInHtml(html),
     };
   }
   
@@ -328,12 +344,14 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
       
       const stepObj = stepData as Record<string, unknown>;
       if (stepObj.report_html && typeof stepObj.report_html === 'string') {
+        const html = stepObj.report_html;
         return {
-          html: stepObj.report_html,
+          html,
           tables: stepObj.tables as ExtractedHtmlReport["tables"],
           sources: stepObj.all_sources as ExtractedHtmlReport["sources"],
           dataGaps: stepObj.data_gaps as string[],
           isLegacy: false,
+          hasReferences: hasReferencesInHtml(html),
         };
       }
     }
@@ -343,12 +361,14 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
   const assembledReport = content.assembledReport as Record<string, unknown> | undefined;
   
   if (assembledReport?.report_html && typeof assembledReport.report_html === "string") {
+    const html = assembledReport.report_html;
     return {
-      html: assembledReport.report_html,
+      html,
       tables: assembledReport.tables as ExtractedHtmlReport["tables"],
       sources: assembledReport.all_sources as ExtractedHtmlReport["sources"],
       dataGaps: assembledReport.data_gaps as string[],
       isLegacy: false,
+      hasReferences: hasReferencesInHtml(html),
     };
   }
 
@@ -356,12 +376,14 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
   if (assembledReport?.report_markdown) {
     const markdown = extractMarkdownFromNested(assembledReport.report_markdown);
     if (markdown) {
+      const html = convertMarkdownToHtml(markdown);
       return {
-        html: convertMarkdownToHtml(markdown),
+        html,
         tables: assembledReport.tables as ExtractedHtmlReport["tables"],
         sources: assembledReport.all_sources as ExtractedHtmlReport["sources"],
         dataGaps: assembledReport.data_gaps as string[],
         isLegacy: true,
+        hasReferences: hasReferencesInHtml(html),
       };
     }
   }
@@ -392,6 +414,7 @@ export function extractReportHtml(contentJson: unknown): ExtractedHtmlReport | n
           sources,
           dataGaps: [],
           isLegacy: true,
+          hasReferences: hasReferencesInHtml(html),
         };
       }
     }

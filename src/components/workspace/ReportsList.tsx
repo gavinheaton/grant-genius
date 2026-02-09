@@ -8,7 +8,7 @@ import { HtmlReportViewer } from "./HtmlReportViewer";
 import { type Report } from "@/hooks/useReportGeneration";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
-import { extractReportHtml, sanitizeHtml, REPORT_HTML_STYLES } from "@/lib/htmlReportUtils";
+import { extractReportHtml } from "@/lib/htmlReportUtils";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -47,93 +47,62 @@ export function ReportsList({ reports, isLoading, onDownload, onDeleteReport, gr
     }
   }, [reportToDelete, onDeleteReport]);
 
-  // Simple print-based PDF generation
+  // Server-side PDF generation using templates
   const handleGeneratePdf = useCallback(async (report: Report) => {
     setGeneratingPdf(report.id);
 
     try {
-      const extracted = extractReportHtml(report.content_json);
-      if (!extracted) {
-        throw new Error("Could not extract report content");
+      // Get current session for auth header
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData.session) {
+        throw new Error("Not authenticated");
       }
 
-      const sanitizedHtml = sanitizeHtml(extracted.html);
-      
-      // Create a printable document
-      const printWindow = window.open("", "_blank");
-      if (!printWindow) {
-        throw new Error("Pop-up blocked. Please allow pop-ups for this site.");
+      // Call server-side PDF generation
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-pdf`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${sessionData.session.access_token}`,
+            "apikey": import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({ reportId: report.id }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to generate PDF");
       }
 
-      const printContent = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>${grantName} - Report v${report.version_number}</title>
-          <style>
-            ${REPORT_HTML_STYLES}
-            body {
-              font-family: 'Inter', system-ui, sans-serif;
-              margin: 40px;
-              line-height: 1.6;
-            }
-            .cover-page {
-              text-align: center;
-              padding: 100px 40px;
-              page-break-after: always;
-            }
-            .cover-title {
-              font-size: 28px;
-              font-weight: 700;
-              color: #1e3a5f;
-              margin-bottom: 20px;
-            }
-            .cover-subtitle {
-              font-size: 18px;
-              color: #d97706;
-              margin-bottom: 40px;
-            }
-            .cover-date {
-              font-size: 14px;
-              color: #666;
-            }
-            @media print {
-              body { margin: 20px; }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="cover-page">
-            <div class="cover-title">Commercialisation Research Report</div>
-            <div class="cover-subtitle">${grantName}</div>
-            <div class="cover-date">Generated on ${format(new Date(report.created_at), "MMMM d, yyyy")}</div>
-            <div class="cover-date">Version ${report.version_number}</div>
-          </div>
-          <div class="report-html-content">
-            ${sanitizedHtml}
-          </div>
-          ${extracted.sources && extracted.sources.length > 0 ? `
-            <h1 style="margin-top: 40px; border-top: 2px solid #d97706; padding-top: 20px;">References</h1>
-            ${extracted.sources.map(s => `
-              <p style="margin-left: 40px; text-indent: -40px;">[${s.id}] ${s.mla_citation}</p>
-            `).join('')}
-          ` : ''}
-        </body>
-        </html>
-      `;
-
-      printWindow.document.write(printContent);
-      printWindow.document.close();
+      const data = await response.json();
       
-      // Wait for content to load then print
-      printWindow.onload = () => {
-        printWindow.print();
-      };
+      if (data.downloadUrl) {
+        // Download the PDF from the signed URL
+        const pdfResponse = await fetch(data.downloadUrl);
+        if (!pdfResponse.ok) {
+          throw new Error("Failed to download PDF");
+        }
+        
+        const blob = await pdfResponse.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${grantName.replace(/\s+/g, "_")}_Report_v${report.version_number}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
 
-      toast({
-        title: "Print Dialog Opened",
-        description: "Use 'Save as PDF' in the print dialog to save your report.",
-      });
+        toast({
+          title: "PDF Generated",
+          description: "Your PDF report has been downloaded.",
+        });
+      } else {
+        throw new Error("No download URL returned");
+      }
     } catch (error: unknown) {
       console.error("PDF generation error:", error);
       toast({
