@@ -16,6 +16,7 @@ export interface PromptBundle {
   system_prompt: string;
   created_at: string;
   updated_at: string;
+  step_count?: number;
 }
 
 export type StepType = 'ai_prompt' | 'firecrawl_search' | 'firecrawl_scrape';
@@ -92,11 +93,17 @@ export function usePromptBundles() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("prompt_bundles")
-        .select("*")
+        .select("*, prompt_bundle_steps(count)")
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      return data as PromptBundle[];
+      
+      // Transform the nested count into a flat step_count property
+      return (data || []).map((bundle) => ({
+        ...bundle,
+        step_count: bundle.prompt_bundle_steps?.[0]?.count ?? 0,
+        prompt_bundle_steps: undefined, // Remove the nested array
+      })) as PromptBundle[];
     },
   });
 }

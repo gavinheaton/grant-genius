@@ -285,9 +285,11 @@ export default function PromptBundles() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    Last updated: {new Date(bundle.updated_at).toLocaleDateString()}
-                  </p>
+                  <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">{bundle.step_count ?? 0} steps</span>
+                    <span>Created: {new Date(bundle.created_at).toLocaleDateString()}</span>
+                    <span>Updated: {new Date(bundle.updated_at).toLocaleDateString()}</span>
+                  </div>
                 </CardContent>
               </Card>
             ))}
