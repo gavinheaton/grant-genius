@@ -1,29 +1,31 @@
 
 
-## Finishing Touches: Review Status Indicators
+## Allow Any Admin to Edit Prompt Bundles
 
-Two small additions to complete the review workflow feature.
+Currently only Super Admins can create, update, and delete prompt bundles and their steps. This change updates the RLS policies so any Admin (including Super Admin) has full write access.
 
-### 1. Pending Review Count Badge (AdminSidebar)
+### Database Migration
 
-Add a live count of reviews assigned to the current admin that are in "pending" status. Display as a small badge next to the "Reviews" link in the sidebar.
+Update 6 RLS policies across 2 tables:
 
-- Query `report_reviews` where `reviewer_user_id = current user` and `status = 'pending'`
-- Show count as a small numbered badge (e.g., a red/amber circle with "3")
-- Use `useEffect` + Supabase query on mount (no need for realtime here)
+**`prompt_bundles`** -- change 3 policies:
+- "Super admins can delete prompt bundles" -> "Admins can delete prompt bundles" (using `is_admin()`)
+- "Super admins can insert prompt bundles" -> "Admins can insert prompt bundles" (using `is_admin()`)
+- "Super admins can update prompt bundles" -> "Admins can update prompt bundles" (using `is_admin()`)
 
-### 2. "In Review" Badge on Application Workspace
+**`prompt_bundle_steps`** -- change 3 policies:
+- "Super admins can delete prompt bundle steps" -> "Admins can delete prompt bundle steps" (using `is_admin()`)
+- "Super admins can insert prompt bundle steps" -> "Admins can insert prompt bundle steps" (using `is_admin()`)
+- "Super admins can update prompt bundle steps" -> "Admins can update prompt bundle steps" (using `is_admin()`)
 
-When a researcher views their application and the latest report has `review_status` of `pending_review` or `in_review`, show an informational card/badge so they know their report is being reviewed.
+### What Changes
 
-- After reports are loaded, check the latest report's `review_status`
-- If it's `pending_review` or `in_review`, show a card with a Clock icon and message like "Your report is currently being reviewed. You'll receive an email once it's ready."
-- This replaces the "no report yet" state when the report exists but is still in review
+| Before | After |
+|--------|-------|
+| `has_role(auth.uid(), 'super_admin')` | `is_admin(auth.uid())` |
+| Only Super Admins can edit | Any Admin or Super Admin can edit |
 
-### Technical Details
+### No Frontend Changes Required
 
-| File | Change |
-|------|--------|
-| `src/components/admin/AdminSidebar.tsx` | Add `useEffect` to fetch pending review count for current user; render badge on "Reviews" item |
-| `src/pages/ApplicationWorkspace.tsx` | After loading reports, check `review_status`; show "In Review" info card when applicable |
+The frontend already uses the `useAuth` hook which provides `isAdmin` -- no UI gating changes are needed since the admin pages are already accessible to all admins.
 
