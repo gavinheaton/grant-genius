@@ -390,9 +390,9 @@ serve(async (req) => {
     const publicArticleUrl = inputs.publicArticleUrl as string;
     const summary = inputs.summary as string;
 
-    if (!publicArticleUrl || !summary) {
+    if (!summary) {
       return new Response(
-        JSON.stringify({ error: "Article URL and summary are required" }),
+        JSON.stringify({ error: "Summary is required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
