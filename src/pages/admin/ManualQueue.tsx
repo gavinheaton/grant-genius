@@ -526,6 +526,28 @@ export default function ManualQueue() {
           }}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deletingApp} onOpenChange={(open) => !open && setDeletingApp(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Application</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete "<strong>{deletingApp?.title}</strong>" and all associated reports and runs. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deletingApp && deleteApplicationMutation.mutate(deletingApp.id)}
+            >
+              {deleteApplicationMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
