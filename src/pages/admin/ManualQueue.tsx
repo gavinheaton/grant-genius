@@ -14,7 +14,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Clock, User, FileText, ExternalLink, ChevronDown, ChevronUp, AlertCircle, CheckCircle } from "lucide-react";
+import { Loader2, Mail, Clock, User, FileText, ExternalLink, ChevronDown, ChevronUp, AlertCircle, CheckCircle, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { format } from "date-fns";
 import { ManualReportEditor } from "@/components/admin/ManualReportEditor";
 
