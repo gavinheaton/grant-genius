@@ -85,6 +85,8 @@ export function PipelineQualityCard({
   result,
   onApplyRepairs,
   isApplyingRepairs = false,
+  onRerunQA,
+  isRerunning = false,
   className,
 }: PipelineQualityCardProps) {
   const verdictConfig = useMemo(() => {
