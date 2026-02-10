@@ -1,41 +1,93 @@
 
 
-## Fix: Step Reordering Blocked by CHECK Constraint
+## Evolve Pipeline Quality Gate for Dynamic Pipelines
 
-### Root Cause
+### Problem
 
-The `swap_step_numbers` function sets `step_number = -1` as a temporary intermediate value, but there's a **CHECK constraint** on the table:
+The current `pipelineQualityGate.ts` and `pipelineValidation.ts` are built around a **hardcoded list of 14 core step names** (e.g., `build_source_pack`, `tam_sam_som_dual_methodology`, `finalize_citations`). This breaks for dynamically generated pipelines where:
 
-```
-CHECK ((step_number >= 0) AND (step_number <= 50))
-```
+1. **Step names vary by grant** -- a Social Impact grant won't have `tam_sam_som_dual_methodology`; it might have `beneficiary_outcome_mapping` instead.
+2. **Resequencing invalidates data flow** -- moving a step that references `{{step3}}` above step 3 creates a forward reference, but the validator doesn't re-check after reorder.
+3. **Hard-fail on missing "core steps"** means every dynamically generated pipeline fails validation unless it happens to use the exact same step names.
 
-This blocks the `-1` value, causing the swap to fail before it can complete.
+### Solution: Shift from Name-Based to Role-Based + Data-Flow Validation
 
-### Solution
+Replace the rigid name-matching approach with two complementary checks:
 
-Update both database functions to use a temporary value **within** the allowed range (0) instead of -1. Since step numbers for actual steps start at 1, using 0 as the temporary parking value is safe and stays within the constraint.
+**A. Structural Role Detection (replaces hardcoded `CORE_STEP_NAMES`)**
+Instead of checking for exact step names, detect **functional roles** by scanning step content (name + description + prompt keywords). For example:
+- "Source gathering" role: step name/description contains `source_pack`, `evidence`, `scrape`, `search`
+- "Assembly" role: step has `is_assembly_step = true` or name contains `assembly`, `finalize`, `report`
+- "Sanitiser" role: prompt contains `forbidden`, `sanitize`, `scan`, `clean`
+- "Citation" role: prompt contains `citation`, `apa`, `reference list`
 
-However, if two steps could theoretically both need to park at 0 simultaneously (in `reorder_step_numbers`), we need a different approach for the bulk case. The cleanest fix:
+This allows any step name while still ensuring the pipeline has the right functional coverage.
 
-1. **Drop the CHECK constraint** -- it's overly restrictive and the unique constraint + application logic already prevent invalid values. This is the simplest and most robust approach.
-
-2. **Alternatively**, modify the swap function to use step_number = 0 (within range) and modify the bulk reorder to use values in the range 0..0 with careful sequencing. This is fragile.
-
-**Recommended approach**: Drop the CHECK constraint via a migration, since the unique constraint on `(bundle_id, step_number)` already prevents duplicates, and the application layer controls valid step numbers.
+**B. Data Flow Integrity (enhanced `pipelineValidation.ts`)**
+The existing `validatePipelineDataFlow` already checks `{{stepN}}` references, but needs enhancement:
+- After any resequence, re-validate all step references against the **new** ordering.
+- Flag steps where `{{stepN}}` references a step that was moved to a position after the current step.
+- Detect "orphaned" references -- step N references step M's output, but step M was deleted or moved.
+- Surface these as **blocking errors** in the Quality Card UI.
 
 ### Changes
 
-**1. Database migration**
-- Drop the `prompt_bundle_steps_step_number_check` constraint
+**1. `src/lib/pipelineQualityGate.ts` -- Major Refactor**
 
-**2. No code changes needed**
-- The existing `swap_step_numbers` and `reorder_step_numbers` functions will work correctly once the CHECK constraint is removed.
+- Replace `CORE_STEP_NAMES` with `REQUIRED_ROLES` -- a list of functional role definitions, each with keyword matchers:
 
-### Technical Details
+```text
+REQUIRED_ROLES:
+  - source_gathering: matches "source_pack", "source", "evidence gather"
+  - market_sizing: matches "tam", "sam", "som", "market siz"
+  - sanitiser: matches "sanitiser", "sanitizer", "pre_assembly", "forbidden token"
+  - citation_finalization: matches "finalize_citation", "citation", "apa", "reference"
+  - report_assembly: matches "report_assembly", "assembly", "finalize_report"
+  - rubric_traceability: matches "rubric", "traceability", "matrix"
+  - risk_governance: matches "risk", "governance", "register"
+```
 
-| Layer | Change |
-|-------|--------|
-| Database | `ALTER TABLE prompt_bundle_steps DROP CONSTRAINT prompt_bundle_steps_step_number_check;` |
-| Frontend | No changes needed |
-| Hook | No changes needed |
+- `checkHardFails`: Instead of checking for exact step names, check that each required role is filled by at least one step. Keep the checks for: sequential numbering, minimum prompt length, forbidden patterns, duplicate names.
+
+- `scoreStructuralCompleteness`: Score based on role coverage (how many of the required roles are filled) and ordering sanity (source gathering early, assembly/citation late).
+
+- Red flag detection: Keep the content-quality checks (proxy protocol, dual methodology, etc.) but match by role/keyword rather than exact step name.
+
+**2. `src/lib/pipelineValidation.ts` -- Data Flow Enhancement**
+
+- Add a new function `validatePostReorder(steps)` that:
+  - Sorts steps by `step_number`
+  - For each step, extracts all `{{stepN}}` references
+  - Checks that N < current step's position in the sorted order (not just its `step_number` value)
+  - Reports broken references as errors with clear messages: "Step 'market_sizing' (position 5) references {{step7}} which is now at position 3 -- reference is stale"
+
+- Add `detectStaleReferences(steps)` that identifies when a step's prompt references `{{stepN}}` but step N's content has changed meaning after reorder (e.g., step 3 used to be "competitor_research" but after reorder it's "risk_register").
+
+**3. `src/pages/admin/PromptBundleEdit.tsx` -- Wire Up Data Flow Validation**
+
+- Run `validatePipelineDataFlow` alongside `validatePipelineQuality` in the `useMemo`
+- Pass data flow errors into the Quality Card or display as a separate "Data Flow" section
+- Show per-step warnings inline in the `InlinePipelineEditor` when a step has broken references
+
+**4. `src/components/admin/PipelineQualityCard.tsx` -- Add Data Flow Section**
+
+- Add a new collapsible section for "Data Flow Issues" showing broken step references
+- Each issue links to the affected step with a clear description of what's broken
+- Color-code: red for forward/broken references, yellow for stale references
+
+**5. Update tests in `src/test/pipelineQualityGate.test.ts`**
+
+- Replace tests that check for exact `CORE_STEP_NAMES` with tests for role detection
+- Add tests for reorder scenarios: swap two steps and verify validation catches broken references
+- Add tests for dynamically named pipelines passing validation
+
+### Technical Summary
+
+| File | Change |
+|------|--------|
+| `src/lib/pipelineQualityGate.ts` | Replace `CORE_STEP_NAMES` with `REQUIRED_ROLES` keyword matching; update all scoring/red-flag functions to use role detection |
+| `src/lib/pipelineValidation.ts` | Add `validatePostReorder()` and `detectStaleReferences()` functions |
+| `src/pages/admin/PromptBundleEdit.tsx` | Run data flow validation alongside quality gate; pass results to UI |
+| `src/components/admin/PipelineQualityCard.tsx` | Add "Data Flow Issues" collapsible section |
+| `src/test/pipelineQualityGate.test.ts` | Update tests for role-based validation and reorder scenarios |
+
