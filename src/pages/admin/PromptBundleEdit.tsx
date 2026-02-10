@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,40 +8,58 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 import { PipelineQualityCard } from "@/components/admin/PipelineQualityCard";
-import { validatePipelineQuality, type PipelineStep as QualityStep } from "@/lib/pipelineQualityGate";
+import { validatePipelineQuality, type PipelineStep as QualityStep, type PipelineQualityResult } from "@/lib/pipelineQualityGate";
 import { validatePostReorder, type PipelineStep as ValidationStep } from "@/lib/pipelineValidation";
+
+function runQA(steps: Array<{ step_number: number; step_name: string; step_description: string; prompt_template: string; model_override?: string | null }>) {
+  const qualitySteps: QualityStep[] = steps.map(step => ({
+    step_number: step.step_number,
+    step_name: step.step_name,
+    step_description: step.step_description,
+    prompt_template: step.prompt_template,
+    model_tier: step.model_override || undefined,
+  }));
+
+  const validationSteps: ValidationStep[] = steps.map(step => ({
+    step_number: step.step_number,
+    step_name: step.step_name,
+    prompt_template: step.prompt_template,
+  }));
+
+  const qr = validatePipelineQuality(qualitySteps);
+  const reorderResult = validatePostReorder(validationSteps);
+
+  if (reorderResult.issues.length > 0) {
+    qr.data_flow_issues = reorderResult.issues;
+  }
+
+  return qr;
+}
 
 export default function PromptBundleEdit() {
   const { id } = useParams();
   const { data: bundle, isLoading } = usePromptBundle(id);
 
-  // Calculate quality gate + data flow results when bundle loads
-  const { qualityResult, dataFlowIssues } = useMemo(() => {
-    if (!bundle?.steps || bundle.steps.length === 0) return { qualityResult: null, dataFlowIssues: [] };
+  const [qualityResult, setQualityResult] = useState<PipelineQualityResult | null>(null);
+  const [isRerunning, setIsRerunning] = useState(false);
 
-    const qualitySteps: QualityStep[] = bundle.steps.map(step => ({
-      step_number: step.step_number,
-      step_name: step.step_name,
-      step_description: step.step_description,
-      prompt_template: step.prompt_template,
-      model_tier: step.model_override || undefined,
-    }));
-
-    const validationSteps: ValidationStep[] = bundle.steps.map(step => ({
-      step_number: step.step_number,
-      step_name: step.step_name,
-      prompt_template: step.prompt_template,
-    }));
-
-    const qr = validatePipelineQuality(qualitySteps);
-    const reorderResult = validatePostReorder(validationSteps);
-    
-    // Merge data flow issues into quality result
-    if (reorderResult.issues.length > 0) {
-      qr.data_flow_issues = reorderResult.issues;
+  // Auto-run QA when bundle loads
+  useEffect(() => {
+    if (bundle?.steps && bundle.steps.length > 0) {
+      setQualityResult(runQA(bundle.steps));
+    } else {
+      setQualityResult(null);
     }
+  }, [bundle?.steps]);
 
-    return { qualityResult: qr, dataFlowIssues: reorderResult.issues };
+  const handleRerunQA = useCallback(() => {
+    if (!bundle?.steps || bundle.steps.length === 0) return;
+    setIsRerunning(true);
+    // Use setTimeout to allow the UI to show loading state
+    setTimeout(() => {
+      setQualityResult(runQA(bundle.steps));
+      setIsRerunning(false);
+    }, 300);
   }, [bundle?.steps]);
 
   if (isLoading) {
