@@ -8,18 +8,18 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 import { PipelineQualityCard } from "@/components/admin/PipelineQualityCard";
-import { validatePipelineQuality, type PipelineStep } from "@/lib/pipelineQualityGate";
+import { validatePipelineQuality, type PipelineStep as QualityStep } from "@/lib/pipelineQualityGate";
+import { validatePostReorder, type PipelineStep as ValidationStep } from "@/lib/pipelineValidation";
 
 export default function PromptBundleEdit() {
   const { id } = useParams();
   const { data: bundle, isLoading } = usePromptBundle(id);
 
-  // Calculate quality gate results when bundle loads
-  const qualityResult = useMemo(() => {
-    if (!bundle?.steps || bundle.steps.length === 0) return null;
+  // Calculate quality gate + data flow results when bundle loads
+  const { qualityResult, dataFlowIssues } = useMemo(() => {
+    if (!bundle?.steps || bundle.steps.length === 0) return { qualityResult: null, dataFlowIssues: [] };
 
-    // Transform bundle steps to PipelineStep format
-    const pipelineSteps: PipelineStep[] = bundle.steps.map(step => ({
+    const qualitySteps: QualityStep[] = bundle.steps.map(step => ({
       step_number: step.step_number,
       step_name: step.step_name,
       step_description: step.step_description,
@@ -27,7 +27,21 @@ export default function PromptBundleEdit() {
       model_tier: step.model_override || undefined,
     }));
 
-    return validatePipelineQuality(pipelineSteps);
+    const validationSteps: ValidationStep[] = bundle.steps.map(step => ({
+      step_number: step.step_number,
+      step_name: step.step_name,
+      prompt_template: step.prompt_template,
+    }));
+
+    const qr = validatePipelineQuality(qualitySteps);
+    const reorderResult = validatePostReorder(validationSteps);
+    
+    // Merge data flow issues into quality result
+    if (reorderResult.issues.length > 0) {
+      qr.data_flow_issues = reorderResult.issues;
+    }
+
+    return { qualityResult: qr, dataFlowIssues: reorderResult.issues };
   }, [bundle?.steps]);
 
   if (isLoading) {
