@@ -1,32 +1,28 @@
 
-
-## Fix: Missing Review Notification Email in Worker-Proxy
+## Fix: Admin Access to Reports for Review Editing
 
 ### Problem
-When a report completes via the Cloud Run worker and enters the review workflow, the `worker-proxy` function creates the review record but does **not** send a notification email to the assigned reviewer. This means the reviewer has no way of knowing a report is waiting for them unless they manually check the admin dashboard.
+Two missing RLS policies prevent the review page from working for admins:
+1. **`reports` table** -- no admin SELECT policy, so the report content never loads
+2. **`reports` table** -- no admin UPDATE policy, so saving edits back to the report would fail
 
-The other two code paths that create review steps (`approve-review` and `complete-manual-report`) both send the `REVIEW_REQUESTED` email correctly -- `worker-proxy` is the only one missing it.
+The `report_reviews` table already has correct policies (admin SELECT, admin INSERT, and reviewer UPDATE).
 
 ### Fix
 
-**File: `supabase/functions/worker-proxy/index.ts`**
+**Database Migration** -- Add two RLS policies to the `reports` table:
 
-Add reviewer notification email logic to the `workerProxyCheckReviewWorkflow` function, after the `report_reviews` insert succeeds (around line 1072). The implementation will:
+```sql
+-- Allow admins to read any report (needed for review workflow)
+CREATE POLICY "Admins can view all reports"
+  ON public.reports FOR SELECT
+  USING (is_admin(auth.uid()));
 
-1. Look up the reviewer's email from the `profiles` table using `firstStep.reviewer_user_id`
-2. Look up the grant name (already have `grantVersion.grant_id`)
-3. Fetch the `REVIEW_REQUESTED` email template from `email_templates`
-4. Send the email via Brevo API (using `BREVO_API_KEY`, same pattern as `approve-review`)
-5. Log the sent email to `email_outbox`
-6. This is fire-and-forget -- a failure to send the email should not break the review workflow
+-- Allow admins to update any report (needed for editing in review)
+CREATE POLICY "Admins can update all reports"
+  ON public.reports FOR UPDATE
+  USING (is_admin(auth.uid()));
+```
 
-The email will include:
-- Subject: "Report Review Required - {grant_name}"
-- Reviewer name, grant name, and a link to the review page
-- Uses the same shortcode interpolation as the existing implementations
-
-### No other changes needed
-- Database schema is already correct
-- The `REVIEW_REQUESTED` template already exists in `email_templates`
-- The `email_outbox` table is ready to receive the log entry
-
+### No code changes needed
+The `ReportReview.tsx` component already has the full edit/preview UI with HTML editing, save draft, and approve buttons. Once the data is accessible via these policies, everything will work -- the report content will load into the editor and admins can save their edits.
