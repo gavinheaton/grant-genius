@@ -671,6 +671,84 @@ export type Database = {
         }
         Relationships: []
       }
+      homepage_settings: {
+        Row: {
+          features_heading: string | null
+          features_items: Json | null
+          features_subheading: string | null
+          footer_brand_description: string | null
+          footer_columns: Json | null
+          footer_copyright: string | null
+          footer_support_email: string | null
+          hero_badge_text: string | null
+          hero_cta_primary_link: string | null
+          hero_cta_primary_text: string | null
+          hero_cta_secondary_link: string | null
+          hero_cta_secondary_text: string | null
+          hero_headline: string | null
+          hero_image_url: string | null
+          hero_subheadline: string | null
+          hero_trust_items: Json | null
+          id: string
+          pricing_footer_note: string | null
+          pricing_heading: string | null
+          pricing_plans: Json | null
+          pricing_subheading: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          features_heading?: string | null
+          features_items?: Json | null
+          features_subheading?: string | null
+          footer_brand_description?: string | null
+          footer_columns?: Json | null
+          footer_copyright?: string | null
+          footer_support_email?: string | null
+          hero_badge_text?: string | null
+          hero_cta_primary_link?: string | null
+          hero_cta_primary_text?: string | null
+          hero_cta_secondary_link?: string | null
+          hero_cta_secondary_text?: string | null
+          hero_headline?: string | null
+          hero_image_url?: string | null
+          hero_subheadline?: string | null
+          hero_trust_items?: Json | null
+          id?: string
+          pricing_footer_note?: string | null
+          pricing_heading?: string | null
+          pricing_plans?: Json | null
+          pricing_subheading?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          features_heading?: string | null
+          features_items?: Json | null
+          features_subheading?: string | null
+          footer_brand_description?: string | null
+          footer_columns?: Json | null
+          footer_copyright?: string | null
+          footer_support_email?: string | null
+          hero_badge_text?: string | null
+          hero_cta_primary_link?: string | null
+          hero_cta_primary_text?: string | null
+          hero_cta_secondary_link?: string | null
+          hero_cta_secondary_text?: string | null
+          hero_headline?: string | null
+          hero_image_url?: string | null
+          hero_subheadline?: string | null
+          hero_trust_items?: Json | null
+          id?: string
+          pricing_footer_note?: string | null
+          pricing_heading?: string | null
+          pricing_plans?: Json | null
+          pricing_subheading?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
       orders: {
         Row: {
           amount_cents: number
