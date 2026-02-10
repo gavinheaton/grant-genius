@@ -67,7 +67,8 @@ export default function ApplicationWorkspace() {
   const progressRef = useRef<HTMLDivElement>(null);
   
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
-  const { isSuperAdmin } = useAuth();
+  const { isAdmin, isSuperAdmin } = useAuth();
+  const [showSubmittedDialog, setShowSubmittedDialog] = useState(false);
   
   // Callback when user runs out of credits - opens purchase modal
   const handleNoCredits = useCallback(() => {
