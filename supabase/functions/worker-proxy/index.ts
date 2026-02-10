@@ -928,7 +928,120 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     // Non-fatal, continue
   }
 
+  // === Post-save: email notification, review workflow, application status ===
+  try {
+    // 1. Check email_on_complete
+    const { data: runForEmail } = await supabase
+      .from("report_runs")
+      .select("email_on_complete")
+      .eq("id", report_run_id)
+      .single();
+
+    const emailOnComplete = runForEmail?.email_on_complete ?? false;
+
+    // 2. Update application status to ready
+    const { error: appStatusError } = await supabase
+      .from("applications")
+      .update({ status: "ready" })
+      .eq("id", application.id);
+
+    if (appStatusError) {
+      console.error("Failed to update application status:", appStatusError);
+    }
+
+    // 3. Check for review workflow
+    const workflowResult = await workerProxyCheckReviewWorkflow(supabase, report.id, application.id, application.grant_version_id);
+
+    if (workflowResult.hasWorkflow) {
+      console.log(`Report ${report.id} sent to review workflow (step 1 of ${workflowResult.totalSteps})`);
+    } else if (emailOnComplete) {
+      // No workflow - send email directly
+      try {
+        const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+        const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+        await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            reportRunId: report_run_id,
+            reportId: report.id,
+            applicationId: application.id,
+            userId: application.user_id,
+          }),
+        });
+        console.log(`Email notification triggered for report ${report.id}`);
+      } catch (emailError) {
+        console.error("Failed to send email notification:", emailError);
+      }
+    }
+  } catch (postSaveError) {
+    console.error("Post-save processing error (email/workflow):", postSaveError);
+  }
+
   return jsonResponse({ success: true, report_id: report.id });
+}
+
+/**
+ * Check if the grant has an enabled review workflow for worker-proxy save_report.
+ */
+async function workerProxyCheckReviewWorkflow(
+  supabase: any,
+  reportId: string,
+  applicationId: string,
+  grantVersionId: string
+): Promise<{ hasWorkflow: boolean; totalSteps: number }> {
+  try {
+    const { data: grantVersion } = await supabase
+      .from("grant_versions")
+      .select("grant_id")
+      .eq("id", grantVersionId)
+      .single();
+
+    if (!grantVersion) return { hasWorkflow: false, totalSteps: 0 };
+
+    const { data: workflow } = await supabase
+      .from("grant_review_workflows")
+      .select("id, step_count, is_enabled")
+      .eq("grant_id", grantVersion.grant_id)
+      .eq("is_enabled", true)
+      .maybeSingle();
+
+    if (!workflow) return { hasWorkflow: false, totalSteps: 0 };
+
+    const { data: firstStep } = await supabase
+      .from("grant_review_workflow_steps")
+      .select("id, reviewer_user_id")
+      .eq("workflow_id", workflow.id)
+      .eq("step_number", 1)
+      .single();
+
+    if (!firstStep) return { hasWorkflow: false, totalSteps: 0 };
+
+    await supabase
+      .from("reports")
+      .update({ review_status: "pending_review", current_review_step: 1 })
+      .eq("id", reportId);
+
+    await supabase
+      .from("report_reviews")
+      .insert({
+        report_id: reportId,
+        workflow_step_id: firstStep.id,
+        reviewer_user_id: firstStep.reviewer_user_id,
+        step_number: 1,
+        status: "pending",
+      });
+
+    console.log(`Review workflow started for report ${reportId}`);
+    return { hasWorkflow: true, totalSteps: workflow.step_count };
+  } catch (e) {
+    console.error("Error checking review workflow:", e);
+    return { hasWorkflow: false, totalSteps: 0 };
+  }
 }
 
 async function handleRefundCredit(supabase: any, params: Record<string, unknown>) {
