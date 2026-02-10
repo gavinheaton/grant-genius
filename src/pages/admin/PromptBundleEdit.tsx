@@ -50,11 +50,13 @@ export default function PromptBundleEdit() {
     try {
       const { data, error } = await supabase.functions.invoke('validate-pipeline', {
         body: {
-          steps: bundle.steps.map(s => ({
+        steps: bundle.steps.map(s => ({
             step_number: s.step_number,
             step_name: s.step_name,
             step_description: s.step_description,
             prompt_template: s.prompt_template,
+            step_type: s.step_type,
+            step_config_json: s.step_config_json,
           })),
         },
       });
