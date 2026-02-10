@@ -280,6 +280,11 @@ export default function ApplicationWorkspace() {
     await startGeneration();
     // Refetch entitlements after starting (credit consumed)
     setTimeout(() => refetchEntitlements(), 1000);
+
+    // For non-admin users, show the "report will be emailed" dialog
+    if (!isAdmin) {
+      setShowSubmittedDialog(true);
+    }
   };
 
   const handleDismissProgress = () => {
