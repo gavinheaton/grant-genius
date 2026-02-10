@@ -232,7 +232,6 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /\bPROXY\b(?![_\s]*(estimate|method|calculation|protocol))/gi, name: 'PROXY placeholder (without method)' },
 ];
 
-const MINIMUM_PROMPT_LENGTH = 1500;
 const MINIMUM_TOTAL_STEPS = 8; // Lowered: dynamic pipelines may have fewer steps
 
 // ============================================================================
@@ -282,10 +281,6 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
     if (!step.prompt_template || step.prompt_template.trim().length === 0) {
       failures.push(`Step "${step.step_name}" is missing prompt_template`);
       continue;
-    }
-
-    if (step.prompt_template.length < MINIMUM_PROMPT_LENGTH) {
-      failures.push(`Step "${step.step_name}" prompt_template (${step.prompt_template.length} chars) < ${MINIMUM_PROMPT_LENGTH} minimum`);
     }
 
     for (const { pattern, name } of HARD_FAIL_PATTERNS) {

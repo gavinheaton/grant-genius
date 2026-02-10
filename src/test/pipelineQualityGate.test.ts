@@ -265,11 +265,11 @@ describe("checkHardFails", () => {
     expect(failures.some(f => f.includes('Total steps') && f.includes('< minimum required'))).toBe(true);
   });
 
-  it("should fail if any prompt_template < 1500 chars", () => {
+  it("should NOT fail for short prompts (length constraint removed)", () => {
     const steps = createValidPipeline();
-    steps[0].prompt_template = "Too short";
+    steps[0].prompt_template = "Short but valid prompt";
     const failures = checkHardFails(steps);
-    expect(failures.some(f => f.includes('prompt_template') && f.includes('< 1500'))).toBe(true);
+    expect(failures.some(f => f.includes('< 1500'))).toBe(false);
   });
 
   it("should fail if {TBD} appears in template", () => {
@@ -430,7 +430,7 @@ describe("validatePipelineQuality", () => {
 
   it("should return 'fail' if any hard-fail triggers", () => {
     const steps = createValidPipeline();
-    steps[0].prompt_template = "Too short";
+    steps[0].prompt_template = "{TBD} placeholder"; // Use forbidden pattern instead of short length
     const result = validatePipelineQuality(steps);
     expect(result.verdict).toBe('fail');
     expect(result.hard_fail_reasons.length).toBeGreaterThan(0);
