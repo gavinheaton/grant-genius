@@ -33,6 +33,7 @@ import ManualQueue from "./pages/admin/ManualQueue";
 import CmsPages from "./pages/admin/CmsPages";
 import ReportReview from "./pages/admin/ReportReview";
 import ReviewsList from "./pages/admin/ReviewsList";
+import HomepageEditor from "./pages/admin/HomepageEditor";
 
 const queryClient = new QueryClient();
 
