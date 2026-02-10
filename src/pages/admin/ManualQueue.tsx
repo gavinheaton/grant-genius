@@ -294,6 +294,7 @@ export default function ManualQueue() {
                       <TableHead>Status</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead>Last Updated</TableHead>
+                      <TableHead className="w-16">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
