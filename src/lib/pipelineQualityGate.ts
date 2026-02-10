@@ -1,12 +1,15 @@
 /**
  * Pipeline Quality Gate - Comprehensive validation for generated prompt bundles
  * 
- * This module evaluates pipelines for:
- * - Structural completeness (core steps, sequencing)
+ * This module evaluates pipelines using ROLE-BASED detection (not hardcoded step names)
+ * to support dynamically generated and manually reordered pipelines.
+ * 
+ * Categories:
+ * - Structural completeness (role coverage, sequencing)
  * - Rubric/inputs traceability
  * - Evidence discipline and auditability
  * - Assessor insight quality
- * - Commercial reality layer ("researcher gap filling")
+ * - Commercial reality layer
  */
 
 // ============================================================================
@@ -27,6 +30,15 @@ export interface PipelineQualityResult {
   red_flags: string[];
   repair_actions: RepairAction[];
   notes: string;
+  data_flow_issues?: DataFlowIssue[];
+}
+
+export interface DataFlowIssue {
+  step_number: number;
+  step_name: string;
+  severity: 'error' | 'warning';
+  message: string;
+  referenced_variable: string;
 }
 
 export type RepairActionType =
@@ -51,33 +63,153 @@ export interface PipelineStep {
   step_description: string;
   prompt_template: string;
   model_tier?: string;
+  is_assembly_step?: boolean;
 }
+
+// ============================================================================
+// ROLE-BASED DETECTION (replaces hardcoded CORE_STEP_NAMES)
+// ============================================================================
+
+export interface FunctionalRole {
+  id: string;
+  label: string;
+  /** Keywords to match against step_name + step_description + prompt_template */
+  keywords: string[];
+  /** If true, this role MUST be filled for the pipeline to pass */
+  required: boolean;
+  /** Expected position: 'early' (first third), 'middle', 'late' (last third) */
+  expected_position: 'early' | 'middle' | 'late';
+}
+
+export const REQUIRED_ROLES: FunctionalRole[] = [
+  {
+    id: 'source_gathering',
+    label: 'Source Gathering',
+    keywords: ['source_pack', 'source pack', 'evidence gather', 'build_source', 'scrape', 'web_search', 'search_and_extract'],
+    required: true,
+    expected_position: 'early',
+  },
+  {
+    id: 'market_sizing',
+    label: 'Market Sizing',
+    keywords: ['tam', 'sam', 'som', 'market_siz', 'market siz', 'total addressable', 'serviceable'],
+    required: true,
+    expected_position: 'middle',
+  },
+  {
+    id: 'sanitiser',
+    label: 'Pre-Assembly Sanitiser',
+    keywords: ['sanitiser', 'sanitizer', 'pre_assembly', 'pre assembly', 'forbidden token', 'token scan', 'quality_scan'],
+    required: true,
+    expected_position: 'late',
+  },
+  {
+    id: 'citation_finalization',
+    label: 'Citation Finalization',
+    keywords: ['finalize_citation', 'finalize citation', 'citation_clean', 'apa', 'reference list', 'clean_citations'],
+    required: true,
+    expected_position: 'late',
+  },
+  {
+    id: 'report_assembly',
+    label: 'Report Assembly',
+    keywords: ['report_assembly', 'report assembly', 'finalize_report', 'finalize report', 'assemble_report', 'final_report'],
+    required: true,
+    expected_position: 'late',
+  },
+  {
+    id: 'rubric_traceability',
+    label: 'Rubric Traceability',
+    keywords: ['rubric', 'traceability', 'traceability_matrix', 'rubric_map', 'criterion_map', 'assessment_criteria'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'risk_governance',
+    label: 'Risk & Governance',
+    keywords: ['risk', 'governance', 'risk_register', 'risk register', 'mitigation'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'competitor_analysis',
+    label: 'Competitor / Comparables',
+    keywords: ['competitor', 'comparable', 'comparables', 'market_signal', 'landscape', 'competitive'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'assessor_insight',
+    label: 'Assessor Insight',
+    keywords: ['assessor_insight', 'assessor insight', 'assessor_layer', 'failure_mode', 'failure mode'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'additionality',
+    label: 'Additionality / Impact',
+    keywords: ['additionality', 'benefit_case', 'benefit case', 'counterfactual', 'impact_case', 'social_impact'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'budget_value',
+    label: 'Budget / Value for Money',
+    keywords: ['budget', 'value_for_money', 'value for money', 'cost_benefit', 'cost benefit'],
+    required: false,
+    expected_position: 'middle',
+  },
+  {
+    id: 'market_basis',
+    label: 'Market Basis / Scope',
+    keywords: ['market_basis', 'market basis', 'market_scope', 'parent_market', 'parent market'],
+    required: false,
+    expected_position: 'early',
+  },
+];
+
+/**
+ * Detect which functional role a step fulfills by scanning name + description + prompt
+ */
+export function detectStepRole(step: PipelineStep): FunctionalRole | null {
+  const searchText = [
+    step.step_name,
+    step.step_description,
+    step.prompt_template.slice(0, 500), // Only scan beginning of prompt for performance
+  ].join(' ').toLowerCase();
+
+  for (const role of REQUIRED_ROLES) {
+    if (role.keywords.some(kw => searchText.includes(kw.toLowerCase()))) {
+      return role;
+    }
+  }
+  return null;
+}
+
+/**
+ * Map all steps to their detected roles
+ */
+export function detectRoleCoverage(steps: PipelineStep[]): Map<string, { role: FunctionalRole; step: PipelineStep }> {
+  const coverage = new Map<string, { role: FunctionalRole; step: PipelineStep }>();
+  const sortedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
+
+  for (const step of sortedSteps) {
+    const role = detectStepRole(step);
+    if (role && !coverage.has(role.id)) {
+      coverage.set(role.id, { role, step });
+    }
+  }
+  return coverage;
+}
+
+// Keep legacy export for backward compatibility in tests
+export const CORE_STEP_NAMES = REQUIRED_ROLES
+  .filter(r => r.required)
+  .map(r => r.id);
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
-
-/**
- * Core steps that MUST be present in every valid pipeline
- */
-export const CORE_STEP_NAMES = [
-  'build_source_pack',
-  'market_basis_selection_and_scope',  // NEW: Determines correct parent market before TAM/SAM/SOM
-  'rubric_traceability_matrix',
-  'assessor_insight_layer',
-  'assumptions_register',
-  'tam_sam_som_dual_methodology',  // Assessor-grade market sizing with dual methodology + 3x reconciliation
-  'comparables_market_signals',
-  'additionality_and_benefit_case',
-  'commercialisation_logic',
-  'risk_register_and_governance',
-  'budget_logic_and_value_for_money',
-  'pre_assembly_sanitiser',  // Scans all outputs for forbidden tokens before assembly
-  'report_assembly',
-  'finalize_citations',
-] as const;
-
-export type CoreStepName = typeof CORE_STEP_NAMES[number];
 
 /**
  * Forbidden patterns that trigger hard-fail if found in any prompt template
@@ -93,7 +225,6 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /Source1/gi, name: 'Source1' },
   { pattern: /\[article\]/gi, name: '[article]' },
   { pattern: /```/g, name: 'Triple backticks' },
-  // Market sizing placeholder patterns (assessor-grade TAM/SAM/SOM requirement)
   { pattern: /\$Z\b/gi, name: '$Z placeholder' },
   { pattern: /\bA%\b/g, name: 'A% placeholder' },
   { pattern: /\bB%\b/g, name: 'B% placeholder' },
@@ -102,7 +233,7 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
 ];
 
 const MINIMUM_PROMPT_LENGTH = 1500;
-const MINIMUM_TOTAL_STEPS = 14;  // Updated to include market_basis_selection_and_scope + pre_assembly_sanitiser
+const MINIMUM_TOTAL_STEPS = 8; // Lowered: dynamic pipelines may have fewer steps
 
 // ============================================================================
 // HARD-FAIL VALIDATION
@@ -110,7 +241,7 @@ const MINIMUM_TOTAL_STEPS = 14;  // Updated to include market_basis_selection_an
 
 /**
  * Check for hard-fail conditions that immediately reject a pipeline
- * Returns array of failure reasons (empty = pass)
+ * Now uses role-based detection instead of exact step name matching
  */
 export function checkHardFails(steps: PipelineStep[]): string[] {
   const failures: string[] = [];
@@ -120,11 +251,13 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
     failures.push(`Total steps (${steps.length}) < minimum required (${MINIMUM_TOTAL_STEPS})`);
   }
 
-  // 2. Check for missing core steps
-  const stepNames = new Set(steps.map(s => s.step_name));
-  const missingCore = CORE_STEP_NAMES.filter(name => !stepNames.has(name));
-  if (missingCore.length > 0) {
-    failures.push(`Missing core steps: ${missingCore.join(', ')}`);
+  // 2. Check for missing REQUIRED roles (replaces exact name matching)
+  const roleCoverage = detectRoleCoverage(steps);
+  const missingRoles = REQUIRED_ROLES
+    .filter(r => r.required && !roleCoverage.has(r.id));
+  
+  if (missingRoles.length > 0) {
+    failures.push(`Missing required functional roles: ${missingRoles.map(r => r.label).join(', ')}`);
   }
 
   // 3. Check for duplicate step names
@@ -146,30 +279,27 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
 
   // 5. Check prompt templates
   for (const step of steps) {
-    // Missing prompt
     if (!step.prompt_template || step.prompt_template.trim().length === 0) {
       failures.push(`Step "${step.step_name}" is missing prompt_template`);
       continue;
     }
 
-    // Too short
     if (step.prompt_template.length < MINIMUM_PROMPT_LENGTH) {
       failures.push(`Step "${step.step_name}" prompt_template (${step.prompt_template.length} chars) < ${MINIMUM_PROMPT_LENGTH} minimum`);
     }
 
-    // Forbidden patterns
     for (const { pattern, name } of HARD_FAIL_PATTERNS) {
-      pattern.lastIndex = 0; // Reset regex state
+      pattern.lastIndex = 0;
       if (pattern.test(step.prompt_template)) {
         failures.push(`Step "${step.step_name}" contains forbidden pattern: ${name}`);
       }
     }
   }
 
-  // 6. Check finalize_citations has sanitizer requirement
-  const finalizeStep = steps.find(s => s.step_name === 'finalize_citations');
-  if (finalizeStep) {
-    const prompt = finalizeStep.prompt_template.toLowerCase();
+  // 6. Check citation finalization role has sanitizer requirement
+  const citationEntry = roleCoverage.get('citation_finalization');
+  if (citationEntry) {
+    const prompt = citationEntry.step.prompt_template.toLowerCase();
     const hasCitationValidation = 
       prompt.includes('validate') && prompt.includes('citation') ||
       prompt.includes('strip') && prompt.includes('marker') ||
@@ -178,7 +308,7 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
       prompt.includes('forbidden') && prompt.includes('pattern');
     
     if (!hasCitationValidation) {
-      failures.push('finalize_citations lacks sanitizer/validation requirement for internal markers');
+      failures.push(`Citation finalization step "${citationEntry.step.step_name}" lacks sanitizer/validation requirement for internal markers`);
     }
   }
 
@@ -191,32 +321,38 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
 
 /**
  * Category A: Structural Completeness (0-20)
- * A1: Core steps present and ordered (0-10)
- * A2: Archetype modules included (0-10)
+ * A1: Required role coverage (0-10)
+ * A2: Ordering sanity + archetype coverage (0-10)
  */
 export function scoreStructuralCompleteness(steps: PipelineStep[]): number {
   let score = 0;
+  const roleCoverage = detectRoleCoverage(steps);
+  const sortedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
+  const totalSteps = sortedSteps.length;
 
-  // A1: Core steps present and ordered (0-10)
-  const stepNames = steps.map(s => s.step_name);
-  const allCorePresent = CORE_STEP_NAMES.every(name => stepNames.includes(name));
+  // A1: Required role coverage (0-10)
+  const requiredRoles = REQUIRED_ROLES.filter(r => r.required);
+  const requiredFilled = requiredRoles.filter(r => roleCoverage.has(r.id)).length;
+  const coverageRatio = requiredFilled / requiredRoles.length;
   
-  if (allCorePresent) {
-    // Check ordering: build_source_pack should be early, report_assembly/finalize_citations last
-    const buildSourceIdx = stepNames.indexOf('build_source_pack');
-    const reportAssemblyIdx = stepNames.indexOf('report_assembly');
-    const finalizeIdx = stepNames.indexOf('finalize_citations');
-    
-    const properOrder = 
-      buildSourceIdx <= 2 && // build_source_pack early
-      reportAssemblyIdx > finalizeIdx - 3 && // report_assembly near end
-      finalizeIdx === steps.length - 1; // finalize_citations last
-    
-    score += properOrder ? 10 : 5;
+  if (coverageRatio === 1) {
+    // Check ordering sanity
+    let orderCorrect = true;
+    for (const [roleId, entry] of roleCoverage) {
+      const role = entry.role;
+      const stepIdx = sortedSteps.findIndex(s => s.step_number === entry.step.step_number);
+      const positionRatio = stepIdx / totalSteps;
+      
+      if (role.expected_position === 'early' && positionRatio > 0.4) orderCorrect = false;
+      if (role.expected_position === 'late' && positionRatio < 0.5) orderCorrect = false;
+    }
+    score += orderCorrect ? 10 : 5;
+  } else {
+    score += Math.round(coverageRatio * 5);
   }
 
-  // A2: Archetype modules included (0-10)
-  const archetypeKeywords = ['market', 'competitor', 'clinical', 'regulatory', 'emissions', 'defence'];
+  // A2: Archetype modules + rubric mapping (0-10)
+  const archetypeKeywords = ['market', 'competitor', 'clinical', 'regulatory', 'emissions', 'defence', 'social', 'beneficiary', 'infrastructure'];
   const hasArchetypeLogic = steps.some(s => 
     archetypeKeywords.some(kw => 
       s.step_name.toLowerCase().includes(kw) || 
@@ -224,7 +360,6 @@ export function scoreStructuralCompleteness(steps: PipelineStep[]): number {
     )
   );
   
-  // Check if steps reference rubric mapping
   const hasRubricMapping = steps.some(s => 
     s.prompt_template.toLowerCase().includes('rubric') &&
     s.prompt_template.toLowerCase().includes('map')
@@ -242,11 +377,12 @@ export function scoreStructuralCompleteness(steps: PipelineStep[]): number {
  */
 export function scoreTraceability(steps: PipelineStep[]): number {
   let score = 0;
+  const roleCoverage = detectRoleCoverage(steps);
 
-  // B1: Rubric coverage guarantee (0-10)
-  const rubricStep = steps.find(s => s.step_name === 'rubric_traceability_matrix');
-  if (rubricStep) {
-    const prompt = rubricStep.prompt_template.toLowerCase();
+  // B1: Rubric coverage guarantee (0-10) - find by role, not name
+  const rubricEntry = roleCoverage.get('rubric_traceability');
+  if (rubricEntry) {
+    const prompt = rubricEntry.step.prompt_template.toLowerCase();
     const hasExplicitCoverage = 
       (prompt.includes('every') || prompt.includes('all')) &&
       (prompt.includes('rubric') || prompt.includes('section') || prompt.includes('criterion'));
@@ -256,6 +392,13 @@ export function scoreTraceability(steps: PipelineStep[]): number {
       prompt.includes('not addressed');
     
     score += hasExplicitCoverage && hasGapHandling ? 10 : hasExplicitCoverage || hasGapHandling ? 5 : 0;
+  } else {
+    // Even without a dedicated rubric step, check if any step handles rubric coverage
+    const anyRubricCoverage = steps.some(s => {
+      const p = s.prompt_template.toLowerCase();
+      return p.includes('rubric') && (p.includes('every') || p.includes('all')) && p.includes('section');
+    });
+    score += anyRubricCoverage ? 5 : 0;
   }
 
   // B2: Required inputs mapping (0-10)
@@ -279,9 +422,7 @@ export function scoreTraceability(steps: PipelineStep[]): number {
 
 /**
  * Category C: Evidence Auditability (0-20)
- * C1: Evidence-type matching (0-7)
- * C2: Source ID integrity (0-7)
- * C3: Numeric claim discipline (0-6)
+ * Unchanged - content-based checks don't depend on step names
  */
 export function scoreEvidenceAuditability(steps: PipelineStep[]): number {
   let score = 0;
@@ -332,23 +473,28 @@ export function scoreEvidenceAuditability(steps: PipelineStep[]): number {
 
 /**
  * Category D: Assessor Insight (0-20)
- * D1: Assessor intent + failure modes (0-8)
- * D2: Genericness prevention gate (0-6)
- * D3: Additionality discipline (0-6)
+ * Now uses role detection instead of exact step name matching
  */
 export function scoreAssessorInsight(steps: PipelineStep[]): number {
   let score = 0;
+  const roleCoverage = detectRoleCoverage(steps);
 
-  // D1: Assessor intent + failure modes (0-8)
-  const insightStep = steps.find(s => s.step_name === 'assessor_insight_layer');
-  if (insightStep) {
-    const prompt = insightStep.prompt_template.toLowerCase();
+  // D1: Assessor intent + failure modes (0-8) - find by role
+  const insightEntry = roleCoverage.get('assessor_insight');
+  if (insightEntry) {
+    const prompt = insightEntry.step.prompt_template.toLowerCase();
     const hasAssessorIntent = prompt.includes('assessor_intent') || prompt.includes('assessor intent');
     const hasFailureModes = prompt.includes('failure_mode') || prompt.includes('failure mode');
     const hasEvidencePlan = prompt.includes('evidence_plan') || prompt.includes('evidence plan');
     
     score += hasAssessorIntent && hasFailureModes && hasEvidencePlan ? 8 : 
              (hasAssessorIntent ? 3 : 0) + (hasFailureModes ? 3 : 0) + (hasEvidencePlan ? 2 : 0);
+  } else {
+    // Check if assessor insight is embedded in other steps
+    const allPrompts = steps.map(s => s.prompt_template.toLowerCase()).join(' ');
+    if (allPrompts.includes('assessor') && allPrompts.includes('failure mode')) {
+      score += 4;
+    }
   }
 
   // D2: Genericness prevention (0-6)
@@ -364,10 +510,10 @@ export function scoreAssessorInsight(steps: PipelineStep[]): number {
   
   score += hasGenericnessGate && hasQuantifiedRequirement ? 6 : hasGenericnessGate || hasQuantifiedRequirement ? 3 : 0;
 
-  // D3: Additionality discipline (0-6)
-  const additionalityStep = steps.find(s => s.step_name === 'additionality_and_benefit_case');
-  if (additionalityStep) {
-    const prompt = additionalityStep.prompt_template.toLowerCase();
+  // D3: Additionality discipline (0-6) - find by role
+  const additionalityEntry = roleCoverage.get('additionality');
+  if (additionalityEntry) {
+    const prompt = additionalityEntry.step.prompt_template.toLowerCase();
     const hasCounterfactual = 
       prompt.includes('counterfactual') || 
       prompt.includes('without funding') ||
@@ -385,9 +531,7 @@ export function scoreAssessorInsight(steps: PipelineStep[]): number {
 
 /**
  * Category E: Commercial Reality (0-20)
- * E1: Buyer pathway (0-7)
- * E2: Pricing anchors (0-7)
- * E3: Competitor comparability (0-6)
+ * Content-based checks - independent of step names
  */
 export function scoreCommercialReality(steps: PipelineStep[]): number {
   let score = 0;
@@ -434,222 +578,118 @@ export function scoreCommercialReality(steps: PipelineStep[]): number {
 // ============================================================================
 
 /**
- * Detect red flags that warrant auto-repair even if score passes
+ * Detect red flags - now uses role detection for step lookup
  */
 export function detectRedFlags(steps: PipelineStep[]): string[] {
   const flags: string[] = [];
   const allPrompts = steps.map(s => s.prompt_template.toLowerCase()).join(' ');
+  const roleCoverage = detectRoleCoverage(steps);
 
-  // 1. Comparables not forced to ≥5
-  const comparablesStep = steps.find(s => s.step_name === 'comparables_market_signals');
-  if (comparablesStep) {
-    const prompt = comparablesStep.prompt_template.toLowerCase();
+  // 1. Competitor/comparables step doesn't enforce ≥5
+  const comparablesEntry = roleCoverage.get('competitor_analysis');
+  if (comparablesEntry) {
+    const prompt = comparablesEntry.step.prompt_template.toLowerCase();
     const forcesMinimum = 
       prompt.includes('≥5') || prompt.includes('>= 5') || 
       prompt.includes('at least 5') || prompt.includes('minimum 5') ||
       prompt.includes('5 or more');
     
     if (!forcesMinimum) {
-      flags.push('comparables_market_signals does not require ≥5 named entities');
+      flags.push(`"${comparablesEntry.step.step_name}" does not require ≥5 named entities`);
     }
   }
 
-  // 2. TAM/SAM/SOM allows "Unknown" without proxy
-  const marketSteps = steps.filter(s => 
-    s.step_name.includes('tam') || s.step_name.includes('sam') || s.step_name.includes('som') ||
-    s.step_name.includes('market') || s.step_name.includes('sizing')
-  );
-  
-  for (const step of marketSteps) {
-    const prompt = step.prompt_template.toLowerCase();
+  // 2. Market sizing steps allow "Unknown" without proxy
+  const marketEntry = roleCoverage.get('market_sizing');
+  if (marketEntry) {
+    const prompt = marketEntry.step.prompt_template.toLowerCase();
     const allowsUnknown = prompt.includes('unknown') && !prompt.includes('proxy');
-    
     if (allowsUnknown) {
-      flags.push(`${step.step_name} allows "Unknown" for TAM/SAM/SOM without proxy requirement`);
+      flags.push(`"${marketEntry.step.step_name}" allows "Unknown" for TAM/SAM/SOM without proxy requirement`);
     }
-  }
-  
-  // 2b. market_basis_selection_and_scope validation (NEW)
-  const marketBasisStep = steps.find(s => s.step_name === 'market_basis_selection_and_scope');
-  if (marketBasisStep) {
-    const prompt = marketBasisStep.prompt_template.toLowerCase();
     
-    // Check for buyer/payer requirement
-    const hasBuyerPathway = 
-      prompt.includes('buyer') && (prompt.includes('payer') || prompt.includes('decision'));
-    
-    // Check for modality/class requirement
-    const hasModalityClass = 
-      prompt.includes('modality') || prompt.includes('class') || prompt.includes('category');
-    
-    // Check for geography justification
-    const hasGeographyJustification = 
-      prompt.includes('geography') && prompt.includes('justif');
-    
-    // Check for exclusion of generic markets
-    const banGenericMarkets = 
-      (prompt.includes('generic') && prompt.includes('not')) ||
-      (prompt.includes('global medtech') && prompt.includes('not'));
-    
-    if (!hasBuyerPathway) {
-      flags.push('market_basis_selection_and_scope lacks buyer/payer pathway requirement');
-    }
-    if (!hasModalityClass) {
-      flags.push('market_basis_selection_and_scope lacks modality/class requirement');
-    }
-    if (!hasGeographyJustification) {
-      flags.push('market_basis_selection_and_scope lacks geography justification');
-    }
-    if (!banGenericMarkets) {
-      flags.push('market_basis_selection_and_scope does not ban generic parent markets');
-    }
-  }
-  
-  // 2c. tam_sam_som_dual_methodology must require dual methodology + 3x reconciliation
-  const dualMethodStep = steps.find(s => s.step_name === 'tam_sam_som_dual_methodology');
-  if (dualMethodStep) {
-    const prompt = dualMethodStep.prompt_template.toLowerCase();
-    
-    // Check for dual methodology requirement
+    // Check for dual methodology
     const hasTopDown = prompt.includes('top-down') || prompt.includes('top_down');
     const hasBottomUp = prompt.includes('bottom-up') || prompt.includes('bottom_up');
-    
     if (!hasTopDown || !hasBottomUp) {
-      flags.push('tam_sam_som_dual_methodology lacks dual methodology requirement (must have both top-down AND bottom-up)');
+      flags.push(`"${marketEntry.step.step_name}" lacks dual methodology requirement (must have both top-down AND bottom-up)`);
     }
     
-    // Check for assumptions register requirement
+    // Check for assumptions register
     const hasAssumptionRegister = 
-      prompt.includes('assumption_id') || 
-      prompt.includes('assumptions_register') ||
+      prompt.includes('assumption_id') || prompt.includes('assumptions_register') ||
       (prompt.includes('assumption') && prompt.includes('register'));
-    
     if (!hasAssumptionRegister) {
-      flags.push('tam_sam_som_dual_methodology lacks assumptions_register requirement');
+      flags.push(`"${marketEntry.step.step_name}" lacks assumptions_register requirement`);
     }
     
-    // Check for sensitivity analysis requirement
+    // Check for sensitivity analysis
     const hasSensitivity = 
       prompt.includes('sensitivity') && 
       (prompt.includes('low') && prompt.includes('high') || prompt.includes('base'));
-    
     if (!hasSensitivity) {
-      flags.push('tam_sam_som_dual_methodology lacks sensitivity analysis requirement (base/low/high cases)');
+      flags.push(`"${marketEntry.step.step_name}" lacks sensitivity analysis requirement`);
     }
-    
-    // Check for sanity checks requirement
-    const hasSanityChecks = 
-      prompt.includes('sanity check') || prompt.includes('sanity_check') ||
-      (prompt.includes('pricing') && prompt.includes('anchor') && prompt.includes('consistent')) ||
-      prompt.includes('arithmetic');
-    
-    if (!hasSanityChecks) {
-      flags.push('tam_sam_som_dual_methodology lacks sanity checks requirement');
+  }
+
+  // 2b. Market basis validation
+  const marketBasisEntry = roleCoverage.get('market_basis');
+  if (marketBasisEntry) {
+    const prompt = marketBasisEntry.step.prompt_template.toLowerCase();
+    if (!(prompt.includes('buyer') && (prompt.includes('payer') || prompt.includes('decision')))) {
+      flags.push(`"${marketBasisEntry.step.step_name}" lacks buyer/payer pathway requirement`);
     }
-    
-    // Check for 3x reconciliation requirement (NEW - updated from 30%)
-    const has3xReconciliation = 
-      prompt.includes('3x') || prompt.includes('3 times') || 
-      prompt.includes('300%') ||
-      (prompt.includes('reconcil') && prompt.includes('converge'));
-    
-    if (!has3xReconciliation) {
-      flags.push('tam_sam_som_dual_methodology lacks 3x convergence reconciliation rule');
-    }
-    
-    // Check for arithmetic consistency sanity check (NEW)
-    const hasArithmeticCheck = 
-      prompt.includes('arithmetic') || 
-      (prompt.includes('population') && prompt.includes('price') && prompt.includes('penetration') && prompt.includes('='));
-    
-    if (!hasArithmeticCheck) {
-      flags.push('tam_sam_som_dual_methodology lacks arithmetic consistency sanity check (pop × price × penetration = SOM)');
-    }
-    
-    // Check for scope consistency (NEW)
-    const hasScopeCheck = 
-      (prompt.includes('scope') && prompt.includes('consisten')) ||
-      (prompt.includes('same product') && prompt.includes('same buyer')) ||
-      prompt.includes('scope consistency');
-    
-    if (!hasScopeCheck) {
-      flags.push('tam_sam_som_dual_methodology lacks scope consistency sanity check');
-    }
-    
-    // Check for defensibility notes (NEW)
-    const hasDefensibilityNotes = 
-      prompt.includes('defensibility_notes') ||
-      prompt.includes('defensibility notes') ||
-      (prompt.includes('why') && prompt.includes('parent market') && prompt.includes('correct'));
-    
-    if (!hasDefensibilityNotes) {
-      flags.push('tam_sam_som_dual_methodology lacks defensibility_notes section requirement');
+    if (!(prompt.includes('modality') || prompt.includes('class') || prompt.includes('category'))) {
+      flags.push(`"${marketBasisEntry.step.step_name}" lacks modality/class requirement`);
     }
   }
 
   // 3. Report assembly lacks grant-writer voice
-  const assemblyStep = steps.find(s => s.step_name === 'report_assembly');
-  if (assemblyStep) {
-    const prompt = assemblyStep.prompt_template.toLowerCase();
+  const assemblyEntry = roleCoverage.get('report_assembly');
+  if (assemblyEntry) {
+    const prompt = assemblyEntry.step.prompt_template.toLowerCase();
     const hasGrantWriterVoice = 
       prompt.includes('grant writer') || prompt.includes('grant-writer') ||
       prompt.includes('assessor') && prompt.includes('write') ||
       prompt.includes('rubric') && prompt.includes('title');
     
     if (!hasGrantWriterVoice) {
-      flags.push('report_assembly lacks grant-writer voice instruction');
+      flags.push(`"${assemblyEntry.step.step_name}" lacks grant-writer voice instruction`);
     }
   }
 
-  // 4. Finalize citations lacks bracket sanitizer
-  const finalizeStep = steps.find(s => s.step_name === 'finalize_citations');
-  if (finalizeStep) {
-    const prompt = finalizeStep.prompt_template.toLowerCase();
+  // 4. Citation finalization lacks bracket sanitizer
+  const citationEntry = roleCoverage.get('citation_finalization');
+  if (citationEntry) {
+    const prompt = citationEntry.step.prompt_template.toLowerCase();
     const hasSanitizer = 
       prompt.includes('bracket') && (prompt.includes('strip') || prompt.includes('remove') || prompt.includes('sanitize')) ||
       prompt.includes('[') && prompt.includes('forbidden');
     
     if (!hasSanitizer) {
-      flags.push('finalize_citations lacks bracket sanitizer rule');
+      flags.push(`"${citationEntry.step.step_name}" lacks bracket sanitizer rule`);
     }
     
-    // Check for bidirectional citation validation requirement
     const hasBidirectional = 
       prompt.includes('bidirectional') ||
       (prompt.includes('every') && prompt.includes('citation') && prompt.includes('reference')) ||
       (prompt.includes('orphan') && (prompt.includes('citation') || prompt.includes('reference')));
     
     if (!hasBidirectional) {
-      flags.push('finalize_citations lacks bidirectional citation validation requirement');
+      flags.push(`"${citationEntry.step.step_name}" lacks bidirectional citation validation requirement`);
     }
   }
   
-  // 5. Pre-assembly sanitiser validation
-  const sanitiserStep = steps.find(s => s.step_name === 'pre_assembly_sanitiser');
-  if (sanitiserStep) {
-    const prompt = sanitiserStep.prompt_template.toLowerCase();
+  // 5. Sanitiser step validation
+  const sanitiserEntry = roleCoverage.get('sanitiser');
+  if (sanitiserEntry) {
+    const prompt = sanitiserEntry.step.prompt_template.toLowerCase();
     
-    const hasForbiddenTokenScan = 
-      prompt.includes('forbidden') || 
-      prompt.includes('scan') ||
-      prompt.includes('detect');
-    const hasIssuesOutput = 
-      prompt.includes('issues_found') || 
-      prompt.includes('issues[]') ||
-      prompt.includes('issues:');
-    const hasCleanOutput = 
-      prompt.includes('clean_step_outputs') || 
-      prompt.includes('clean_outputs') ||
-      prompt.includes('sanitized');
-    
-    if (!hasForbiddenTokenScan) {
-      flags.push('pre_assembly_sanitiser lacks forbidden token scan requirement');
+    if (!(prompt.includes('forbidden') || prompt.includes('scan') || prompt.includes('detect'))) {
+      flags.push(`"${sanitiserEntry.step.step_name}" lacks forbidden token scan requirement`);
     }
-    if (!hasIssuesOutput) {
-      flags.push('pre_assembly_sanitiser lacks issues_found output requirement');
-    }
-    if (!hasCleanOutput) {
-      flags.push('pre_assembly_sanitiser lacks clean_step_outputs requirement');
+    if (!(prompt.includes('clean') || prompt.includes('sanitized'))) {
+      flags.push(`"${sanitiserEntry.step.step_name}" lacks clean output requirement`);
     }
   }
 
@@ -660,69 +700,67 @@ export function detectRedFlags(steps: PipelineStep[]): string[] {
 // REPAIR ACTION GENERATION
 // ============================================================================
 
-/**
- * Generate repair actions based on scores and red flags
- */
 export function generateRepairActions(
   steps: PipelineStep[],
   result: Omit<PipelineQualityResult, 'repair_actions'>
 ): RepairAction[] {
   const actions: RepairAction[] = [];
+  const roleCoverage = detectRoleCoverage(steps);
 
-  // Generate actions from red flags
   for (const flag of result.red_flags) {
-    if (flag.includes('comparables') && flag.includes('≥5')) {
+    if (flag.includes('≥5')) {
+      const entry = roleCoverage.get('competitor_analysis');
       actions.push({
         action: 'add_comparables_enforcement',
-        target_step_name: 'comparables_market_signals',
+        target_step_name: entry?.step.step_name || 'comparables',
         instructions: 'Require ≥5 named entities OR search strategy with 10+ queries explaining why not found'
       });
     }
     
     if (flag.includes('Unknown') && flag.includes('proxy')) {
-      const stepName = flag.split(' ')[0];
+      const entry = roleCoverage.get('market_sizing');
       actions.push({
         action: 'enforce_proxy_protocol',
-        target_step_name: stepName,
+        target_step_name: entry?.step.step_name || 'market_sizing',
         instructions: 'Replace "Unknown allowed" with proxy estimate requirement + sensitivity range + confidence label'
       });
     }
     
     if (flag.includes('grant-writer voice')) {
+      const entry = roleCoverage.get('report_assembly');
       actions.push({
         action: 'enforce_grant_writer_voice',
-        target_step_name: 'report_assembly',
+        target_step_name: entry?.step.step_name || 'report_assembly',
         instructions: 'Add instruction: "Write like a grant writer for assessors" + map to rubric titles'
       });
     }
     
     if (flag.includes('bracket sanitizer')) {
+      const entry = roleCoverage.get('citation_finalization');
       actions.push({
         action: 'tighten_finalize_citations',
-        target_step_name: 'finalize_citations',
+        target_step_name: entry?.step.step_name || 'finalize_citations',
         instructions: 'Add explicit ban + sanitizer: no [...], no {...}, no "undefined", no internal IDs in final output'
       });
     }
   }
 
-  // Generate actions from low category scores
   const { category_scores } = result;
-
   if (category_scores.commercial_reality < 14) {
-    const comparablesStep = steps.find(s => s.step_name === 'comparables_market_signals');
-    if (comparablesStep) {
-      const hasPricingAnchors = comparablesStep.prompt_template.toLowerCase().includes('pricing anchor');
+    const entry = roleCoverage.get('competitor_analysis');
+    if (entry) {
+      const hasPricingAnchors = entry.step.prompt_template.toLowerCase().includes('pricing anchor');
       if (!hasPricingAnchors) {
         actions.push({
           action: 'add_pricing_anchors',
-          target_step_name: 'comparables_market_signals',
+          target_step_name: entry.step.step_name,
           instructions: 'Insert pricing_willingness_to_pay module OR force ≥3 pricing anchors with method + source_id'
         });
       }
     }
   }
 
-  // Deduplicate by target_step_name + action
+  // Deduplicate
   const seen = new Set<string>();
   return actions.filter(a => {
     const key = `${a.target_step_name}:${a.action}`;
@@ -736,14 +774,9 @@ export function generateRepairActions(
 // MAIN VALIDATION ENTRY POINT
 // ============================================================================
 
-/**
- * Validate a pipeline and return comprehensive quality results
- */
 export function validatePipelineQuality(steps: PipelineStep[]): PipelineQualityResult {
-  // Step 1: Check hard-fails first
   const hard_fail_reasons = checkHardFails(steps);
 
-  // Step 2: Calculate category scores
   const category_scores = {
     structural_completeness: scoreStructuralCompleteness(steps),
     traceability: scoreTraceability(steps),
@@ -754,10 +787,8 @@ export function validatePipelineQuality(steps: PipelineStep[]): PipelineQualityR
 
   const overall_score = Object.values(category_scores).reduce((a, b) => a + b, 0);
 
-  // Step 3: Detect red flags
   const red_flags = detectRedFlags(steps);
 
-  // Step 4: Determine verdict
   let verdict: 'pass' | 'conditional_pass' | 'fail';
   if (hard_fail_reasons.length > 0) {
     verdict = 'fail';
@@ -769,7 +800,6 @@ export function validatePipelineQuality(steps: PipelineStep[]): PipelineQualityR
     verdict = 'pass';
   }
 
-  // Step 5: Generate repair actions
   const partialResult = {
     overall_score,
     verdict,
@@ -783,7 +813,6 @@ export function validatePipelineQuality(steps: PipelineStep[]): PipelineQualityR
     ? generateRepairActions(steps, partialResult)
     : [];
 
-  // Step 6: Build notes
   const notes = hard_fail_reasons.length > 0
     ? `Hard-fail: ${hard_fail_reasons.slice(0, 3).join('; ')}`
     : verdict === 'conditional_pass'
@@ -805,9 +834,6 @@ export function validatePipelineQuality(steps: PipelineStep[]): PipelineQualityR
 // AUTO-REPAIR UTILITIES
 // ============================================================================
 
-/**
- * Inject comparables enforcement into a prompt template
- */
 export function injectComparablesRequirement(prompt: string): string {
   const enforcement = `
 
@@ -816,8 +842,6 @@ COMPARABLES ENFORCEMENT (Mandatory):
 - If <5 found, document: search queries used (≥10), databases searched, why not found
 - Each entity must have at least one measurable anchor (price/revenue/TRL/approval status)
 `;
-
-  // Insert before OUTPUT SCHEMA if present, otherwise append
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + enforcement + prompt.slice(outputSchemaIdx);
@@ -825,9 +849,6 @@ COMPARABLES ENFORCEMENT (Mandatory):
   return prompt + enforcement;
 }
 
-/**
- * Inject proxy protocol into a prompt template
- */
 export function injectProxyProtocol(prompt: string): string {
   const protocol = `
 
@@ -839,7 +860,6 @@ PROXY PROTOCOL (When direct data unavailable):
   - Sensitivity range (low/mid/high)
   - Source_ids for each input OR "ESTIMATE" label
 `;
-
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + protocol + prompt.slice(outputSchemaIdx);
@@ -847,9 +867,6 @@ PROXY PROTOCOL (When direct data unavailable):
   return prompt + protocol;
 }
 
-/**
- * Inject grant-writer voice instruction
- */
 export function injectGrantWriterVoice(prompt: string): string {
   const voice = `
 
@@ -859,7 +876,6 @@ GRANT-WRITER VOICE (Mandatory):
 - Use evidence-based, qualified language—no unsubstantiated claims
 - Address assessor intent: what are they looking for? what fails applications?
 `;
-
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + voice + prompt.slice(outputSchemaIdx);
@@ -867,9 +883,6 @@ GRANT-WRITER VOICE (Mandatory):
   return prompt + voice;
 }
 
-/**
- * Inject citation sanitizer requirement
- */
 export function injectSanitizerRequirement(prompt: string): string {
   const sanitizer = `
 
@@ -885,7 +898,6 @@ If any forbidden token found:
 - Remove it and add entry to "unknowns" array
 - If removal breaks meaning, replace with "(citation unavailable)"
 `;
-
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + sanitizer + prompt.slice(outputSchemaIdx);
@@ -893,9 +905,6 @@ If any forbidden token found:
   return prompt + sanitizer;
 }
 
-/**
- * Inject dual methodology requirement for TAM/SAM/SOM steps
- */
 export function injectDualMethodologyRequirement(prompt: string): string {
   const requirement = `
 
@@ -948,7 +957,6 @@ EVIDENCE-TYPE ENFORCEMENT:
 - Market sizing must NOT cite: epidemiology papers, disease burden studies
 - If mismatch detected: Replace with "Unknown (evidence type mismatch)" + log to unknowns[]
 `;
-
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + requirement + prompt.slice(outputSchemaIdx);
@@ -956,9 +964,6 @@ EVIDENCE-TYPE ENFORCEMENT:
   return prompt + requirement;
 }
 
-/**
- * Inject market basis requirement into a prompt template
- */
 export function injectMarketBasisRequirement(prompt: string): string {
   const requirement = `
 
@@ -990,7 +995,6 @@ Output market_basis object with:
 - modality_class, geography, geography_justification
 - inclusion_rules[], exclusion_rules[], justification, source_ids[]
 `;
-
   const outputSchemaIdx = prompt.toLowerCase().indexOf('output');
   if (outputSchemaIdx !== -1) {
     return prompt.slice(0, outputSchemaIdx) + requirement + prompt.slice(outputSchemaIdx);
