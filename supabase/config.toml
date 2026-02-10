@@ -66,5 +66,8 @@ verify_jwt = false
 [functions.admin-assistant]
 verify_jwt = false
 
+[functions.validate-pipeline]
+verify_jwt = false
+
 [functions.approve-review]
 verify_jwt = false

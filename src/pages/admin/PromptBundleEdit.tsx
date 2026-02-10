@@ -8,58 +8,71 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 import { PipelineQualityCard } from "@/components/admin/PipelineQualityCard";
-import { validatePipelineQuality, type PipelineStep as QualityStep, type PipelineQualityResult } from "@/lib/pipelineQualityGate";
+import { checkStructuralIssues, type StructuralCheckResult, type AIAnalysisResult, type DataFlowIssue } from "@/lib/pipelineQualityGate";
 import { validatePostReorder, type PipelineStep as ValidationStep } from "@/lib/pipelineValidation";
-
-function runQA(steps: Array<{ step_number: number; step_name: string; step_description: string; prompt_template: string; model_override?: string | null }>) {
-  const qualitySteps: QualityStep[] = steps.map(step => ({
-    step_number: step.step_number,
-    step_name: step.step_name,
-    step_description: step.step_description,
-    prompt_template: step.prompt_template,
-    model_tier: step.model_override || undefined,
-  }));
-
-  const validationSteps: ValidationStep[] = steps.map(step => ({
-    step_number: step.step_number,
-    step_name: step.step_name,
-    prompt_template: step.prompt_template,
-  }));
-
-  const qr = validatePipelineQuality(qualitySteps);
-  const reorderResult = validatePostReorder(validationSteps);
-
-  if (reorderResult.issues.length > 0) {
-    qr.data_flow_issues = reorderResult.issues;
-  }
-
-  return qr;
-}
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 export default function PromptBundleEdit() {
   const { id } = useParams();
   const { data: bundle, isLoading } = usePromptBundle(id);
 
-  const [qualityResult, setQualityResult] = useState<PipelineQualityResult | null>(null);
+  const [structuralResult, setStructuralResult] = useState<StructuralCheckResult>({ issues: [], pass: true });
+  const [dataFlowIssues, setDataFlowIssues] = useState<DataFlowIssue[]>([]);
+  const [aiResult, setAiResult] = useState<AIAnalysisResult | null>(null);
   const [isRerunning, setIsRerunning] = useState(false);
 
-  // Auto-run QA when bundle loads
+  // Auto-run structural checks when bundle loads
   useEffect(() => {
     if (bundle?.steps && bundle.steps.length > 0) {
-      setQualityResult(runQA(bundle.steps));
+      const structural = checkStructuralIssues(bundle.steps);
+      setStructuralResult(structural);
+
+      const validationSteps: ValidationStep[] = bundle.steps.map(step => ({
+        step_number: step.step_number,
+        step_name: step.step_name,
+        prompt_template: step.prompt_template,
+      }));
+      const reorderResult = validatePostReorder(validationSteps);
+      setDataFlowIssues(reorderResult.issues);
     } else {
-      setQualityResult(null);
+      setStructuralResult({ issues: [], pass: true });
+      setDataFlowIssues([]);
     }
+    // Reset AI result when steps change
+    setAiResult(null);
   }, [bundle?.steps]);
 
-  const handleRerunQA = useCallback(() => {
+  const handleAIAnalysis = useCallback(async () => {
     if (!bundle?.steps || bundle.steps.length === 0) return;
     setIsRerunning(true);
-    // Use setTimeout to allow the UI to show loading state
-    setTimeout(() => {
-      setQualityResult(runQA(bundle.steps));
+
+    try {
+      const { data, error } = await supabase.functions.invoke('validate-pipeline', {
+        body: {
+          steps: bundle.steps.map(s => ({
+            step_number: s.step_number,
+            step_name: s.step_name,
+            step_description: s.step_description,
+            prompt_template: s.prompt_template,
+          })),
+        },
+      });
+
+      if (error) {
+        console.error('AI analysis error:', error);
+        toast.error('AI analysis failed', { description: error.message });
+        return;
+      }
+
+      setAiResult(data as AIAnalysisResult);
+      toast.success('AI analysis complete');
+    } catch (err: any) {
+      console.error('AI analysis error:', err);
+      toast.error('AI analysis failed', { description: err.message });
+    } finally {
       setIsRerunning(false);
-    }, 300);
+    }
   }, [bundle?.steps]);
 
   if (isLoading) {
@@ -112,11 +125,13 @@ export default function PromptBundleEdit() {
         </div>
       </div>
 
-      {/* Quality Gate Card - shown when steps exist */}
-      {qualityResult && (
+      {/* Quality Gate Card */}
+      {bundle.steps && bundle.steps.length > 0 && (
         <PipelineQualityCard
-          result={qualityResult}
-          onRerunQA={handleRerunQA}
+          structuralResult={structuralResult}
+          dataFlowIssues={dataFlowIssues}
+          aiResult={aiResult}
+          onRerunQA={handleAIAnalysis}
           isRerunning={isRerunning}
         />
       )}
