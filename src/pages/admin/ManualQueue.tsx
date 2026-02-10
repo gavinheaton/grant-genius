@@ -70,6 +70,7 @@ export default function ManualQueue() {
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState<string | null>(null);
+  const [deletingApp, setDeletingApp] = useState<{ id: string; title: string } | null>(null);
 
   // Query for manual submissions (existing)
   const { data: submissions, isLoading: submissionsLoading } = useQuery({
