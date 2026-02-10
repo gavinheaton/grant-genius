@@ -539,6 +539,39 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
     return errorResponse("Failed to update run", 500);
   }
 
+  // Fire-and-forget: Send failure notification email
+  if (status === "failed") {
+    try {
+      const brevoApiKey = Deno.env.get("BREVO_API_KEY");
+      const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+      if (brevoApiKey) {
+        const adminLink = `${appUrl}/admin/manual-queue`;
+        const haltMsg = (halt_reason as string) || "No halt reason provided";
+        
+        await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            "api-key": brevoApiKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+            to: [{ email: "grantgenius@disruptorsco.com" }],
+            subject: `Report Generation Failed - ${report_run_id}`,
+            htmlContent: `<h2>Report Generation Failed</h2>
+              <p><strong>Run ID:</strong> ${report_run_id}</p>
+              <p><strong>Halt Reason:</strong> ${haltMsg}</p>
+              <p><a href="${adminLink}">View in Admin Console</a></p>`,
+          }),
+        });
+        console.log(`[NOTIFY] Failure email sent for run ${report_run_id}`);
+      }
+    } catch (emailErr) {
+      console.error("[NOTIFY] Failed to send failure email:", emailErr);
+      // Non-blocking: don't affect the response
+    }
+  }
+
   return jsonResponse({ success: true });
 }
 

@@ -10,6 +10,7 @@ import {
   CreditCard,
   Send,
   Clock,
+  Mail,
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -21,6 +22,14 @@ import { PurchaseModal } from "@/components/PurchaseModal";
 import { ReportInputs } from "@/components/workspace/ReportInputs";
 import { GenerationProgress } from "@/components/workspace/GenerationProgress";
 import { ReportsList } from "@/components/workspace/ReportsList";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 interface ApplicationData {
   id: string;
@@ -58,7 +67,8 @@ export default function ApplicationWorkspace() {
   const progressRef = useRef<HTMLDivElement>(null);
   
   const { availableReports, hasAvailableReport, isLoading: entitlementsLoading, refetch: refetchEntitlements } = useEntitlements();
-  const { isSuperAdmin } = useAuth();
+  const { isAdmin, isSuperAdmin } = useAuth();
+  const [showSubmittedDialog, setShowSubmittedDialog] = useState(false);
   
   // Callback when user runs out of credits - opens purchase modal
   const handleNoCredits = useCallback(() => {
@@ -270,6 +280,11 @@ export default function ApplicationWorkspace() {
     await startGeneration();
     // Refetch entitlements after starting (credit consumed)
     setTimeout(() => refetchEntitlements(), 1000);
+
+    // For non-admin users, show the "report will be emailed" dialog
+    if (!isAdmin) {
+      setShowSubmittedDialog(true);
+    }
   };
 
   const handleDismissProgress = () => {
@@ -483,8 +498,8 @@ export default function ApplicationWorkspace() {
           )}
         </div>
 
-        {/* Progress Indicator - Only for automated grants */}
-        {!isManualGrant && (
+        {/* Progress Indicator - Only for admin users on automated grants */}
+        {!isManualGrant && isAdmin && (
           <div ref={progressRef}>
             {/* Show starting state */}
             {isStarting && (
@@ -562,6 +577,26 @@ export default function ApplicationWorkspace() {
 
       {/* Purchase Modal */}
       <PurchaseModal open={purchaseModalOpen} onOpenChange={setPurchaseModalOpen} />
+
+      {/* Report Submitted Dialog (researchers only) */}
+      <Dialog open={showSubmittedDialog} onOpenChange={setShowSubmittedDialog}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader className="items-center text-center">
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 mb-2">
+              <Mail className="h-6 w-6 text-primary" />
+            </div>
+            <DialogTitle>Report Generation Started</DialogTitle>
+            <DialogDescription className="text-center">
+              Your report is being generated and will be sent to your email in approximately 15 minutes. You can also check back on your dashboard to view the completed report.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-center">
+            <Button onClick={() => navigate("/dashboard")}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
