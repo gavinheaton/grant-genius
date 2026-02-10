@@ -1,40 +1,41 @@
 
 
-## Fix: Prompt Bundle Step Reordering
+## Fix: Step Reordering Blocked by CHECK Constraint
 
-### Problem
+### Root Cause
 
-There is a **unique constraint** on `(bundle_id, step_number)` in the `prompt_bundle_steps` table. When you try to move a step up or down, the code attempts to swap the two step numbers using sequential UPDATE statements. The first UPDATE tries to set step A to step B's number, but step B still has that number -- violating the unique constraint and failing silently.
+The `swap_step_numbers` function sets `step_number = -1` as a temporary intermediate value, but there's a **CHECK constraint** on the table:
+
+```
+CHECK ((step_number >= 0) AND (step_number <= 50))
+```
+
+This blocks the `-1` value, causing the swap to fail before it can complete.
 
 ### Solution
 
-Create a database function that performs the swap **atomically** within a single transaction, using a temporary intermediate value to avoid the constraint violation.
+Update both database functions to use a temporary value **within** the allowed range (0) instead of -1. Since step numbers for actual steps start at 1, using 0 as the temporary parking value is safe and stays within the constraint.
+
+However, if two steps could theoretically both need to park at 0 simultaneously (in `reorder_step_numbers`), we need a different approach for the bulk case. The cleanest fix:
+
+1. **Drop the CHECK constraint** -- it's overly restrictive and the unique constraint + application logic already prevent invalid values. This is the simplest and most robust approach.
+
+2. **Alternatively**, modify the swap function to use step_number = 0 (within range) and modify the bulk reorder to use values in the range 0..0 with careful sequencing. This is fragile.
+
+**Recommended approach**: Drop the CHECK constraint via a migration, since the unique constraint on `(bundle_id, step_number)` already prevents duplicates, and the application layer controls valid step numbers.
 
 ### Changes
 
-**1. Database migration -- create a `swap_step_numbers` function**
+**1. Database migration**
+- Drop the `prompt_bundle_steps_step_number_check` constraint
 
-A new PostgreSQL function `swap_step_numbers(step_id_a UUID, step_id_b UUID)` that:
-- Sets step A's number to `-1` (temporary value, avoids conflict)
-- Sets step B's number to step A's original number
-- Sets step A's number to step B's original number
-- All within a single transaction
-
-**2. Update `useReorderPromptSteps` in `src/hooks/usePromptBundles.ts`**
-
-For the swap case (exactly 2 steps), call the new database function via `supabase.rpc('swap_step_numbers', ...)` instead of doing sequential updates.
-
-For the bulk-reorder case (shifting multiple steps during add/delete), use a similar approach: a database function `reorder_step_numbers` that accepts an array of `(id, new_step_number)` pairs and applies them atomically using a two-pass strategy (first set all to negative offsets, then set to final values).
-
-**3. Update `handleMoveStep` in `src/components/admin/InlinePipelineEditor.tsx`**
-
-No changes needed here -- the component already calls `reorderSteps.mutateAsync` correctly. The fix is entirely in the hook and database layer.
+**2. No code changes needed**
+- The existing `swap_step_numbers` and `reorder_step_numbers` functions will work correctly once the CHECK constraint is removed.
 
 ### Technical Details
 
 | Layer | Change |
 |-------|--------|
-| Database | New function `swap_step_numbers(step_id_a UUID, step_id_b UUID)` |
-| Database | New function `reorder_step_numbers(step_updates JSONB)` for bulk reorder |
-| `usePromptBundles.ts` | `useReorderPromptSteps` calls RPC functions instead of sequential updates |
-
+| Database | `ALTER TABLE prompt_bundle_steps DROP CONSTRAINT prompt_bundle_steps_step_number_check;` |
+| Frontend | No changes needed |
+| Hook | No changes needed |
