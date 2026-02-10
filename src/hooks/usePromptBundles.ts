@@ -424,12 +424,18 @@ export function useReorderPromptSteps() {
       bundleId: string; 
       steps: { id: string; step_number: number }[] 
     }) => {
-      // Batch update all step numbers
-      for (const step of steps) {
-        const { error } = await supabase
-          .from("prompt_bundle_steps")
-          .update({ step_number: step.step_number })
-          .eq("id", step.id);
+      if (steps.length === 2) {
+        // Swap case: use atomic swap function
+        const { error } = await supabase.rpc('swap_step_numbers', {
+          step_id_a: steps[0].id,
+          step_id_b: steps[1].id,
+        });
+        if (error) throw error;
+      } else {
+        // Bulk reorder: use atomic reorder function
+        const { error } = await supabase.rpc('reorder_step_numbers', {
+          step_updates: steps.map(s => ({ id: s.id, step_number: s.step_number })),
+        });
         if (error) throw error;
       }
       return bundleId;

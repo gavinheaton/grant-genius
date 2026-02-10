@@ -1357,6 +1357,11 @@ export type Database = {
         Returns: boolean
       }
       is_admin: { Args: { _user_id: string }; Returns: boolean }
+      reorder_step_numbers: { Args: { step_updates: Json }; Returns: undefined }
+      swap_step_numbers: {
+        Args: { step_id_a: string; step_id_b: string }
+        Returns: undefined
+      }
     }
     Enums: {
       app_role: "researcher" | "admin" | "super_admin"
