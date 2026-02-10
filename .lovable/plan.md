@@ -1,53 +1,45 @@
 
 
-## Fix: Add Email Notification to Cloud Run Worker Report Flow
+## Fix: Update Stuck Applications and Send Missing Emails
 
 ### Problem
 
-When reports complete via the Cloud Run worker, the `worker-proxy` `save_report` action saves the report but never triggers the `send-report-email` function. Email notifications only fire for:
-- Edge engine runs (handled in `resume-report-run`)
-- Review workflow approvals (handled in `approve-review`)
+5 applications have completed Cloud Run report runs but remain at `draft` status with no email sent. This is the exact bug we just fixed in `worker-proxy` — these are the historical victims.
 
-This means all Cloud Run-generated reports silently skip the email notification, even when `email_on_complete` is true.
+### What Needs to Happen
 
-### Changes
+**1. Update application status** for all 5 apps from `draft` to `ready`:
 
-**`supabase/functions/worker-proxy/index.ts`** -- Add email trigger at the end of `handleSaveReport`
+| Application | App ID | User |
+|---|---|---|
+| Test Humankind 2 | `a9220476-...` | joanne@disruptorsco.com |
+| BERST v2 | `045ca1ce-...` | gavin@disruptorsco.com |
+| Jessie Technology | `261b5db3-...` | gavin@disruptorsco.com |
+| ErythroSight | `8e873537-...` | gavin@disruptorsco.com |
+| AMT Bio Single Prompt | `ffa2e800-...` | gavin@disruptorsco.com |
 
-After the report is successfully saved (around line 931), add the same email-triggering pattern used in `resume-report-run`:
+**2. Send REPORT_READY emails** for the latest completed report on each application by calling the `send-report-email` edge function with the correct `reportRunId`, `reportId`, `applicationId`, and `userId` for each.
 
-1. Fetch the run to check `email_on_complete`
-2. Look up the grant version to check for a review workflow
-3. If a review workflow exists, start it (same as `resume-report-run` does) and skip the email
-4. If no workflow and `email_on_complete` is true, call `send-report-email` with the report details
+### Approach
 
-The logic mirrors lines 864-894 of `resume-report-run/index.ts`:
+- Use a database migration to update `applications.status = 'ready'` for the 5 app IDs
+- Call the `send-report-email` edge function 5 times (once per app, using the most recent completed report run) to trigger the notification emails
 
-```text
-// After report saved successfully (line 931):
-// 1. Check email_on_complete on the run
-// 2. Check for review workflow on the grant
-// 3. If no workflow + email_on_complete → call send-report-email
-// 4. Update application status to 'completed'
-```
+### Data for Email Calls
 
-Specifically:
+| App Title | reportRunId | reportId | applicationId | userId |
+|---|---|---|---|---|
+| Test Humankind 2 | `7b279e5c-61dc-4bab-990c-c2af995d8ca2` | `dea2fc81-326b-49b6-8d04-58de2b7a85c8` | `a9220476-1139-463f-aceb-10d74ac85d4f` | `26c64646-56bd-4e28-b218-765111c76d23` |
+| BERST v2 | `7025ef28-4c2c-4234-899e-c2a5587feb12` | `c366072e-09c5-4501-9059-d2b6b286723c` | `045ca1ce-a27f-4959-b06a-1ddc998a9a0d` | `46d9f8cd-c549-4e76-9105-a96d8aff30d2` |
+| Jessie Technology | `0fd6e191-1de6-4642-a6fe-c94f611d0db5` | `8975249d-998b-4d6d-9bf2-d30e0cb05eac` | `261b5db3-c23f-4213-b42c-b45442477e7c` | `46d9f8cd-c549-4e76-9105-a96d8aff30d2` |
+| ErythroSight | `c6c9145c-8d2d-4dd3-8de7-b31e9cd703d5` | `0ee99141-084b-4de2-8d72-f751a1d26caa` | `8e873537-2295-46ef-a1c5-c2339a315c14` | `46d9f8cd-c549-4e76-9105-a96d8aff30d2` |
+| AMT Bio Single Prompt | `83e27546-b640-4cd6-886b-055242996cf4` | `27f9d3b7-9a6d-4f4c-9f75-dbedbcb2e721` | `ffa2e800-112e-4755-8c85-194a5794c59f` | `46d9f8cd-c549-4e76-9105-a96d8aff30d2` |
 
-- Query `report_runs` for `email_on_complete` using `report_run_id`
-- Query `grant_review_workflows` to check if a review workflow is enabled for the grant
-- If workflow exists: set `report.review_status = 'pending_review'` and create the first `report_reviews` entry
-- If no workflow and email enabled: `fetch` the `send-report-email` edge function with `{ reportRunId, reportId, applicationId, userId }`
-- Update `applications.status = 'completed'`
+### Technical Summary
 
-### Technical Details
-
-| File | Change |
-|------|--------|
-| `supabase/functions/worker-proxy/index.ts` | Add email notification + review workflow check after `save_report` completes |
-
-### What This Fixes
-
-- Cloud Run worker-completed reports will now send email notifications
-- Review workflows will also be triggered correctly for Cloud Run runs (currently also missing)
-- Application status will be updated to 'completed' (also currently missing from the worker path)
+| Action | Detail |
+|---|---|
+| SQL update | Set `applications.status = 'ready'` for the 5 application IDs |
+| Edge function calls | Call `send-report-email` 5 times with the data above |
+| No code changes | This is a data fix only, no source code modifications needed |
 
