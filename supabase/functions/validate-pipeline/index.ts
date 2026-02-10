@@ -132,12 +132,19 @@ IMPORTANT: Steps have different execution types indicated by "step_type":
 
 For firecrawl_search steps, the "query_template" is where you should look for references to upstream data (e.g., {{step_name}} or {{stepN}} variables). The "prompt_excerpt" may be empty or generic for these steps — that is expected and NOT an issue.
 
-Your job is to identify issues across 5 categories:
-1. **data_flow**: Does a step reference data (via {{stepN}} or {{step_name}} variables) that no preceding step produces? Are there gaps where information is expected but never generated?
-2. **redundancy**: Are any two steps doing substantially the same work? Would merging them improve the pipeline?
-3. **sequencing**: Are steps in a sensible order? (e.g., market sizing before source gathering makes no sense; citation cleanup should come after all content steps)
-4. **completeness**: For a research commercialisation grant pipeline, is anything obviously missing? (e.g., no market sizing, no competitor analysis, no risk assessment)
-5. **contract_mismatch**: Does each step's expected output (based on its prompt instructions or query template) align with what downstream steps reference?
+CRITICAL CONSTRAINT: Do NOT suggest alternative architectures or data flow patterns. If a step correctly references an upstream variable that exists and is produced by a preceding step, that reference is valid regardless of whether you would design it differently. The admin has made deliberate architectural choices — your job is to verify correctness, not suggest improvements.
+
+Your job is to identify issues across 5 categories. Each category has strict boundaries:
+
+1. **data_flow**: ONLY flag when a {{variable}} reference points to a step that does not exist or has not run yet (forward reference). Do NOT flag choices about which upstream data to use — if the referenced step exists and precedes the current step, the reference is valid. Raw vs processed data is an architectural choice, not a bug.
+
+2. **redundancy**: ONLY flag when two steps produce substantially identical outputs from the same inputs. Do NOT flag steps that work on similar topics but with different scopes, inputs, or output structures.
+
+3. **sequencing**: ONLY flag when a step cannot logically execute in its current position because it needs data that has not been produced yet by any preceding step. Do NOT suggest reordering for stylistic or efficiency reasons.
+
+4. **completeness**: ONLY flag when a section that is explicitly required by the pipeline's own step descriptions is never produced by any step. Do NOT suggest adding sections, topics, or analyses that the admin has not included — the admin decides what the pipeline covers.
+
+5. **contract_mismatch**: ONLY flag when a downstream step references a specific field or structure that the upstream step's prompt explicitly does not produce. If the upstream step's output is ambiguous or flexible, do not flag it.
 
 Each step uses {{stepN}} variables to reference outputs of step N, or {{step_name}} variables to reference outputs by name. Steps also use base variables like {{summary}}, {{grantName}}, {{requiredInputs}}, {{sources}}, {{unknowns}}, {{articleContent}}, etc.
 
@@ -159,12 +166,15 @@ Return your analysis as a JSON object with this exact schema:
 
 Rules:
 - Use "fail" verdict only if there are errors that would cause the pipeline to produce broken output
-- Use "issues_found" if there are warnings or info-level suggestions
-- Use "pass" if the pipeline is well-structured with no significant issues
+- Use "issues_found" ONLY if there are genuine warnings or errors — not for info-level observations alone
+- Use "pass" if the pipeline is well-structured with no significant issues. A pipeline with only minor info-level observations should still receive "pass"
+- Severity "info" should ONLY be used for factual observations (e.g., "step 5 does not reference any upstream data"). NEVER use "info" for subjective suggestions or style preferences. If you cannot point to a specific broken reference or missing data dependency, do not create an issue
 - Be specific: reference step numbers and names in messages
 - Don't flag things that are working correctly — focus on genuine issues
 - Keep messages concise but actionable
-- Do NOT flag firecrawl_search steps for having empty/generic prompt_excerpt — their query_template is the relevant content`;
+- Do NOT flag firecrawl_search steps for having empty/generic prompt_excerpt — their query_template is the relevant content
+- Do NOT suggest that a step should use different upstream data than what the admin chose
+- Do NOT recommend merging, splitting, or reordering steps unless there is an objective execution blocker`;
 
     const userMessage = `Analyse this ${stepsForAnalysis.length}-step research pipeline:\n\n${JSON.stringify(stepsForAnalysis, null, 2)}`;
 
