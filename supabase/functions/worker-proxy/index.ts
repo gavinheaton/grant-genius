@@ -1070,6 +1070,101 @@ async function workerProxyCheckReviewWorkflow(
       });
 
     console.log(`Review workflow started for report ${reportId}`);
+
+    // Fire-and-forget: send REVIEW_REQUESTED email to the assigned reviewer
+    try {
+      const brevoApiKey = Deno.env.get("BREVO_API_KEY");
+      if (brevoApiKey) {
+        const { data: reviewer } = await supabase
+          .from("profiles")
+          .select("email, full_name")
+          .eq("user_id", firstStep.reviewer_user_id)
+          .single();
+
+        if (reviewer) {
+          const { data: grant } = await supabase
+            .from("grants")
+            .select("name")
+            .eq("id", grantVersion.grant_id)
+            .single();
+
+          const { data: app } = await supabase
+            .from("reports")
+            .select("application:applications!inner(title)")
+            .eq("id", reportId)
+            .single();
+
+          const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+
+          const { data: reviewRecord } = await supabase
+            .from("report_reviews")
+            .select("id")
+            .eq("report_id", reportId)
+            .eq("step_number", 1)
+            .eq("reviewer_user_id", firstStep.reviewer_user_id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+
+          const reviewLink = reviewRecord
+            ? `${appUrl}/admin/reviews/${reviewRecord.id}`
+            : `${appUrl}/admin/reviews`;
+
+          const templateVars: Record<string, string> = {
+            reviewer_name: reviewer.full_name || reviewer.email.split("@")[0],
+            grant_name: grant?.name || "Unknown Grant",
+            application_title: (app?.application as any)?.title || "Untitled",
+            review_link: reviewLink,
+            step_number: "1",
+            total_steps: String(workflow.step_count),
+          };
+
+          const { data: emailTemplate } = await supabase
+            .from("email_templates")
+            .select("html_content, subject, sender_name, sender_email")
+            .eq("template_key", "REVIEW_REQUESTED")
+            .maybeSingle();
+
+          let htmlContent = emailTemplate?.html_content ||
+            `<h2>Review Requested</h2><p>Hi {{reviewer_name}},</p><p>A report for <strong>{{grant_name}}</strong> ({{application_title}}) is ready for your review (Step {{step_number}} of {{total_steps}}).</p><p><a href="{{review_link}}">Click here to review the report</a></p>`;
+          let subject = emailTemplate?.subject || "Report Review Required - {{grant_name}}";
+
+          for (const [key, value] of Object.entries(templateVars)) {
+            htmlContent = htmlContent.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+            subject = subject.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+          }
+
+          const senderName = emailTemplate?.sender_name || "Grant Genius";
+          const senderEmail = emailTemplate?.sender_email || "grantgenius@disruptorsco.com";
+
+          await fetch("https://api.brevo.com/v3/smtp/email", {
+            method: "POST",
+            headers: { "api-key": brevoApiKey, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sender: { name: senderName, email: senderEmail },
+              to: [{ email: reviewer.email, name: templateVars.reviewer_name }],
+              subject,
+              htmlContent,
+            }),
+          });
+
+          await supabase.from("email_outbox").insert({
+            user_id: firstStep.reviewer_user_id,
+            to_email: reviewer.email,
+            template_key: "REVIEW_REQUESTED",
+            subject,
+            status: "sent",
+            sent_at: new Date().toISOString(),
+            variables_json: templateVars,
+          });
+
+          console.log(`Review notification email sent to ${reviewer.email}`);
+        }
+      }
+    } catch (emailErr) {
+      console.error("Failed to send review notification email (non-fatal):", emailErr);
+    }
+
     return { hasWorkflow: true, totalSteps: workflow.step_count };
   } catch (e) {
     console.error("Error checking review workflow:", e);
