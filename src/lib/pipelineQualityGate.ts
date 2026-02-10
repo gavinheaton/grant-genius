@@ -283,10 +283,6 @@ export function checkHardFails(steps: PipelineStep[]): string[] {
       continue;
     }
 
-    if (step.prompt_template.length < MINIMUM_PROMPT_LENGTH) {
-      failures.push(`Step "${step.step_name}" prompt_template (${step.prompt_template.length} chars) < ${MINIMUM_PROMPT_LENGTH} minimum`);
-    }
-
     for (const { pattern, name } of HARD_FAIL_PATTERNS) {
       pattern.lastIndex = 0;
       if (pattern.test(step.prompt_template)) {

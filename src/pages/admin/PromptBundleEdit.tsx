@@ -114,7 +114,11 @@ export default function PromptBundleEdit() {
 
       {/* Quality Gate Card - shown when steps exist */}
       {qualityResult && (
-        <PipelineQualityCard result={qualityResult} />
+        <PipelineQualityCard
+          result={qualityResult}
+          onRerunQA={handleRerunQA}
+          isRerunning={isRerunning}
+        />
       )}
 
       <InlinePipelineEditor bundleId={id} showBundleSettings={true} />

@@ -135,6 +135,18 @@ export function PipelineQualityCard({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {onRerunQA && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRerunQA}
+                disabled={isRerunning}
+                className="gap-1.5"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isRerunning ? 'animate-spin' : ''}`} />
+                {isRerunning ? 'Running…' : 'Re-run QA'}
+              </Button>
+            )}
             <Badge variant={verdictConfig.badgeVariant} className="text-sm px-3 py-1">
               {verdictConfig.label}
             </Badge>

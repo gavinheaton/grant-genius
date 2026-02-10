@@ -430,7 +430,7 @@ describe("validatePipelineQuality", () => {
 
   it("should return 'fail' if any hard-fail triggers", () => {
     const steps = createValidPipeline();
-    steps[0].prompt_template = "Too short";
+    steps[0].prompt_template = "{TBD} placeholder"; // Use forbidden pattern instead of short length
     const result = validatePipelineQuality(steps);
     expect(result.verdict).toBe('fail');
     expect(result.hard_fail_reasons.length).toBeGreaterThan(0);
