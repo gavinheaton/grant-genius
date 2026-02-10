@@ -1,0 +1,1 @@
+ALTER TABLE public.prompt_bundle_steps DROP CONSTRAINT IF EXISTS prompt_bundle_steps_step_number_check;
