@@ -1,59 +1,42 @@
 
 
-## Fix: Include Firecrawl Config in AI Pipeline Validation
+## Fix: Tighten AI Validator to Objective-Only Feedback
 
 ### Problem
 
-The AI pipeline validator is giving inaccurate results because it only sees `prompt_template` for each step. For **Firecrawl search/scrape steps**, the actual query content lives in `step_config_json.query_template` -- not in `prompt_template`. So the AI sees a generic or empty prompt and incorrectly reports that the step doesn't reference upstream data.
+The validator's system prompt is too loose. It allows Gemini to offer subjective architectural opinions ("it's generally better to summarize before assembly") which conflict with deliberate design choices. The validator should only flag things that are **objectively wrong** — broken data flow, missing references, actual errors — not style preferences.
 
-In your case, Step 4 (`search_market_data`) has a detailed query template in `step_config_json` that explicitly references `{{analyze_market_segments}}`, but the AI never sees it.
+### Root Cause
 
-### Solution
-
-Send `step_config_json` alongside `prompt_template` so the AI has the full picture for every step type.
+The prompt's category definitions are open-ended. For example, "redundancy" asks "Would merging them improve the pipeline?" and "sequencing" asks "Are steps in a sensible order?" — these invite subjective opinions. There are no guardrails telling the AI to respect the admin's architectural choices.
 
 ### Changes
 
-**1. `src/pages/admin/PromptBundleEdit.tsx`**
+**`supabase/functions/validate-pipeline/index.ts`** — Update the system prompt rules section to:
 
-- Add `step_config_json` and `step_type` to the payload sent to the edge function:
+1. Add an explicit constraint: **"Do NOT suggest alternative architectures or data flow patterns. If a step correctly references an upstream variable that exists and is produced by a preceding step, that reference is valid regardless of whether you would design it differently."**
 
-```text
-steps: bundle.steps.map(s => ({
-  step_number: s.step_number,
-  step_name: s.step_name,
-  step_description: s.step_description,
-  prompt_template: s.prompt_template,
-  step_type: s.step_type,            // NEW
-  step_config_json: s.step_config_json, // NEW
-}))
-```
+2. Tighten category definitions:
+   - **data_flow**: Only flag when a variable reference points to a step that **does not exist** or **has not run yet** (forward reference). Do NOT suggest that raw vs processed data is a problem — that is an architectural choice.
+   - **redundancy**: Only flag when two steps produce **substantially identical outputs** with the same inputs. Do NOT flag steps that work on similar topics but with different scopes or outputs.
+   - **sequencing**: Only flag when a step **cannot logically execute** in its current position (e.g., it needs data that hasn't been produced yet). Do NOT suggest reordering for stylistic reasons.
+   - **completeness**: Only flag when a section that is **explicitly required by the step descriptions** is never produced. Do NOT suggest adding sections the admin hasn't included.
+   - **contract_mismatch**: Only flag when a downstream step references a specific field or structure that the upstream step's prompt **explicitly does not produce**.
 
-**2. `supabase/functions/validate-pipeline/index.ts`**
+3. Add a new rule: **"Severity 'info' should only be used for factual observations, never for subjective suggestions. If you cannot point to a specific broken reference or missing data dependency, do not create an issue."**
 
-- Accept `step_type` and `step_config_json` in the incoming payload
-- For `firecrawl_search` steps, extract `query_template` from `step_config_json` and include it in the analysis data sent to Gemini
-- For `firecrawl_scrape` steps, include `url_variable` and formats info
-- Update the system prompt to explain that some steps are web search/scrape steps and their query template is the primary content to evaluate (not `prompt_template`)
-- Update the variables extraction to also scan `query_template` for `{{variable}}` references
+4. Raise the bar for "issues_found" verdict: only use it when there are genuine warnings or errors, not just info-level style suggestions.
 
-### Technical Detail
+### What Changes for Admins
 
-The `stepsForAnalysis` object sent to Gemini will be enhanced:
+- The validator will stop second-guessing deliberate design decisions
+- It will still catch genuine problems: broken variable references, forward references, missing steps, duplicate work
+- Fewer false positives means the feedback is trustworthy and actionable
+- The "Pass" verdict will be more common for well-structured pipelines, which is correct
 
-```text
-{
-  step_number: 4,
-  step_name: "search_market_data",
-  step_type: "firecrawl_search",        // NEW
-  step_description: "Search for market sizing...",
-  prompt_excerpt: "",                     // may be empty for search steps
-  query_template: "Find TAM, SAM...",    // NEW -- from step_config_json
-  variables_used: ["analyze_market_segments"], // NOW correctly extracted
-}
-```
+### Technical Summary
 
 | File | Change |
 |------|--------|
-| `src/pages/admin/PromptBundleEdit.tsx` | Add `step_type` and `step_config_json` to the edge function payload |
-| `supabase/functions/validate-pipeline/index.ts` | Extract and include Firecrawl config in AI analysis; update system prompt to explain step types |
+| `supabase/functions/validate-pipeline/index.ts` | Rewrite system prompt rules to restrict AI to objective-only validation; ban subjective architecture suggestions |
+
