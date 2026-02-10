@@ -327,6 +327,16 @@ export default function ManualQueue() {
                           <TableCell>
                             {format(new Date(app.updated_at), "MMM d, yyyy 'at' h:mm a")}
                           </TableCell>
+                          <TableCell>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeletingApp({ id: app.id, title: app.title || "Untitled" })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       );
                     })}
