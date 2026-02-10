@@ -577,6 +577,26 @@ export default function ApplicationWorkspace() {
 
       {/* Purchase Modal */}
       <PurchaseModal open={purchaseModalOpen} onOpenChange={setPurchaseModalOpen} />
+
+      {/* Report Submitted Dialog (researchers only) */}
+      <Dialog open={showSubmittedDialog} onOpenChange={setShowSubmittedDialog}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader className="items-center text-center">
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 mb-2">
+              <Mail className="h-6 w-6 text-primary" />
+            </div>
+            <DialogTitle>Report Generation Started</DialogTitle>
+            <DialogDescription className="text-center">
+              Your report is being generated and will be sent to your email in approximately 15 minutes. You can also check back on your dashboard to view the completed report.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-center">
+            <Button onClick={() => navigate("/dashboard")}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
