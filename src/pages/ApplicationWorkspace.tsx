@@ -10,6 +10,7 @@ import {
   CreditCard,
   Send,
   Clock,
+  Mail,
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -21,6 +22,14 @@ import { PurchaseModal } from "@/components/PurchaseModal";
 import { ReportInputs } from "@/components/workspace/ReportInputs";
 import { GenerationProgress } from "@/components/workspace/GenerationProgress";
 import { ReportsList } from "@/components/workspace/ReportsList";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 
 interface ApplicationData {
   id: string;
