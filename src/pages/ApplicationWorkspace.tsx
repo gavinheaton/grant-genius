@@ -498,8 +498,8 @@ export default function ApplicationWorkspace() {
           )}
         </div>
 
-        {/* Progress Indicator - Only for automated grants */}
-        {!isManualGrant && (
+        {/* Progress Indicator - Only for admin users on automated grants */}
+        {!isManualGrant && isAdmin && (
           <div ref={progressRef}>
             {/* Show starting state */}
             {isStarting && (
