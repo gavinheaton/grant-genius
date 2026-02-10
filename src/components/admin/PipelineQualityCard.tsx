@@ -10,6 +10,7 @@ import {
   Search,
   Brain,
   Building2,
+  Link2Off,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -208,6 +209,32 @@ export function PipelineQualityCard({
                   <div key={idx} className="text-sm text-yellow-700 dark:text-yellow-300 flex items-start gap-2">
                     <span className="shrink-0">⚠</span>
                     <span>{flag}</span>
+                  </div>
+                ))}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
+
+        {/* Data Flow Issues */}
+        {result.data_flow_issues && result.data_flow_issues.length > 0 && (
+          <Collapsible defaultOpen>
+            <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium text-orange-600 hover:text-orange-700">
+              <Link2Off className="h-4 w-4" />
+              {result.data_flow_issues.length} Data Flow Issue{result.data_flow_issues.length > 1 ? 's' : ''}
+              <ChevronDown className="h-4 w-4" />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-2">
+              <div className="bg-orange-50 dark:bg-orange-950/50 border border-orange-200 dark:border-orange-800 rounded-lg p-3 space-y-2">
+                {result.data_flow_issues.map((issue, idx) => (
+                  <div key={idx} className="text-sm flex items-start gap-2">
+                    <span className={`shrink-0 ${issue.severity === 'error' ? 'text-red-600' : 'text-yellow-600'}`}>
+                      {issue.severity === 'error' ? '✗' : '⚠'}
+                    </span>
+                    <div>
+                      <span className="font-medium">Step {issue.step_number} ({issue.step_name})</span>
+                      <span className="text-muted-foreground"> — {issue.message}</span>
+                    </div>
                   </div>
                 ))}
               </div>

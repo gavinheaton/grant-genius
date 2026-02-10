@@ -2,6 +2,9 @@
  * Pipeline Variable Flow Validation
  * Validates step-to-step data dependencies to prevent runtime "stuck loops"
  * caused by unresolved template variables.
+ * 
+ * Also includes post-reorder validation to detect broken/stale references
+ * after manual step resequencing.
  */
 
 // Base variables always available (from runtime hydration)
@@ -38,10 +41,10 @@ export interface VariableFlowValidation {
   step_number: number;
   step_name: string;
   variables_used: string[];
-  unresolved_variables: string[];  // Variables not available at this step
-  forward_references: string[];     // {{stepN}} where N >= current step
-  warnings: string[];               // Non-blocking issues
-  errors: string[];                 // Blocking issues
+  unresolved_variables: string[];
+  forward_references: string[];
+  warnings: string[];
+  errors: string[];
 }
 
 export interface PipelineValidationResult {
@@ -62,6 +65,27 @@ export interface PipelineStep {
   step_type?: string;
 }
 
+// ============================================================================
+// POST-REORDER DATA FLOW TYPES
+// ============================================================================
+
+export interface DataFlowIssue {
+  step_number: number;
+  step_name: string;
+  severity: 'error' | 'warning';
+  message: string;
+  referenced_variable: string;
+}
+
+export interface PostReorderResult {
+  valid: boolean;
+  issues: DataFlowIssue[];
+}
+
+// ============================================================================
+// CORE VALIDATION FUNCTIONS
+// ============================================================================
+
 /**
  * Extract all {{variableName}} patterns from a prompt template
  */
@@ -81,7 +105,6 @@ export function buildAvailableVariables(
 ): string[] {
   const available: string[] = [...BASE_VARIABLES];
   
-  // Add dynamic variables from required inputs
   for (const input of requiredInputs) {
     if (input.key && !available.includes(input.key)) {
       available.push(input.key);
@@ -113,7 +136,6 @@ export function validateStepVariables(
   const warnings: string[] = [];
   
   for (const variable of variablesUsed) {
-    // Check for step references
     const stepMatch = variable.match(/^step(\d+)$/);
     if (stepMatch) {
       const refStepNum = parseInt(stepMatch[1], 10);
@@ -127,11 +149,9 @@ export function validateStepVariables(
       continue;
     }
     
-    // Check if variable is in available list
     if (!availableVariables.includes(variable)) {
       unresolved.push(variable);
       
-      // Check if it might be a typo of a known required input
       const possibleMatch = requiredInputs.find(
         input => input.key.toLowerCase() === variable.toLowerCase() && input.key !== variable
       );
@@ -165,7 +185,6 @@ export function validatePipelineDataFlow(
   const totalSteps = steps.length;
   const stepValidations: VariableFlowValidation[] = [];
   
-  // Sort steps by step_number to ensure correct ordering
   const sortedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
   
   for (const step of sortedSteps) {
@@ -173,14 +192,12 @@ export function validatePipelineDataFlow(
     stepValidations.push(validation);
   }
   
-  // Calculate summary
   const totalErrors = stepValidations.reduce((sum, v) => sum + v.errors.length, 0);
   const totalWarnings = stepValidations.reduce((sum, v) => sum + v.warnings.length, 0);
   const blockingSteps = stepValidations
     .filter(v => v.errors.length > 0)
     .map(v => v.step_number);
   
-  // Collect all unique unresolved variables
   const unresolvedSet = new Set<string>();
   for (const v of stepValidations) {
     for (const uv of v.unresolved_variables) {
@@ -200,9 +217,134 @@ export function validatePipelineDataFlow(
   };
 }
 
+// ============================================================================
+// POST-REORDER VALIDATION
+// ============================================================================
+
+/**
+ * Validate data flow after a reorder operation.
+ * 
+ * This checks that {{stepN}} references in each step's prompt still point
+ * to steps that execute BEFORE the current step in the new ordering.
+ * 
+ * It also detects "stale" references where {{stepN}} now points to a 
+ * semantically different step than originally intended.
+ */
+export function validatePostReorder(steps: PipelineStep[]): PostReorderResult {
+  const issues: DataFlowIssue[] = [];
+  const sortedSteps = [...steps].sort((a, b) => a.step_number - b.step_number);
+  
+  // Build a map: step_number -> step for quick lookup
+  const stepMap = new Map<number, PipelineStep>();
+  for (const step of sortedSteps) {
+    stepMap.set(step.step_number, step);
+  }
+  
+  // Build position map: step_number -> sorted position index
+  const positionMap = new Map<number, number>();
+  sortedSteps.forEach((step, idx) => {
+    positionMap.set(step.step_number, idx);
+  });
+
+  for (const step of sortedSteps) {
+    const variables = extractVariablesFromPrompt(step.prompt_template);
+    const currentPosition = positionMap.get(step.step_number) ?? step.step_number;
+    
+    for (const variable of variables) {
+      const stepMatch = variable.match(/^step(\d+)$/);
+      if (!stepMatch) continue;
+      
+      const refStepNum = parseInt(stepMatch[1], 10);
+      
+      // Check 1: Does the referenced step exist?
+      if (!stepMap.has(refStepNum)) {
+        issues.push({
+          step_number: step.step_number,
+          step_name: step.step_name,
+          severity: 'error',
+          message: `References {{step${refStepNum}}} which does not exist in the pipeline (only ${sortedSteps.length} steps: 0-${sortedSteps.length - 1})`,
+          referenced_variable: variable,
+        });
+        continue;
+      }
+      
+      // Check 2: Is it a forward reference? (references a step at same or later position)
+      const refPosition = positionMap.get(refStepNum) ?? refStepNum;
+      if (refPosition >= currentPosition) {
+        const refStep = stepMap.get(refStepNum)!;
+        issues.push({
+          step_number: step.step_number,
+          step_name: step.step_name,
+          severity: 'error',
+          message: `Forward reference: {{step${refStepNum}}} ("${refStep.step_name}") is at position ${refPosition} but "${step.step_name}" is at position ${currentPosition}`,
+          referenced_variable: variable,
+        });
+      }
+    }
+  }
+
+  return {
+    valid: issues.filter(i => i.severity === 'error').length === 0,
+    issues,
+  };
+}
+
+/**
+ * Detect stale references after reorder.
+ * 
+ * A "stale" reference is when step A references {{stepN}} but step N's
+ * semantic meaning has changed because steps were reordered. We detect this
+ * by checking if the step name at position N has changed relative to what
+ * the referencing prompt might expect.
+ * 
+ * @param currentSteps - Steps in their current order
+ * @param previousStepNames - Optional: ordered list of step names from before reorder
+ */
+export function detectStaleReferences(
+  currentSteps: PipelineStep[],
+  previousStepNames?: string[]
+): DataFlowIssue[] {
+  if (!previousStepNames || previousStepNames.length === 0) return [];
+  
+  const issues: DataFlowIssue[] = [];
+  const sortedSteps = [...currentSteps].sort((a, b) => a.step_number - b.step_number);
+  
+  for (const step of sortedSteps) {
+    const variables = extractVariablesFromPrompt(step.prompt_template);
+    
+    for (const variable of variables) {
+      const stepMatch = variable.match(/^step(\d+)$/);
+      if (!stepMatch) continue;
+      
+      const refStepNum = parseInt(stepMatch[1], 10);
+      
+      // Check if previous name at this position differs from current
+      if (refStepNum < previousStepNames.length && refStepNum < sortedSteps.length) {
+        const previousName = previousStepNames[refStepNum];
+        const currentName = sortedSteps[refStepNum]?.step_name;
+        
+        if (previousName && currentName && previousName !== currentName) {
+          issues.push({
+            step_number: step.step_number,
+            step_name: step.step_name,
+            severity: 'warning',
+            message: `{{step${refStepNum}}} previously pointed to "${previousName}" but now points to "${currentName}" after reorder`,
+            referenced_variable: variable,
+          });
+        }
+      }
+    }
+  }
+  
+  return issues;
+}
+
+// ============================================================================
+// AUTO-FIX UTILITIES
+// ============================================================================
+
 /**
  * Auto-fix strategy: Replace unresolved variables with instructions
- * to extract from {{requiredInputs}} or mark as unavailable
  */
 export function autoFixUnresolvedVariables(
   prompt: string,
@@ -212,20 +354,17 @@ export function autoFixUnresolvedVariables(
   let fixed = prompt;
   
   for (const varName of unresolvedVars) {
-    // Check if this is a known required input key
     const isRequiredInput = requiredInputs.some(
       input => input.key.toLowerCase() === varName.toLowerCase()
     );
     
     if (isRequiredInput) {
-      // Replace with instruction to extract from requiredInputs
       const pattern = new RegExp(`\\{\\{${varName}\\}\\}`, 'g');
       fixed = fixed.replace(
         pattern,
         `[Extract "${varName}" from the requiredInputs if provided, otherwise mark as "Not specified"]`
       );
     } else {
-      // Replace with a descriptive placeholder
       const pattern = new RegExp(`\\{\\{${varName}\\}\\}`, 'g');
       const readable = varName.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
       fixed = fixed.replace(
