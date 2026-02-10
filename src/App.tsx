@@ -33,6 +33,7 @@ import ManualQueue from "./pages/admin/ManualQueue";
 import CmsPages from "./pages/admin/CmsPages";
 import ReportReview from "./pages/admin/ReportReview";
 import ReviewsList from "./pages/admin/ReviewsList";
+import HomepageEditor from "./pages/admin/HomepageEditor";
 
 const queryClient = new QueryClient();
 
@@ -70,6 +71,7 @@ const App = () => (
             <Route path="/admin/system-health" element={<AdminLayout><SystemHealth /></AdminLayout>} />
             <Route path="/admin/manual-queue" element={<AdminLayout><ManualQueue /></AdminLayout>} />
             <Route path="/admin/assistant" element={<AdminLayout><AdminAssistant /></AdminLayout>} />
+            <Route path="/admin/homepage" element={<AdminLayout><HomepageEditor /></AdminLayout>} />
             <Route path="/admin/pages" element={<AdminLayout><CmsPages /></AdminLayout>} />
             <Route path="/admin/reviews" element={<AdminLayout><ReviewsList /></AdminLayout>} />
             <Route path="/admin/reviews/:reviewId" element={<AdminLayout><ReportReview /></AdminLayout>} />

@@ -58,6 +58,7 @@ const reportItems = [
 ];
 
 const contentItems = [
+  { title: "Homepage", url: "/admin/homepage", icon: Home },
   { title: "CMS Pages", url: "/admin/pages", icon: FileStack },
 ];
 
