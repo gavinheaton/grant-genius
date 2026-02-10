@@ -232,7 +232,6 @@ export const HARD_FAIL_PATTERNS: { pattern: RegExp; name: string }[] = [
   { pattern: /\bPROXY\b(?![_\s]*(estimate|method|calculation|protocol))/gi, name: 'PROXY placeholder (without method)' },
 ];
 
-const MINIMUM_PROMPT_LENGTH = 1500;
 const MINIMUM_TOTAL_STEPS = 8; // Lowered: dynamic pipelines may have fewer steps
 
 // ============================================================================
