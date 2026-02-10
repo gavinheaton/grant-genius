@@ -10,6 +10,7 @@ import {
   Search,
   Brain,
   Building2,
+  Link2Off,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
