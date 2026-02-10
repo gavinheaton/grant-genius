@@ -33,6 +33,8 @@ interface PipelineQualityCardProps {
   result: PipelineQualityResult;
   onApplyRepairs?: () => void;
   isApplyingRepairs?: boolean;
+  onRerunQA?: () => void;
+  isRerunning?: boolean;
   className?: string;
 }
 
