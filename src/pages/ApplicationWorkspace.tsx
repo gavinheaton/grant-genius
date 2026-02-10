@@ -566,9 +566,9 @@ export default function ApplicationWorkspace() {
           </div>
         )}
 
-        {/* Reports List */}
+        {/* Reports List - hide reports under review from researchers */}
         <ReportsList
-          reports={reports}
+          reports={reports.filter(r => !(r as any).review_status || (r as any).review_status === 'approved')}
           isLoading={isLoadingReports}
           onDownload={downloadReport}
           onDeleteReport={deleteReport}

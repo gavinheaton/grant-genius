@@ -22,6 +22,7 @@ export interface Report {
   pdf_path: string | null;
   docx_path: string | null;
   content_json?: Json;
+  review_status: string | null;
 }
 
 export interface ReportRunStep {
@@ -105,7 +106,7 @@ export function useReportGeneration(
 
     const { data, error } = await supabase
       .from("reports")
-      .select("id, version_number, created_at, pdf_path, docx_path, content_json")
+      .select("id, version_number, created_at, pdf_path, docx_path, content_json, review_status")
       .eq("application_id", applicationId)
       .order("version_number", { ascending: false });
 
