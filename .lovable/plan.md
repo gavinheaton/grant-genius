@@ -1,53 +1,32 @@
 
 
-## Researcher "Report Submitted" Popup + Failure Notification Email
+## Fix: Missing Review Notification Email in Worker-Proxy
 
-### Overview
-Two changes:
-1. **Researchers** who click "Generate Report" will see a popup dialog (not the progress page) telling them the report will be emailed in ~15 minutes. Clicking "Close" returns them to the dashboard. **Admins** continue to see the full progress UI as today.
-2. When a report run transitions to **failed**, an email is sent to `grantgenius@disruptorsco.com` with a link to the failed report.
+### Problem
+When a report completes via the Cloud Run worker and enters the review workflow, the `worker-proxy` function creates the review record but does **not** send a notification email to the assigned reviewer. This means the reviewer has no way of knowing a report is waiting for them unless they manually check the admin dashboard.
 
----
+The other two code paths that create review steps (`approve-review` and `complete-manual-report`) both send the `REVIEW_REQUESTED` email correctly -- `worker-proxy` is the only one missing it.
 
-### Change 1: Researcher Popup
-
-**File: `src/pages/ApplicationWorkspace.tsx`**
-
-- Destructure `isAdmin` from `useAuth()` (currently only `isSuperAdmin` is used)
-- Add a new state: `showSubmittedDialog` (boolean, default false)
-- In `handleGenerateReport`:
-  - After `await startGeneration()` succeeds, if the user is **not** an admin (`!isAdmin`), set `showSubmittedDialog = true` instead of staying on the page
-- Add a `Dialog` component that shows when `showSubmittedDialog` is true:
-  - Icon: Mail/CheckCircle
-  - Title: "Report Generation Started"
-  - Body: "Your report is being generated and will be sent to your email in approximately 15 minutes. You can also check back on your dashboard to view the completed report."
-  - A single "Close" button that calls `navigate("/dashboard")`
-- For **admins** (`isAdmin === true`), the current behavior is preserved -- they see the full progress tracker, step logs, cancel/resume controls, etc.
-- The progress section (`GenerationProgress` component and related UI) will be conditionally rendered only when `isAdmin` is true, so researchers never see it even if they navigate back to the page while a run is active (they already get the email).
-
-### Change 2: Failure Notification Email
+### Fix
 
 **File: `supabase/functions/worker-proxy/index.ts`**
 
-- In the `update_run` handler, after a run status is set to `"failed"` (around line 532 where the DB update succeeds), send a notification email to `grantgenius@disruptorsco.com` using the existing Brevo API integration:
-  - Subject: "Report Generation Failed - [Run ID]"
-  - Body: includes the run ID, application ID, halt reason, and a link to the admin report review page
-  - Uses the `BREVO_API_KEY` secret (already available)
-  - This is a fire-and-forget call -- failure to send the email does not block the response
-- The link format will be: `{APP_URL}/admin/manual-queue` (or a direct link if available)
+Add reviewer notification email logic to the `workerProxyCheckReviewWorkflow` function, after the `report_reviews` insert succeeds (around line 1072). The implementation will:
 
----
+1. Look up the reviewer's email from the `profiles` table using `firstStep.reviewer_user_id`
+2. Look up the grant name (already have `grantVersion.grant_id`)
+3. Fetch the `REVIEW_REQUESTED` email template from `email_templates`
+4. Send the email via Brevo API (using `BREVO_API_KEY`, same pattern as `approve-review`)
+5. Log the sent email to `email_outbox`
+6. This is fire-and-forget -- a failure to send the email should not break the review workflow
 
-### Technical Details
+The email will include:
+- Subject: "Report Review Required - {grant_name}"
+- Reviewer name, grant name, and a link to the review page
+- Uses the same shortcode interpolation as the existing implementations
 
-| Item | Detail |
-|---|---|
-| New state in ApplicationWorkspace | `showSubmittedDialog: boolean` |
-| Auth check | `isAdmin` from `useAuth()` (true for both admin and super_admin) |
-| Dialog component | Uses existing `Dialog` from `@/components/ui/dialog` |
-| Progress visibility | `GenerationProgress` and related progress UI wrapped in `isAdmin` check |
-| Failure email recipient | `grantgenius@disruptorsco.com` (hardcoded) |
-| Failure email sender | Uses existing Brevo sender config |
-| Edge function modified | `worker-proxy/index.ts` -- add email dispatch after failed status update |
-| No DB changes needed | None |
+### No other changes needed
+- Database schema is already correct
+- The `REVIEW_REQUESTED` template already exists in `email_templates`
+- The `email_outbox` table is ready to receive the log entry
 
