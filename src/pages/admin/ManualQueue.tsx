@@ -14,7 +14,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Mail, Clock, User, FileText, ExternalLink, ChevronDown, ChevronUp, AlertCircle, CheckCircle } from "lucide-react";
+import { Loader2, Mail, Clock, User, FileText, ExternalLink, ChevronDown, ChevronUp, AlertCircle, CheckCircle, Trash2 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { format } from "date-fns";
 import { ManualReportEditor } from "@/components/admin/ManualReportEditor";
 
@@ -60,6 +70,7 @@ export default function ManualQueue() {
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState<string | null>(null);
+  const [deletingApp, setDeletingApp] = useState<{ id: string; title: string } | null>(null);
 
   // Query for manual submissions (existing)
   const { data: submissions, isLoading: submissionsLoading } = useQuery({
@@ -121,6 +132,25 @@ export default function ManualQueue() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["manual-queue"] });
+    },
+  });
+
+  const deleteApplicationMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from("applications")
+        .delete()
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-all-applications"] });
+      queryClient.invalidateQueries({ queryKey: ["manual-queue"] });
+      toast({ title: "Application deleted", description: "The application and associated data have been removed." });
+      setDeletingApp(null);
+    },
+    onError: (error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
     },
   });
 
@@ -264,6 +294,7 @@ export default function ManualQueue() {
                       <TableHead>Status</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead>Last Updated</TableHead>
+                      <TableHead className="w-16">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -295,6 +326,16 @@ export default function ManualQueue() {
                           </TableCell>
                           <TableCell>
                             {format(new Date(app.updated_at), "MMM d, yyyy 'at' h:mm a")}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => setDeletingApp({ id: app.id, title: app.title || "Untitled" })}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       );
@@ -485,6 +526,28 @@ export default function ManualQueue() {
           }}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={!!deletingApp} onOpenChange={(open) => !open && setDeletingApp(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Application</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete "<strong>{deletingApp?.title}</strong>" and all associated reports and runs. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deletingApp && deleteApplicationMutation.mutate(deletingApp.id)}
+            >
+              {deleteApplicationMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
