@@ -1,38 +1,53 @@
 
 
-## Add Admin Delete Button for Applications
+## Researcher "Report Submitted" Popup + Failure Notification Email
 
-### Problem
-Admins can view all applications in the `/admin/manual-queue` page but cannot delete them. The current RLS policies only allow users to delete their own applications -- there is no admin DELETE policy on the `applications` table.
+### Overview
+Two changes:
+1. **Researchers** who click "Generate Report" will see a popup dialog (not the progress page) telling them the report will be emailed in ~15 minutes. Clicking "Close" returns them to the dashboard. **Admins** continue to see the full progress UI as today.
+2. When a report run transitions to **failed**, an email is sent to `grantgenius@disruptorsco.com` with a link to the failed report.
 
-### Changes
+---
 
-**1. Database migration -- Add admin DELETE policy**
+### Change 1: Researcher Popup
 
-Add an RLS policy so admins can delete any application:
-```sql
-CREATE POLICY "Admins can delete applications"
-ON public.applications FOR DELETE
-USING (is_admin(auth.uid()));
-```
+**File: `src/pages/ApplicationWorkspace.tsx`**
 
-**2. Update `src/pages/admin/ManualQueue.tsx`**
+- Destructure `isAdmin` from `useAuth()` (currently only `isSuperAdmin` is used)
+- Add a new state: `showSubmittedDialog` (boolean, default false)
+- In `handleGenerateReport`:
+  - After `await startGeneration()` succeeds, if the user is **not** an admin (`!isAdmin`), set `showSubmittedDialog = true` instead of staying on the page
+- Add a `Dialog` component that shows when `showSubmittedDialog` is true:
+  - Icon: Mail/CheckCircle
+  - Title: "Report Generation Started"
+  - Body: "Your report is being generated and will be sent to your email in approximately 15 minutes. You can also check back on your dashboard to view the completed report."
+  - A single "Close" button that calls `navigate("/dashboard")`
+- For **admins** (`isAdmin === true`), the current behavior is preserved -- they see the full progress tracker, step logs, cancel/resume controls, etc.
+- The progress section (`GenerationProgress` component and related UI) will be conditionally rendered only when `isAdmin` is true, so researchers never see it even if they navigate back to the page while a run is active (they already get the email).
 
-- Import `Trash2` icon from lucide-react and `AlertDialog` components for a confirmation dialog
-- Add a `deleteApplicationMutation` that deletes an application by ID via Supabase
-- Add a `deletingId` state to track which application is pending confirmation
-- Add a red delete (trash) button in the Actions column of the **All Applications** table for each row
-- Clicking the button opens a confirmation dialog warning that this will permanently delete the application and all associated reports/runs
-- On confirm, execute the delete and invalidate both query keys (`admin-all-applications` and `manual-queue`)
-- Show a success toast on completion
+### Change 2: Failure Notification Email
+
+**File: `supabase/functions/worker-proxy/index.ts`**
+
+- In the `update_run` handler, after a run status is set to `"failed"` (around line 532 where the DB update succeeds), send a notification email to `grantgenius@disruptorsco.com` using the existing Brevo API integration:
+  - Subject: "Report Generation Failed - [Run ID]"
+  - Body: includes the run ID, application ID, halt reason, and a link to the admin report review page
+  - Uses the `BREVO_API_KEY` secret (already available)
+  - This is a fire-and-forget call -- failure to send the email does not block the response
+- The link format will be: `{APP_URL}/admin/manual-queue` (or a direct link if available)
+
+---
 
 ### Technical Details
 
 | Item | Detail |
 |---|---|
-| New RLS policy | `Admins can delete applications` -- DELETE policy using `is_admin(auth.uid())` |
-| UI location | Actions column added to the All Applications table (right-most column) |
-| Confirmation | AlertDialog with destructive styling and application title shown |
-| Cascade | The existing database cascade handles cleaning up reports and runs |
-| Queries invalidated | `admin-all-applications`, `manual-queue` |
+| New state in ApplicationWorkspace | `showSubmittedDialog: boolean` |
+| Auth check | `isAdmin` from `useAuth()` (true for both admin and super_admin) |
+| Dialog component | Uses existing `Dialog` from `@/components/ui/dialog` |
+| Progress visibility | `GenerationProgress` and related progress UI wrapped in `isAdmin` check |
+| Failure email recipient | `grantgenius@disruptorsco.com` (hardcoded) |
+| Failure email sender | Uses existing Brevo sender config |
+| Edge function modified | `worker-proxy/index.ts` -- add email dispatch after failed status update |
+| No DB changes needed | None |
 
