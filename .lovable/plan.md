@@ -1,30 +1,40 @@
 
 
-## Fix: Allow Admins to Edit Prompt Bundles in the UI
+## Fix: Prompt Bundle Step Reordering
 
-The database RLS policies are already updated correctly. The problem is that two frontend files still gate editing actions behind `isSuperAdmin` instead of `isAdmin`.
+### Problem
 
-### Changes Required
+There is a **unique constraint** on `(bundle_id, step_number)` in the `prompt_bundle_steps` table. When you try to move a step up or down, the code attempts to swap the two step numbers using sequential UPDATE statements. The first UPDATE tries to set step A to step B's number, but step B still has that number -- violating the unique constraint and failing silently.
 
-**1. `src/components/admin/InlinePipelineEditor.tsx`**
-- Line 298: Change `const canEdit = isSuperAdmin;` to `const canEdit = isSuperAdmin || isAdmin;` (or simply use the `isAdmin` flag from `useAdminAuth`, which already includes super admins)
+### Solution
 
-This single change unlocks: editing bundle settings, editing system prompt, editing step prompts, adding/deleting/reordering steps.
+Create a database function that performs the swap **atomically** within a single transaction, using a temporary intermediate value to avoid the constraint violation.
 
-**2. `src/pages/admin/PromptBundles.tsx`**  
-- Line 160: Change `{isSuperAdmin && (` to `{isAdmin && (` for the "New Bundle" button
-- Line 200: Change `{isSuperAdmin && (` to `{isAdmin && (` for the "Clone" and "Delete" buttons
+### Changes
 
-This also requires destructuring `isAdmin` from `useAdminAuth()` on line 58 (currently only destructures `isSuperAdmin`).
+**1. Database migration -- create a `swap_step_numbers` function**
 
-### Summary
+A new PostgreSQL function `swap_step_numbers(step_id_a UUID, step_id_b UUID)` that:
+- Sets step A's number to `-1` (temporary value, avoids conflict)
+- Sets step B's number to step A's original number
+- Sets step A's number to step B's original number
+- All within a single transaction
 
-| File | Line | Before | After |
-|------|------|--------|-------|
-| `InlinePipelineEditor.tsx` | 298 | `const canEdit = isSuperAdmin` | `const canEdit = isAdmin` |
-| `PromptBundles.tsx` | 58 | `const { isSuperAdmin }` | `const { isSuperAdmin, isAdmin }` |
-| `PromptBundles.tsx` | 160 | `{isSuperAdmin && (` | `{isAdmin && (` |
-| `PromptBundles.tsx` | 200 | `{isSuperAdmin && (` | `{isAdmin && (` |
+**2. Update `useReorderPromptSteps` in `src/hooks/usePromptBundles.ts`**
 
-No database changes needed -- the RLS migration from the previous step already handles the backend correctly.
+For the swap case (exactly 2 steps), call the new database function via `supabase.rpc('swap_step_numbers', ...)` instead of doing sequential updates.
+
+For the bulk-reorder case (shifting multiple steps during add/delete), use a similar approach: a database function `reorder_step_numbers` that accepts an array of `(id, new_step_number)` pairs and applies them atomically using a two-pass strategy (first set all to negative offsets, then set to final values).
+
+**3. Update `handleMoveStep` in `src/components/admin/InlinePipelineEditor.tsx`**
+
+No changes needed here -- the component already calls `reorderSteps.mutateAsync` correctly. The fix is entirely in the hook and database layer.
+
+### Technical Details
+
+| Layer | Change |
+|-------|--------|
+| Database | New function `swap_step_numbers(step_id_a UUID, step_id_b UUID)` |
+| Database | New function `reorder_step_numbers(step_updates JSONB)` for bulk reorder |
+| `usePromptBundles.ts` | `useReorderPromptSteps` calls RPC functions instead of sequential updates |
 
