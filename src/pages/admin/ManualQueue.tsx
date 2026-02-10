@@ -135,6 +135,25 @@ export default function ManualQueue() {
     },
   });
 
+  const deleteApplicationMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase
+        .from("applications")
+        .delete()
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-all-applications"] });
+      queryClient.invalidateQueries({ queryKey: ["manual-queue"] });
+      toast({ title: "Application deleted", description: "The application and associated data have been removed." });
+      setDeletingApp(null);
+    },
+    onError: (error) => {
+      toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const getManualStatusBadge = (status: string) => {
     switch (status) {
       case "pending_review":
