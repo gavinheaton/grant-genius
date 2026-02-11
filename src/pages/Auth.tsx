@@ -21,8 +21,14 @@ export default function Auth() {
     let mounted = true;
 
     // Set up auth state change listener FIRST (important for magic link)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_IN" && mounted) {
+        // Fire-and-forget: add user to Brevo prospects list
+        if (session?.user?.email) {
+          supabase.functions.invoke("add-to-brevo-list", {
+            body: { email: session.user.email },
+          }).catch((err) => console.error("Brevo list error:", err));
+        }
         navigate("/dashboard", { replace: true });
       }
     });
