@@ -846,6 +846,30 @@ async function createFinalReport(
   citations: Array<{ url: string; title: string; accessed: string }>,
   emailOnComplete: boolean
 ) {
+  // DEDUPLICATION GUARD: Check if a report already exists for this run
+  const { data: existingReport } = await supabase
+    .from("reports")
+    .select("id")
+    .eq("report_run_id", reportRunId)
+    .maybeSingle();
+
+  if (existingReport) {
+    console.log(`Report already exists for run ${reportRunId} (report ${existingReport.id}), skipping duplicate insert`);
+    return;
+  }
+
+  // CANCEL CHECK: Re-read run status before saving
+  const { data: currentRun } = await supabase
+    .from("report_runs")
+    .select("status")
+    .eq("id", reportRunId)
+    .single();
+
+  if (currentRun?.status === "failed") {
+    console.log(`Run ${reportRunId} was cancelled, skipping report save`);
+    return;
+  }
+
   // Get next version number
   const { data: existingReports } = await supabase
     .from("reports")
@@ -1117,7 +1141,26 @@ async function executeStep(
   stepFn: () => Promise<Record<string, unknown>>
 ): Promise<void> {
   try {
-    await updateStep(supabase, reportRunId, stepNumber, "running");
+    // ATOMIC STEP CLAIM: Only proceed if we can atomically transition pending -> running
+    const { data: claimed, error: claimError } = await supabase
+      .from("report_run_steps")
+      .update({ status: "running", started_at: new Date().toISOString() })
+      .eq("report_run_id", reportRunId)
+      .eq("step_number", stepNumber)
+      .eq("status", "pending")
+      .select("id");
+
+    if (claimError || !claimed || claimed.length === 0) {
+      console.log(`Step ${stepNumber} already claimed by another worker, skipping`);
+      return;
+    }
+
+    // Update run's current_step
+    await supabase
+      .from("report_runs")
+      .update({ current_step: stepNumber })
+      .eq("id", reportRunId);
+
     const outputs = await stepFn();
     await updateStep(supabase, reportRunId, stepNumber, "completed", outputs);
     
