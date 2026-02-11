@@ -762,7 +762,46 @@ async function processSingleStep(
     
     // Refund credit on failure
     await refundCredit(supabase, reportRunId);
+
+    // Send failure notification email (fire-and-forget)
+    sendFailureNotification(reportRunId, errorMessage).catch(e =>
+      console.error("Failed to send failure notification:", e)
+    );
   }
+}
+
+/**
+ * Send failure notification email to admin (fire-and-forget)
+ */
+async function sendFailureNotification(reportRunId: string, haltReason: string) {
+  const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY");
+  const APP_URL = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
+
+  if (!BREVO_API_KEY) {
+    console.warn("BREVO_API_KEY not set, skipping failure notification");
+    return;
+  }
+
+  const manualQueueLink = `${APP_URL}/admin/manual-queue`;
+
+  await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": BREVO_API_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
+      to: [{ email: "grantgenius@disruptorsco.com", name: "Grant Genius Admin" }],
+      subject: `⚠️ Report Run Failed: ${reportRunId.slice(0, 8)}`,
+      htmlContent: `<h2>Report Run Failed</h2>
+        <p><strong>Run ID:</strong> ${reportRunId}</p>
+        <p><strong>Halt Reason:</strong> ${haltReason}</p>
+        <p><a href="${manualQueueLink}">View in Manual Queue</a></p>`,
+    }),
+  });
+
+  console.log(`Failure notification sent for run ${reportRunId}`);
 }
 
 /**
@@ -1105,6 +1144,13 @@ async function callAIWithRetry(
   
   if (!LOVABLE_API_KEY) {
     throw new Error("AI service not configured. Please contact support.");
+  }
+
+  // Normalize model name: ensure provider prefix is present
+  if (model.startsWith("gemini")) {
+    model = `google/${model}`;
+  } else if (model.startsWith("gpt")) {
+    model = `openai/${model}`;
   }
 
   console.log(`Step ${stepNumber}: Using model ${model}, timeout ${customTimeoutMs / 1000}s${maxOutputTokens ? `, max_tokens ${maxOutputTokens}` : ''}`);
