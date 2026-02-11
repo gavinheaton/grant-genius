@@ -176,14 +176,10 @@ export default function Auth() {
                 }
                 </Button>
                 <p className="text-xs text-center text-muted-foreground">
-                  By continuing, you agree to our{" "}
-                  
-
-                {" "}
-                  and{" "}
-                  <Link to="/privacy" className="text-primary hover:underline">
+                  By continuing you agree to our{" "}
+                  <a href="https://disruptorsco.com/privacy-policy/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                     Privacy Policy
-                  </Link>
+                  </a>
                 </p>
               </form>
             }
