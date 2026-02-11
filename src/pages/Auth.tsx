@@ -116,7 +116,7 @@ export default function Auth() {
             <div className="mx-auto mb-4 flex items-center justify-center w-12 h-12 rounded-xl gradient-hero">
               <GraduationCap className="h-6 w-6 text-primary-foreground" />
             </div>
-            <CardTitle className="text-2xl">Welcome to GCA</CardTitle>
+            <CardTitle className="text-2xl">Welcome to Grant Genius</CardTitle>
             <CardDescription>
               {isSuccess
                 ? "Check your email for the magic link"
