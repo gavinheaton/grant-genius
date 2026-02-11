@@ -489,6 +489,27 @@ async function handleUpdateStep(supabase: any, params: Record<string, unknown>) 
   return jsonResponse({ success: true });
 }
 
+// Pattern-match halt reasons to actionable fix suggestions
+function getSuggestedFix(haltReason: string): string {
+  const lower = haltReason.toLowerCase();
+  if (lower.includes("json parse error") || lower.includes("json guard")) {
+    return "The AI output was likely truncated due to insufficient token limits. Go to the prompt bundle step and increase max_output_tokens (e.g., from 4096 to 8192 or higher).";
+  }
+  if (lower.includes("unresolved variables")) {
+    return "Template variables were not interpolated before execution. Check the prompt template for {{variable}} references and ensure all required inputs are provided in the application.";
+  }
+  if (lower.includes("timeout") || lower.includes("deadline exceeded")) {
+    return "The step exceeded its time limit. Consider increasing timeout_seconds for this step, or splitting the prompt into smaller sub-tasks.";
+  }
+  if (lower.includes("rate limit") || lower.includes("429")) {
+    return "The AI provider rate-limited the request. Wait a few minutes and retry, or switch to a different model via model_override.";
+  }
+  if (lower.includes("forbidden token") || lower.includes("citation lint")) {
+    return "The final report contained internal markers or placeholder tokens. Review the sanitiser step prompt to ensure all internal references are resolved before assembly.";
+  }
+  return "No automated suggestion available. Review the step logs in the admin console for details.";
+}
+
 async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
   const { report_run_id, status, current_step, phase, checkpoint_data_json, checkpoint_citations_json, started_at, completed_at, halt_reason } = params;
 
@@ -547,6 +568,7 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
       if (brevoApiKey) {
         const adminLink = `${appUrl}/admin/manual-queue`;
         const haltMsg = (halt_reason as string) || "No halt reason provided";
+        const suggestedFix = getSuggestedFix(haltMsg);
         
         await fetch("https://api.brevo.com/v3/smtp/email", {
           method: "POST",
@@ -561,6 +583,10 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
             htmlContent: `<h2>Report Generation Failed</h2>
               <p><strong>Run ID:</strong> ${report_run_id}</p>
               <p><strong>Halt Reason:</strong> ${haltMsg}</p>
+              <div style="background:#FEF3C7;border-left:4px solid #F59E0B;padding:12px 16px;margin:16px 0;border-radius:4px;">
+                <p style="margin:0 0 4px 0;font-weight:600;color:#92400E;">💡 Suggested Fix</p>
+                <p style="margin:0;color:#78350F;">${suggestedFix}</p>
+              </div>
               <p><a href="${adminLink}">View in Admin Console</a></p>`,
           }),
         });
