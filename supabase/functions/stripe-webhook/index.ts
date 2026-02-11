@@ -180,6 +180,29 @@ serve(async (req) => {
         logStep("Entitlement created", { entitlementId: entitlement.id });
       }
 
+      // Add customer to Brevo "Customers" list (ID: 2)
+      const brevoApiKey = Deno.env.get("BREVO_API_KEY");
+      const customerEmail = session.customer_email || session.customer_details?.email;
+      if (brevoApiKey && customerEmail) {
+        try {
+          await fetch("https://api.brevo.com/v3/contacts", {
+            method: "POST",
+            headers: {
+              "api-key": brevoApiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email: customerEmail,
+              listIds: [2],
+              updateEnabled: true,
+            }),
+          });
+          logStep("Added customer to Brevo list 2", { email: customerEmail });
+        } catch (err) {
+          logStep("Brevo list add failed (non-blocking)", { error: String(err) });
+        }
+      }
+
       logStep("Checkout session processed successfully");
     }
 
