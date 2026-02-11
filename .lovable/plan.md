@@ -1,61 +1,52 @@
 
 
-## Add Credits, Reports Count, and Delete to Admin Users Page
+## Add Stripe Customers to Brevo "Customers" List (ID: 2)
 
-### What Changes
+### Overview
 
-The `/admin/users` table will show two new columns: **Credits Remaining** and **Reports Generated**. A **Delete** button (Super Admin only) will allow removing users entirely, with a confirmation dialog.
-
-### Data Sources
-
-- **Credits remaining**: Calculated from `entitlements` table -- `SUM(quantity - used_quantity)` for non-expired `REPORT_ONE_OFF` entitlements per user
-- **Reports generated**: Count of rows in the `reports` table per user
+After a successful Stripe purchase, the user's email will be added to the Brevo "Customers" list (ID: 2). This happens server-side in the existing `stripe-webhook` edge function, right after entitlement creation succeeds.
 
 ### Implementation
 
-#### 1. Update the Users page query (`src/pages/admin/Users.tsx`)
+#### Update `supabase/functions/stripe-webhook/index.ts`
 
-Extend the existing query to also fetch:
-- All entitlements (admin RLS already allows this): `supabase.from("entitlements").select("user_id, quantity, used_quantity, expires_at, entitlement_type")`
-- All reports (admin RLS allows this): `supabase.from("reports").select("user_id")`
+After the entitlement is created (or confirmed existing) for a `checkout.session.completed` event, add a fire-and-forget call to the Brevo Contacts API:
 
-Then aggregate per-user:
-- **Credits**: sum of `(quantity - used_quantity)` for non-expired `REPORT_ONE_OFF` entitlements
-- **Reports**: count of report rows
+```typescript
+// Add customer to Brevo "Customers" list
+const brevoApiKey = Deno.env.get("BREVO_API_KEY");
+const customerEmail = session.customer_email || user?.email;
+if (brevoApiKey && customerEmail) {
+  try {
+    await fetch("https://api.brevo.com/v3/contacts", {
+      method: "POST",
+      headers: {
+        "api-key": brevoApiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: customerEmail,
+        listIds: [2],
+        updateEnabled: true,
+      }),
+    });
+    logStep("Added customer to Brevo list 2", { email: customerEmail });
+  } catch (err) {
+    logStep("Brevo list add failed (non-blocking)", { error: String(err) });
+  }
+}
+```
 
-Add two new table columns between "Joined" and "Actions":
-- **Credits** -- shows the remaining count (e.g., "3")
-- **Reports** -- shows the generated count (e.g., "7")
-
-#### 2. Add Delete button and confirmation dialog
-
-- Add a `Trash2` icon button next to the existing `Eye` button, visible only for Super Admins
-- Cannot delete yourself (button disabled/hidden for current user)
-- Clicking opens an `AlertDialog` confirming: "Delete user {email}? This will permanently remove their account, applications, reports, and all associated data."
-- On confirm, calls a new edge function `delete-user`
-
-#### 3. New edge function: `supabase/functions/delete-user/index.ts`
-
-- Accepts `{ userId: string }` in body
-- Validates the caller is a Super Admin (via service role query on `user_roles`)
-- Calls `supabase.auth.admin.deleteUser(userId)` using the service role key
-- The `ON DELETE CASCADE` on foreign keys in `user_roles` handles role cleanup; other tables (profiles, applications, etc.) may need manual cleanup if they don't cascade
-- Returns success/error
-
-#### 4. Database: check cascade behavior
-
-Review whether `profiles.user_id`, `applications.user_id`, `entitlements.user_id`, `orders.user_id`, and `reports.user_id` have `ON DELETE CASCADE` from `auth.users`. If not, the edge function will delete related rows manually before deleting the auth user, or we add a migration for cascades.
+Key details:
+- Uses the existing `BREVO_API_KEY` secret (already configured)
+- `updateEnabled: true` ensures existing contacts are updated rather than erroring
+- Non-blocking: errors are logged but never fail the webhook response
+- The email is sourced from `session.customer_email` (set by Stripe Checkout) with a fallback to the authenticated user's email looked up via `user_id` metadata
+- No new files, edge functions, or database changes required
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `src/pages/admin/Users.tsx` | Add credits/reports columns, delete button with AlertDialog, delete mutation |
-| `supabase/functions/delete-user/index.ts` | New edge function for Super Admin user deletion |
-
-### Security
-
-- Delete is restricted to **Super Admin** only (both UI-gated and server-validated)
-- Edge function verifies caller role server-side using service role key
-- Cannot delete your own account from this page
+| `supabase/functions/stripe-webhook/index.ts` | Add Brevo API call after entitlement processing |
 
