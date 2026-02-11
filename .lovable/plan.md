@@ -1,51 +1,37 @@
 
 
-## Add AI-Suggested Fixes to Failure Notification Emails
+## Add New Sign-Ins to Brevo "Prospects (Sign In)" List
 
-### What Changes
+### Overview
 
-The failure notification email sent to `grantgenius@disruptorsco.com` currently only includes the Run ID, halt reason, and a link to the admin console. This change adds a **"Suggested Fix"** section that pattern-matches the halt reason text and includes actionable diagnostic advice directly in the email.
+When a user signs in via magic link, their email will be added (or updated) as a contact in the Brevo "Prospects (Sign In)" list. This happens server-side via a new edge function, called from the client after a successful sign-in.
 
 ### How It Works
 
-A simple pattern-matching function will analyze the `halt_reason` string and return a human-readable suggestion. No AI call is needed -- the most common failure modes have known fixes.
+1. User clicks magic link and is authenticated
+2. The `onAuthStateChange` listener fires `SIGNED_IN`
+3. Client calls a new `add-to-brevo-list` edge function with the user's email
+4. The edge function calls the Brevo Contacts API to create/update the contact and add them to the list
 
-**Patterns to match:**
+### What You Need to Provide
 
-| Halt Reason Pattern | Suggested Fix |
-|---|---|
-| "JSON parse error" or "JSON Guard failed" | "The AI output was likely truncated due to insufficient token limits. Go to the prompt bundle step and increase `max_output_tokens` (e.g., from 4096 to 8192 or higher)." |
-| "Unresolved variables" | "Template variables were not interpolated before execution. Check the prompt template for `{{variable}}` references and ensure all required inputs are provided in the application." |
-| "timeout" or "deadline exceeded" | "The step exceeded its time limit. Consider increasing `timeout_seconds` for this step, or splitting the prompt into smaller sub-tasks." |
-| "rate limit" or "429" | "The AI provider rate-limited the request. Wait a few minutes and retry, or switch to a different model via `model_override`." |
-| "forbidden token" or "citation lint" | "The final report contained internal markers or placeholder tokens. Review the sanitiser step prompt to ensure all internal references are resolved before assembly." |
-| Default (no match) | "No automated suggestion available. Review the step logs in the admin console for details." |
+The **numeric List ID** for the "Prospects (Sign In)" list from your Brevo dashboard (Contacts > Lists). I'll use this as a constant in the edge function.
 
-### File Changed
+### Changes
 
-**`supabase/functions/worker-proxy/index.ts`** (lines ~542-566)
+**New file: `supabase/functions/add-to-brevo-list/index.ts`**
+- Accepts `{ email }` in the request body
+- Requires valid auth token (extracts user from JWT)
+- Calls `POST https://api.brevo.com/v3/contacts` with `updateEnabled: true` and `listIds: [LIST_ID]`
+- Fire-and-forget from client (errors logged server-side, never block the user)
 
-1. Add a `getSuggestedFix(haltReason: string): string` function that pattern-matches the halt reason and returns an advice string.
-2. Include the suggestion in the failure email HTML as a styled "Suggested Fix" section below the halt reason.
+**Updated file: `supabase/config.toml`**
+- Add `[functions.add-to-brevo-list]` with `verify_jwt = false` (auth validated in code)
 
-### Email Output Example
-
-The failure email will look like:
-
-```
-Report Generation Failed
-Run ID: 4043a0e5-...
-Halt Reason: JSON Guard failed after 3 attempts: JSON parse error...
-
-Suggested Fix:
-The AI output was likely truncated due to insufficient token limits.
-Go to the prompt bundle step and increase max_output_tokens
-(e.g., from 4096 to 8192 or higher).
-
-[View in Admin Console]
-```
+**Updated file: `src/pages/Auth.tsx`**
+- In the existing `onAuthStateChange` handler for `SIGNED_IN`, add a fire-and-forget call to the new edge function with the user's email before navigating to `/dashboard`
 
 ### No Database or Schema Changes Required
 
-This is a single edge function update to `worker-proxy/index.ts`.
+This only uses the Brevo Contacts API and the existing `BREVO_API_KEY` secret.
 
