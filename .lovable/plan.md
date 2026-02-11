@@ -1,52 +1,29 @@
 
 
-## Add Stripe Customers to Brevo "Customers" List (ID: 2)
+## Fix: Brevo "Prospects" List Not Updating on Sign-In
 
-### Overview
+### Problem
 
-After a successful Stripe purchase, the user's email will be added to the Brevo "Customers" list (ID: 2). This happens server-side in the existing `stripe-webhook` edge function, right after entitlement creation succeeds.
+The call to add users to the Brevo "Prospects (Sign In)" list only exists inside the `Auth.tsx` page component. However, magic link sign-ins redirect users directly to `/dashboard`, so `Auth.tsx` is never mounted and the `onAuthStateChange` listener with the Brevo call never fires.
 
-### Implementation
+### Solution
 
-#### Update `supabase/functions/stripe-webhook/index.ts`
+Move the Brevo contact call from `Auth.tsx` into the global `useAuth` hook, which is active on every page. This ensures the call fires regardless of which page the user lands on after clicking their magic link.
 
-After the entitlement is created (or confirmed existing) for a `checkout.session.completed` event, add a fire-and-forget call to the Brevo Contacts API:
+### Changes
 
-```typescript
-// Add customer to Brevo "Customers" list
-const brevoApiKey = Deno.env.get("BREVO_API_KEY");
-const customerEmail = session.customer_email || user?.email;
-if (brevoApiKey && customerEmail) {
-  try {
-    await fetch("https://api.brevo.com/v3/contacts", {
-      method: "POST",
-      headers: {
-        "api-key": brevoApiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        email: customerEmail,
-        listIds: [2],
-        updateEnabled: true,
-      }),
-    });
-    logStep("Added customer to Brevo list 2", { email: customerEmail });
-  } catch (err) {
-    logStep("Brevo list add failed (non-blocking)", { error: String(err) });
-  }
-}
-```
+**`src/hooks/useAuth.ts`**
+- In the `onAuthStateChange` handler, when the event is `SIGNED_IN` and the user has an email, fire-and-forget invoke the `add-to-brevo-list` edge function (same as current Auth.tsx logic)
 
-Key details:
-- Uses the existing `BREVO_API_KEY` secret (already configured)
-- `updateEnabled: true` ensures existing contacts are updated rather than erroring
-- Non-blocking: errors are logged but never fail the webhook response
-- The email is sourced from `session.customer_email` (set by Stripe Checkout) with a fallback to the authenticated user's email looked up via `user_id` metadata
-- No new files, edge functions, or database changes required
+**`src/pages/Auth.tsx`**
+- Remove the Brevo `supabase.functions.invoke("add-to-brevo-list", ...)` call from the `onAuthStateChange` handler, since it will now be handled globally
 
-### Files Changed
+### Why This Works
 
-| File | Change |
-|---|---|
-| `supabase/functions/stripe-webhook/index.ts` | Add Brevo API call after entitlement processing |
+The `useAuth` hook is used in the App layout and is mounted on every route, including `/dashboard`. When Gavin clicks his magic link and lands on `/dashboard`, the hook's `onAuthStateChange` fires `SIGNED_IN`, which will now trigger the Brevo call.
+
+### No Other Changes Needed
+
+- No database, edge function, or config changes required
+- The `add-to-brevo-list` edge function remains unchanged
 
