@@ -74,3 +74,6 @@ verify_jwt = false
 
 [functions.add-to-brevo-list]
 verify_jwt = false
+
+[functions.delete-user]
+verify_jwt = false
