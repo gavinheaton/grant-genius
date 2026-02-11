@@ -94,6 +94,13 @@ export function useAuth() {
         // Skip INITIAL_SESSION - we handle that with getSession() below
         if (event === "INITIAL_SESSION") return;
         
+        // Fire-and-forget: add user to Brevo prospects list on sign-in
+        if (event === "SIGNED_IN" && session?.user?.email) {
+          supabase.functions.invoke("add-to-brevo-list", {
+            body: { email: session.user.email },
+          }).catch((err) => console.error("Brevo list error:", err));
+        }
+
         // For all other events (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.)
         if (session?.user) {
           updateAuthState(session.user.id, session.user.email);
