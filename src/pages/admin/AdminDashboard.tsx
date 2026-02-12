@@ -96,7 +96,7 @@ export default function AdminDashboard() {
           .eq("status", "failed")
           .gte("created_at", thirtyDaysAgo),
 
-        // Stalled runs (running/pending for >5 minutes)
+        // Stalled runs - fetch all running/pending, filter by activity client-side
         supabase
           .from("report_runs")
           .select(`
@@ -108,7 +108,6 @@ export default function AdminDashboard() {
             applications!inner(title, user_id, profiles:user_id(email))
           `)
           .in("status", ["running", "pending"])
-          .lt("started_at", fiveMinutesAgo)
           .order("started_at", { ascending: true }),
       ]);
 
@@ -197,23 +196,55 @@ export default function AdminDashboard() {
         .sort((a, b) => b.count - a.count)
         .slice(0, 5);
 
-      // Process stalled runs
+      // Process stalled runs with activity-based detection
       const now = new Date();
-      const stalledRuns = (stalledRunsRes.data || []).map((run: any) => ({
-        id: run.id,
-        current_step: run.current_step,
-        total_steps: run.total_steps,
-        started_at: run.started_at,
-        created_at: run.created_at,
-        application: run.applications ? {
-          title: run.applications.title,
-          user_id: run.applications.user_id,
-        } : null,
-        user_email: run.applications?.profiles?.email || null,
-        stalled_duration_minutes: run.started_at 
-          ? differenceInMinutes(now, new Date(run.started_at))
-          : 0,
-      }));
+      const candidateRuns = stalledRunsRes.data || [];
+      
+      // Fetch latest step activity for each candidate run
+      let stalledRuns: any[] = [];
+      if (candidateRuns.length > 0) {
+        const runIds = candidateRuns.map((r: any) => r.id);
+        const { data: stepData } = await supabase
+          .from("report_run_steps")
+          .select("report_run_id, started_at, completed_at")
+          .in("report_run_id", runIds)
+          .order("step_number", { ascending: false });
+
+        // Build map of latest activity per run
+        const latestActivityMap = new Map<string, Date>();
+        for (const step of (stepData || [])) {
+          const runId = step.report_run_id;
+          if (latestActivityMap.has(runId)) continue; // already have the latest (ordered desc)
+          const timestamps = [step.started_at, step.completed_at].filter(Boolean).map((t: string) => new Date(t));
+          if (timestamps.length > 0) {
+            latestActivityMap.set(runId, new Date(Math.max(...timestamps.map(t => t.getTime()))));
+          }
+        }
+
+        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+        stalledRuns = candidateRuns
+          .map((run: any) => {
+            const lastActivity = latestActivityMap.get(run.id) 
+              || (run.started_at ? new Date(run.started_at) : new Date(run.created_at));
+            
+            return {
+              id: run.id,
+              current_step: run.current_step,
+              total_steps: run.total_steps,
+              started_at: run.started_at,
+              created_at: run.created_at,
+              application: run.applications ? {
+                title: run.applications.title,
+                user_id: run.applications.user_id,
+              } : null,
+              user_email: run.applications?.profiles?.email || null,
+              stalled_duration_minutes: differenceInMinutes(now, lastActivity),
+              lastActivity,
+            };
+          })
+          .filter((run: any) => run.lastActivity < fiveMinAgo);
+      }
 
       return {
         currentlyRunning,
