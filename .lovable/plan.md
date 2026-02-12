@@ -1,47 +1,42 @@
 
 
-## Two Changes
+## Fix: Dashboard falsely flags active runs as "stalled"
 
-### 1. Force Fail: Reset counters and clear logs
+### Root Cause
 
-When an admin triggers "Force Fail" (via `cancel-report-run` from the RunDetail page, or `cleanup-stalled-runs` from the StalledRunsTable), the run should be fully reset so it looks clean in the dashboard.
+The Admin Dashboard's stalled run detection (line 111 of `AdminDashboard.tsx`) uses this filter:
 
-**Changes needed:**
-
-**`supabase/functions/cancel-report-run/index.ts`**
-- After marking the run as failed, also reset `current_step` to 0 and `phase` to null in the same update
-- Add a step to DELETE all `report_logs` rows for this run (clears the worker log panel)
-
-**`supabase/functions/cleanup-stalled-runs/index.ts`**
-- Same changes: reset `current_step` to 0 in the run update
-- Add DELETE from `report_logs` where `report_run_id` matches
-
-The update block in `cancel-report-run` changes from:
-```
-.update({ status: "failed", completed_at: now })
-```
-to:
-```
-.update({ status: "failed", completed_at: now, current_step: 0, phase: null })
+```typescript
+.lt("started_at", fiveMinutesAgo)
 ```
 
-Plus a new query:
-```
-await supabaseAdmin.from("report_logs").delete().eq("report_run_id", reportRunId);
-```
+This checks if the **run's overall start time** is more than 5 minutes ago. A run that started 15 minutes ago but is actively processing step 9 of 10 will be incorrectly flagged as "stalled."
 
-The same pattern applies to `cleanup-stalled-runs`.
+The researcher-side code (`useReportGeneration.ts`) already does this correctly by checking the **most recent step activity** timestamp. The dashboard needs the same approach.
 
-### 2. Report generation status
+### Fix
 
-The current active run (`135a2991`) is at step 9 of 10 and was last seen processing "identify_partners" at 08:48 UTC. Worker logs show it progressing normally through all steps. There is **no failure recorded** -- the run status is still `running`. 
+**`src/pages/admin/AdminDashboard.tsx`**
 
-It may appear stalled because it has been on step 9 for a while (Cloud Run AI calls can take several minutes). If the run does not complete soon, you can use the Force Fail button to clean it up and retry.
+Replace the simple `started_at < 5min ago` filter with a two-step approach:
+
+1. Fetch all running/pending runs (no time filter on the query itself)
+2. For each run, fetch the latest `report_run_steps` row to get the most recent activity timestamp (`started_at` or `completed_at`)
+3. Only mark a run as stalled if the latest step activity is older than 5 minutes
+
+Concretely:
+- Remove the `.lt("started_at", fiveMinutesAgo)` filter from the stalled runs query
+- After fetching, query `report_run_steps` for each run to get the latest step's timestamps
+- Filter client-side: a run is stalled only if `max(latest_step.started_at, latest_step.completed_at, run.started_at)` is more than 5 minutes ago
+- Update `stalled_duration_minutes` to use the time since last activity (not since run start)
+
+### Why this fixes the mismatch
+
+The dashboard will no longer flag a run as stalled when it's actively completing steps. Only runs where no step has had any activity for 5+ minutes will appear in the stalled runs alert. This matches the researcher-side behavior and eliminates the false positive.
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `supabase/functions/cancel-report-run/index.ts` | Reset `current_step` to 0, clear `phase`, delete `report_logs` |
-| `supabase/functions/cleanup-stalled-runs/index.ts` | Reset `current_step` to 0, delete `report_logs` |
+| `src/pages/admin/AdminDashboard.tsx` | Replace `started_at`-based stalled detection with activity-based detection using `report_run_steps` |
 
