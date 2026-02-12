@@ -1,36 +1,66 @@
 
 
-## Fix: Show "In Progress" Status on Dashboard During Report Generation
+## Admin Run Detail Page: Logs + Restart Actions
 
-### Problem
-When a report is being generated, the application card on the Dashboard still shows "Draft" because nothing updates the `applications.status` column from `draft` to `in_progress` when automated report generation begins.
+### What This Adds
+A new admin page at `/admin/runs/:runId` that lets you:
+1. **View worker logs** for any report run (reusing the existing `useReportLogs` hook and realtime subscription)
+2. **See run metadata** -- status, current step, engine, halt reason, timestamps, user email, application title
+3. **Take action** -- Resume (from checkpoint), Clear and Restart (fresh), or Force Fail (for stalled runs)
+4. **Navigate there easily** -- clickable Run IDs in the Admin Dashboard's failures panel and active runs table
 
-The `worker-proxy` already sets status to `ready` on completion, but the transition to `in_progress` at the start is missing.
+### How It Works
 
-### Solution
-Update the `generate-report` edge function to set the application status to `in_progress` when a report run is successfully created. This mirrors the pattern already used in `submit-manual-request` for manual grants.
+The existing infrastructure already covers most of this:
+- `useReportLogs` hook fetches and subscribes to `report_logs` table in realtime
+- `clear-and-restart-run` edge function wipes steps and re-enqueues (Super Admin only)
+- `resume-report-run` edge function resumes from last checkpoint
+- `ReportLogViewer` component renders logs with color-coded levels and expandable JSON details
 
-### Changes
+We just need to wire these together into an admin-facing page.
 
-**`supabase/functions/generate-report/index.ts`**
-- After successfully creating the `report_run` record and before dispatching to the worker, add an update:
-  ```sql
-  UPDATE applications SET status = 'in_progress' WHERE id = application_id
-  ```
-- This ensures the Dashboard immediately reflects that the application is being processed.
+### Files to Create
 
-**`src/pages/Dashboard.tsx`** (minor label improvement)
-- Update the `in_progress` status config label from "In Progress" to "Processing" for clearer user communication (the current "In Progress" label is fine but "Processing" better describes what's happening with automated reports).
+| File | Purpose |
+|---|---|
+| `src/pages/admin/RunDetail.tsx` | New page showing run metadata, action buttons, and worker logs |
 
-### No other changes needed
-- The `worker-proxy` already sets status to `ready` on completion
-- The `worker-proxy` / failure handlers can optionally set status to `failed` (already handled or can be added as a follow-up)
-- The Dashboard `statusConfig` already has an `in_progress` entry with the correct badge styling
-
-### Files Changed
+### Files to Modify
 
 | File | Change |
 |---|---|
-| `supabase/functions/generate-report/index.ts` | Add `applications.status = 'in_progress'` update after creating the report run |
-| `src/pages/Dashboard.tsx` | Optionally update label from "In Progress" to "Processing" for clarity |
+| `src/App.tsx` | Add route `/admin/runs/:runId` |
+| `src/components/admin/FailuresPanel.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
+| `src/components/admin/ActiveRunsTable.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
+| `src/components/admin/StalledRunsTable.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
+
+### Run Detail Page Layout
+
+The page will show:
+
+**Header**: Run ID (truncated), status badge, back button
+
+**Metadata Card**:
+- Status, phase, execution engine
+- Current step / total steps
+- Halt reason (if failed)
+- User email, application title
+- Created, started, completed timestamps
+
+**Action Buttons** (contextual based on status):
+- "Resume" -- visible when status is `failed` (calls `resume-report-run`)
+- "Clear and Restart" -- visible when status is `failed` (calls `clear-and-restart-run`, Super Admin only)
+- "Force Fail" -- visible when status is `running` or `pending` (calls `cancel-report-run`)
+
+**Worker Logs Panel**:
+- Reuses the `useReportLogs` hook directly (not the collapsible component, since this is a dedicated page)
+- Full-height log viewer with color-coded levels, timestamps, expandable JSON details
+- Realtime updates via Supabase subscription
+
+### Technical Details
+
+- The page fetches run data using `supabase.from("report_runs").select(...)` joined with `applications` and `profiles` for context
+- Admin RLS is not currently on `report_runs`, but `report_run_steps` has a user-only policy. The logs table (`report_logs`) already has an admin SELECT policy, so logs will work. For the run itself, the admin-assistant already reads runs via service role -- but from the frontend we'll need to fetch via a joined path through `applications` (which has admin SELECT policy)
+- Action buttons call the existing edge functions directly via `supabase.functions.invoke()`
+- Navigation links use `react-router-dom` `Link` components
 
