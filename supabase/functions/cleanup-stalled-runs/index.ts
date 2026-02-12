@@ -127,12 +127,14 @@ Deno.serve(async (req) => {
       console.log(`Processing stalled run ${runId} at step ${currentStep}`);
 
       try {
-        // 1. Update the report_run status to failed
+        // 1. Update the report_run status to failed and reset counters
         const { error: runUpdateError } = await supabase
           .from("report_runs")
           .update({
             status: "failed",
             completed_at: new Date().toISOString(),
+            current_step: 0,
+            phase: null,
           })
           .eq("id", runId);
 
@@ -156,7 +158,13 @@ Deno.serve(async (req) => {
           console.error(`Failed to update step for run ${runId}:`, stepUpdateError);
         }
 
-        // 3. Refund credit if applicable
+        // 3. Clear worker logs for this run
+        await supabase
+          .from("report_logs")
+          .delete()
+          .eq("report_run_id", runId);
+
+        // 4. Refund credit if applicable
         let creditRefunded = false;
         if (userId) {
           // Find the entitlement consumption for this run

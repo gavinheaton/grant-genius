@@ -104,14 +104,22 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Mark the report run as failed
+    // Mark the report run as failed and reset counters
     await supabaseAdmin
       .from("report_runs")
       .update({
         status: "failed",
         completed_at: new Date().toISOString(),
+        current_step: 0,
+        phase: null,
       })
       .eq("id", reportRunId);
+
+    // Clear worker logs for this run
+    await supabaseAdmin
+      .from("report_logs")
+      .delete()
+      .eq("report_run_id", reportRunId);
 
     // Mark any pending or running steps as failed
     await supabaseAdmin
