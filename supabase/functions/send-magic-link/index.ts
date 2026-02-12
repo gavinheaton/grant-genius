@@ -150,6 +150,30 @@ serve(async (req) => {
       logStep("Brevo API error", { status: brevoResponse.status, error: errorText });
     }
 
+    // Add user to Brevo Prospects list (ID: 3) - fire-and-forget
+    try {
+      const contactRes = await fetch("https://api.brevo.com/v3/contacts", {
+        method: "POST",
+        headers: {
+          "api-key": brevoApiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          listIds: [3],
+          updateEnabled: true,
+        }),
+      });
+      if (contactRes.ok) {
+        logStep("Added to Prospects list");
+      } else {
+        const errText = await contactRes.text();
+        logStep("Brevo contacts API error", { status: contactRes.status, error: errText });
+      }
+    } catch (contactErr) {
+      logStep("Brevo contacts call failed", { error: String(contactErr) });
+    }
+
     return new Response(
       JSON.stringify({ success: true }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
