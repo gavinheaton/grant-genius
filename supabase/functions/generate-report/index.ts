@@ -536,6 +536,12 @@ serve(async (req) => {
     await supabaseAdmin.from("report_run_steps").insert(stepRecords);
     console.log(`Created ${stepRecords.length} step records for run ${reportRun.id}`);
 
+    // Update application status to in_progress so Dashboard reflects processing
+    await supabaseAdmin
+      .from("applications")
+      .update({ status: "in_progress" })
+      .eq("id", applicationId);
+
     // Consume entitlement
     await supabaseAdmin
       .from("entitlements")

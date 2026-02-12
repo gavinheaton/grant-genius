@@ -52,7 +52,7 @@ interface Application {
 
 const statusConfig: Record<ApplicationStatus, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ElementType }> = {
   draft: { label: "Draft", variant: "secondary", icon: FileText },
-  in_progress: { label: "In Progress", variant: "default", icon: Clock },
+  in_progress: { label: "Processing", variant: "default", icon: Clock },
   ready: { label: "Ready", variant: "outline", icon: CheckCircle },
   failed: { label: "Needs Attention", variant: "destructive", icon: AlertCircle },
 };
