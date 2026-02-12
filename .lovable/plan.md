@@ -1,29 +1,33 @@
 
 
-## Fix: Brevo "Prospects" List Not Updating on Sign-In
+## Fix: Brevo "Prospects" List Not Updating
 
-### Problem
+### Root Causes
 
-The call to add users to the Brevo "Prospects (Sign In)" list only exists inside the `Auth.tsx` page component. However, magic link sign-ins redirect users directly to `/dashboard`, so `Auth.tsx` is never mounted and the `onAuthStateChange` listener with the Brevo call never fires.
+**1. Edge function auth validation uses a non-existent method**
+The `add-to-brevo-list` edge function calls `supabase.auth.getClaims(token)` (line 33), which is not a standard Supabase JS client method. This causes every request to fail with a 401 response. The fix is to replace it with `supabase.auth.getUser(token)`, which is the correct way to validate a JWT.
 
-### Solution
-
-Move the Brevo contact call from `Auth.tsx` into the global `useAuth` hook, which is active on every page. This ensures the call fires regardless of which page the user lands on after clicking their magic link.
+**2. The SIGNED_IN event may be suppressed on magic link redirects**
+When a magic link redirects to `/dashboard`, the auth state change might only emit `INITIAL_SESSION` (which we skip) rather than a separate `SIGNED_IN` event. To be safe, we should also handle the initial session case for the Brevo call.
 
 ### Changes
 
+**`supabase/functions/add-to-brevo-list/index.ts`**
+- Replace `supabase.auth.getClaims(token)` with `supabase.auth.getUser()` to properly validate the authenticated user
+- This is the primary fix -- the function has been silently rejecting every request
+
 **`src/hooks/useAuth.ts`**
-- In the `onAuthStateChange` handler, when the event is `SIGNED_IN` and the user has an email, fire-and-forget invoke the `add-to-brevo-list` edge function (same as current Auth.tsx logic)
+- Add the Brevo call to the `initializeAuth` flow as well (not just the `onAuthStateChange` listener), so that if a magic link sign-in only triggers `INITIAL_SESSION`, the Brevo update still fires
+- Use a simple flag to avoid duplicate calls if both paths fire
 
-**`src/pages/Auth.tsx`**
-- Remove the Brevo `supabase.functions.invoke("add-to-brevo-list", ...)` call from the `onAuthStateChange` handler, since it will now be handled globally
+### Why This Will Work
 
-### Why This Works
+- The edge function will no longer reject valid requests due to a bad auth check
+- The Brevo call will fire on both `SIGNED_IN` events and initial session detection, covering all sign-in scenarios
 
-The `useAuth` hook is used in the App layout and is mounted on every route, including `/dashboard`. When Gavin clicks his magic link and lands on `/dashboard`, the hook's `onAuthStateChange` fires `SIGNED_IN`, which will now trigger the Brevo call.
+### Files Changed
 
-### No Other Changes Needed
-
-- No database, edge function, or config changes required
-- The `add-to-brevo-list` edge function remains unchanged
-
+| File | Change |
+|---|---|
+| `supabase/functions/add-to-brevo-list/index.ts` | Replace `getClaims` with `getUser` for auth validation |
+| `src/hooks/useAuth.ts` | Also trigger Brevo call during initial session detection |
