@@ -35,7 +35,7 @@ export function LiveOperationsCards({
 
   const cards = [
     {
-      title: "Currently Running",
+      title: "Active Runs",
       value: currentlyRunning,
       icon: Activity,
       color: "text-blue-500",
