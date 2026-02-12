@@ -133,7 +133,7 @@ export default function AdminDashboard() {
         user_email: run.applications?.profiles?.email || null,
       }));
 
-      const currentlyRunning = activeRuns.filter((r: any) => r.status === "running").length;
+      const currentlyRunning = activeRuns.length;
 
       // Calculate 7-day success rate
       const trendData = trendDataRes.data || [];
