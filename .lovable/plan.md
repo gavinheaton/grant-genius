@@ -1,24 +1,40 @@
 
 
-## Fix: Admin Run Detail Actions (Resume, Restart, Cancel)
+## Fix: Resume function rejects failed runs
 
 ### Root Cause
-Two bugs prevent the admin action buttons from working:
 
-1. **Mismatched request body key**: The RunDetail page sends `{ report_run_id: runId }` but all three edge functions (`resume-report-run`, `cancel-report-run`, `clear-and-restart-run`) expect `{ reportRunId: ... }`.
+The `resume-report-run` edge function (line 439) only accepts runs with `status = "pending"`:
 
-2. **Ownership check blocks admins**: The `resume-report-run` function checks that the calling user owns the application (`ownerUserId !== userId`). When an admin triggers a resume, this check returns 403 Forbidden.
+```typescript
+if (reportRun.status !== "pending") {
+  return new Response(
+    JSON.stringify({ error: "Report run is not in pending status" }),
+    { status: 400, ... }
+  );
+}
+```
+
+When a run fails, its status is `"failed"`, so the resume function immediately returns a 400 error. The function needs to also accept `"failed"` status and reset it to `"running"` before proceeding.
 
 ### Fix
 
-**`src/pages/admin/RunDetail.tsx`** -- Change the request body key from `report_run_id` to `reportRunId` to match what the edge functions expect.
+**`supabase/functions/resume-report-run/index.ts`** (line 439)
 
-**`supabase/functions/resume-report-run/index.ts`** -- After the ownership check, add an admin bypass: if the user has an admin role, skip the ownership validation. This mirrors how `clear-and-restart-run` already handles admin access (it checks for super_admin role instead of ownership).
+Change the status check from:
+```typescript
+if (reportRun.status !== "pending") {
+```
+to:
+```typescript
+if (reportRun.status !== "pending" && reportRun.status !== "failed") {
+```
+
+This single-line change allows admins (and users) to resume runs that have failed, which is the primary use case for the Resume button on the Run Detail page.
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `src/pages/admin/RunDetail.tsx` | Fix request body: `report_run_id` to `reportRunId` |
-| `supabase/functions/resume-report-run/index.ts` | Allow admins to bypass the ownership check |
+| `supabase/functions/resume-report-run/index.ts` | Accept `"failed"` status in addition to `"pending"` for resume |
 
