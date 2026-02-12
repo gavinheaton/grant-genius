@@ -359,11 +359,16 @@ serve(async (req) => {
       );
     }
 
-    // Check ownership
+    // Check ownership (admins bypass)
     // deno-lint-ignore no-explicit-any
     const appData = (reportRun.application as any);
     const ownerUserId = Array.isArray(appData) ? appData[0]?.user_id : appData?.user_id;
-    if (ownerUserId !== userId) {
+
+    // Check if user is admin
+    const { data: isAdminResult } = await supabaseAdmin.rpc("is_admin", { _user_id: userId });
+    const userIsAdmin = isAdminResult === true;
+
+    if (ownerUserId !== userId && !userIsAdmin) {
       return new Response(
         JSON.stringify({ error: "Unauthorized access to report run" }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }

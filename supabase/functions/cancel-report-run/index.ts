@@ -65,11 +65,20 @@ serve(async (req) => {
       );
     }
 
-    // Check ownership - handle the nested select result properly
+    // Check ownership (admins bypass)
     // deno-lint-ignore no-explicit-any
     const appData = (reportRun.application as any);
     const ownerUserId = Array.isArray(appData) ? appData[0]?.user_id : appData?.user_id;
-    if (ownerUserId !== userId) {
+
+    // Check if user is admin using service role
+    const supabaseAdminCheck = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
+    );
+    const { data: isAdminResult } = await supabaseAdminCheck.rpc("is_admin", { _user_id: userId });
+    const userIsAdmin = isAdminResult === true;
+
+    if (ownerUserId !== userId && !userIsAdmin) {
       return new Response(
         JSON.stringify({ error: "Unauthorized access to report run" }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
