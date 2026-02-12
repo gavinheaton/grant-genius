@@ -5,6 +5,7 @@ import { formatDistanceToNow } from "date-fns";
 import { AlertCircle, XCircle, Ban } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 interface FailedRun {
   id: string;
@@ -43,9 +44,9 @@ function FailureItem({ failure, isCancellation }: { failure: FailedRun; isCancel
               <XCircle className="h-4 w-4 text-destructive shrink-0" />
             )}
             <div className="text-left">
-              <p className="text-sm font-medium truncate max-w-[200px]">
+              <Link to={`/admin/runs/${failure.id}`} className="text-sm font-medium truncate max-w-[200px] block text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
                 {failure.user_email || "Unknown user"}
-              </p>
+              </Link>
               <p className="text-xs text-muted-foreground">
                 Step {failure.current_step}: {failure.failed_step?.step_name || "Unknown step"}
               </p>
