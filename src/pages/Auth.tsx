@@ -60,15 +60,11 @@ export default function Auth() {
     setIsLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: {
-          emailRedirectTo: `${window.location.origin}/dashboard`
-        }
+      const { error } = await supabase.functions.invoke("send-magic-link", {
+        body: { email: email.trim() }
       });
 
       if (error) {
-        // Generic error to prevent account enumeration
         toast({
           title: "Unable to send link",
           description: "Please check your email address and try again.",

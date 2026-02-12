@@ -77,3 +77,6 @@ verify_jwt = false
 
 [functions.delete-user]
 verify_jwt = false
+
+[functions.send-magic-link]
+verify_jwt = false
