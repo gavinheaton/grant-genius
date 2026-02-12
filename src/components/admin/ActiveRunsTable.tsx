@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Activity, Clock } from "lucide-react";
+import { Link } from "react-router-dom";
 
 interface ActiveRun {
   id: string;
@@ -76,9 +77,9 @@ export function ActiveRunsTable({ runs, isLoading }: ActiveRunsTableProps) {
           return (
             <TableRow key={run.id}>
               <TableCell className="font-medium">
-                <span className="truncate max-w-[150px] block" title={run.user_email || "Unknown"}>
+                <Link to={`/admin/runs/${run.id}`} className="text-primary hover:underline truncate max-w-[150px] block" title={run.user_email || "Unknown"}>
                   {run.user_email || "Unknown"}
-                </span>
+                </Link>
               </TableCell>
               <TableCell>
                 <span className="truncate max-w-[150px] block" title={run.application?.title || "Untitled"}>

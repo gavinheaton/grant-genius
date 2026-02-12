@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { formatDistanceToNow } from "date-fns";
 import { AlertTriangle, Clock, Loader2, XCircle } from "lucide-react";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
@@ -122,9 +123,9 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
         {runs.map((run) => (
           <TableRow key={run.id}>
             <TableCell className="font-medium">
-              <span className="truncate max-w-[150px] block">
+              <Link to={`/admin/runs/${run.id}`} className="text-primary hover:underline truncate max-w-[150px] block">
                 {run.user_email || "Unknown"}
-              </span>
+              </Link>
             </TableCell>
             <TableCell>
               <span className="truncate max-w-[150px] block text-muted-foreground">
