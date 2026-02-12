@@ -126,8 +126,7 @@ serve(async (req) => {
     </div>
     
     <p style="color: #6B7280; font-size: 14px;">
-      This link expires in 24 hours. If the button doesn't work, copy and paste this URL into your browser:<br>
-      <a href="${magicLinkUrl}" style="color: #4F46E5; word-break: break-all; font-size: 12px;">${magicLinkUrl}</a>
+      This link expires in 24 hours. If the button above doesn't work, <a href="${magicLinkUrl}" style="color: #4F46E5; text-decoration: underline;">click here to sign in</a>.
     </p>
   </div>
   
