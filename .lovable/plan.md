@@ -1,40 +1,35 @@
 
 
-## Fix: Resume function rejects failed runs
+## Fix: "Currently Running" card not showing pending runs
 
 ### Root Cause
 
-The `resume-report-run` edge function (line 439) only accepts runs with `status = "pending"`:
+The "Currently Running" card on the Admin Dashboard only counts runs where `status === "running"` (line 136 of AdminDashboard.tsx):
 
 ```typescript
-if (reportRun.status !== "pending") {
-  return new Response(
-    JSON.stringify({ error: "Report run is not in pending status" }),
-    { status: 400, ... }
-  );
-}
+const currentlyRunning = activeRuns.filter((r: any) => r.status === "running").length;
 ```
 
-When a run fails, its status is `"failed"`, so the resume function immediately returns a 400 error. The function needs to also accept `"failed"` status and reset it to `"running"` before proceeding.
+However, the database currently has 1 active run with `status = "pending"`, which gets excluded from the count. The query itself fetches both running and pending runs correctly, but the card filter is too narrow.
 
 ### Fix
 
-**`supabase/functions/resume-report-run/index.ts`** (line 439)
+**`src/pages/admin/AdminDashboard.tsx`** (line 136)
 
-Change the status check from:
+Change the filter to count both `running` and `pending` runs:
+
 ```typescript
-if (reportRun.status !== "pending") {
-```
-to:
-```typescript
-if (reportRun.status !== "pending" && reportRun.status !== "failed") {
+const currentlyRunning = activeRuns.length;
 ```
 
-This single-line change allows admins (and users) to resume runs that have failed, which is the primary use case for the Resume button on the Run Detail page.
+Since `activeRuns` is already filtered to only include running and pending statuses from the query, we can simply use its total length.
+
+Optionally, rename the card title from "Currently Running" to "Active Runs" in `LiveOperationsCards.tsx` to better reflect that it includes pending runs too.
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `supabase/functions/resume-report-run/index.ts` | Accept `"failed"` status in addition to `"pending"` for resume |
+| `src/pages/admin/AdminDashboard.tsx` | Use `activeRuns.length` instead of filtering only for "running" |
+| `src/components/admin/LiveOperationsCards.tsx` | Rename card title to "Active Runs" (optional) |
 
