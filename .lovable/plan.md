@@ -1,66 +1,24 @@
 
 
-## Admin Run Detail Page: Logs + Restart Actions
+## Fix: Admin Run Detail Actions (Resume, Restart, Cancel)
 
-### What This Adds
-A new admin page at `/admin/runs/:runId` that lets you:
-1. **View worker logs** for any report run (reusing the existing `useReportLogs` hook and realtime subscription)
-2. **See run metadata** -- status, current step, engine, halt reason, timestamps, user email, application title
-3. **Take action** -- Resume (from checkpoint), Clear and Restart (fresh), or Force Fail (for stalled runs)
-4. **Navigate there easily** -- clickable Run IDs in the Admin Dashboard's failures panel and active runs table
+### Root Cause
+Two bugs prevent the admin action buttons from working:
 
-### How It Works
+1. **Mismatched request body key**: The RunDetail page sends `{ report_run_id: runId }` but all three edge functions (`resume-report-run`, `cancel-report-run`, `clear-and-restart-run`) expect `{ reportRunId: ... }`.
 
-The existing infrastructure already covers most of this:
-- `useReportLogs` hook fetches and subscribes to `report_logs` table in realtime
-- `clear-and-restart-run` edge function wipes steps and re-enqueues (Super Admin only)
-- `resume-report-run` edge function resumes from last checkpoint
-- `ReportLogViewer` component renders logs with color-coded levels and expandable JSON details
+2. **Ownership check blocks admins**: The `resume-report-run` function checks that the calling user owns the application (`ownerUserId !== userId`). When an admin triggers a resume, this check returns 403 Forbidden.
 
-We just need to wire these together into an admin-facing page.
+### Fix
 
-### Files to Create
+**`src/pages/admin/RunDetail.tsx`** -- Change the request body key from `report_run_id` to `reportRunId` to match what the edge functions expect.
 
-| File | Purpose |
-|---|---|
-| `src/pages/admin/RunDetail.tsx` | New page showing run metadata, action buttons, and worker logs |
+**`supabase/functions/resume-report-run/index.ts`** -- After the ownership check, add an admin bypass: if the user has an admin role, skip the ownership validation. This mirrors how `clear-and-restart-run` already handles admin access (it checks for super_admin role instead of ownership).
 
-### Files to Modify
+### Files Changed
 
 | File | Change |
 |---|---|
-| `src/App.tsx` | Add route `/admin/runs/:runId` |
-| `src/components/admin/FailuresPanel.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
-| `src/components/admin/ActiveRunsTable.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
-| `src/components/admin/StalledRunsTable.tsx` | Make run IDs clickable links to `/admin/runs/:id` |
-
-### Run Detail Page Layout
-
-The page will show:
-
-**Header**: Run ID (truncated), status badge, back button
-
-**Metadata Card**:
-- Status, phase, execution engine
-- Current step / total steps
-- Halt reason (if failed)
-- User email, application title
-- Created, started, completed timestamps
-
-**Action Buttons** (contextual based on status):
-- "Resume" -- visible when status is `failed` (calls `resume-report-run`)
-- "Clear and Restart" -- visible when status is `failed` (calls `clear-and-restart-run`, Super Admin only)
-- "Force Fail" -- visible when status is `running` or `pending` (calls `cancel-report-run`)
-
-**Worker Logs Panel**:
-- Reuses the `useReportLogs` hook directly (not the collapsible component, since this is a dedicated page)
-- Full-height log viewer with color-coded levels, timestamps, expandable JSON details
-- Realtime updates via Supabase subscription
-
-### Technical Details
-
-- The page fetches run data using `supabase.from("report_runs").select(...)` joined with `applications` and `profiles` for context
-- Admin RLS is not currently on `report_runs`, but `report_run_steps` has a user-only policy. The logs table (`report_logs`) already has an admin SELECT policy, so logs will work. For the run itself, the admin-assistant already reads runs via service role -- but from the frontend we'll need to fetch via a joined path through `applications` (which has admin SELECT policy)
-- Action buttons call the existing edge functions directly via `supabase.functions.invoke()`
-- Navigation links use `react-router-dom` `Link` components
+| `src/pages/admin/RunDetail.tsx` | Fix request body: `report_run_id` to `reportRunId` |
+| `supabase/functions/resume-report-run/index.ts` | Allow admins to bypass the ownership check |
 
