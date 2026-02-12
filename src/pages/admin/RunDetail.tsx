@@ -211,7 +211,7 @@ export default function RunDetail() {
 
     try {
       const { error } = await supabase.functions.invoke(fnMap[action], {
-        body: { report_run_id: runId },
+        body: { reportRunId: runId },
       });
       if (error) throw error;
       toast.success(
