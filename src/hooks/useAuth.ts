@@ -30,6 +30,7 @@ export function useAuth() {
   
   // Track if initial load is complete to avoid duplicate updates
   const initialLoadComplete = useRef(false);
+  const brevoCalled = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -95,7 +96,8 @@ export function useAuth() {
         if (event === "INITIAL_SESSION") return;
         
         // Fire-and-forget: add user to Brevo prospects list on sign-in
-        if (event === "SIGNED_IN" && session?.user?.email) {
+        if (event === "SIGNED_IN" && session?.user?.email && !brevoCalled.current) {
+          brevoCalled.current = true;
           supabase.functions.invoke("add-to-brevo-list", {
             body: { email: session.user.email },
           }).catch((err) => console.error("Brevo list error:", err));
@@ -116,6 +118,13 @@ export function useAuth() {
         const { data: { session } } = await supabase.auth.getSession();
         
         if (session?.user) {
+          // Fire Brevo call on initial session too (magic link may only emit INITIAL_SESSION)
+          if (session.user.email && !brevoCalled.current) {
+            brevoCalled.current = true;
+            supabase.functions.invoke("add-to-brevo-list", {
+              body: { email: session.user.email },
+            }).catch((err) => console.error("Brevo list error:", err));
+          }
           await updateAuthState(session.user.id, session.user.email);
         } else {
           // No session - immediately set loading to false
