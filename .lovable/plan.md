@@ -1,104 +1,73 @@
 
 
-## Two Changes: Fix the Gap + Add Resend Button
+## Fix: Report Created with Admin's User ID Instead of Researcher's
 
-### Problem Summary
+### Root Cause
 
-Gavin's run completed via the admin Resume button's "final step recovery" path, which marks the run as completed but skips both the email notification and the application status update. There is also no way for admins to manually resend an email from the Email Logs page.
+When an admin resumes a stalled run via the `resume-report-run` edge function, the report is created with the **admin's user_id** instead of the **application owner's user_id**.
 
-This plan addresses both issues, plus sends Gavin his email immediately.
+- Line 322: `const userId = userData.user.id` -- this is the admin who called the function
+- Line 365: `const ownerUserId = ...` -- this is the actual application owner
+- Line 765: `createFinalReport(..., userId, ...)` -- passes the admin's ID
 
----
+The RLS policy on `reports` requires `auth.uid() = user_id`, so Gavin (the researcher) cannot see his own report because it's owned by the admin account.
 
-### Change 1: Fix final-step-recovery to send email
+### Immediate Fix: Correct Gavin's Report
+
+Run a database update to fix the existing report:
+
+```sql
+UPDATE reports
+SET user_id = 'a2cd9756-73df-4c42-8279-f05ac78f065b'
+WHERE id = '4bbcf8d6-efb6-43b6-af3f-594ca132d6a8';
+```
+
+This sets the report's user_id to Gavin's actual account (`gavin@heatoncommunications.com`).
+
+### Code Fix: Use Owner ID for Report Creation
 
 **File: `supabase/functions/resume-report-run/index.ts`**
 
-In the "report already exists" branch (around lines 392-409), after marking the run as completed, add:
-
-1. Update the application status to `ready`
-2. If `email_on_complete` is true, call `send-report-email` with the report details
-
-This ensures any future resumed-at-final-step runs will properly notify the user.
-
-### Change 2: Add "Resend" button to Email Logs
-
-**File: `src/pages/admin/EmailLogs.tsx`**
-
-Add a "Resend" action column to the email logs table. The button will:
-
-- Call the `send-report-email` function using the `user_id` from the email_outbox row to look up the most recent completed report for that user and re-trigger the notification
-- Since the existing `email_outbox` rows don't store `reportRunId`/`reportId` in `variables_json`, the resend approach will instead create a new edge function call
-
-**New edge function: `supabase/functions/resend-email/index.ts`**
-
-A simpler approach -- this function accepts an `emailOutboxId`, reads the original outbox row, and re-dispatches the same email via Brevo using the stored template_key, to_email, subject, and variables. This works generically for any email type, not just report-ready.
-
-Flow:
-1. Admin clicks "Resend" on an email row
-2. Frontend calls `resend-email` with `{ emailOutboxId }`
-3. Function reads the original outbox entry, re-sends via Brevo API, and creates a new outbox row linked to the original
-
-### Change 3: Immediately send Gavin's email
-
-After deploying, manually invoke `send-report-email` for Gavin's completed report to resolve the immediate issue.
-
----
-
-### Technical Details
-
-**resume-report-run/index.ts** -- lines 392-409, after the run status update:
+Change line 765 from `userId` to `ownerUserId` in the `createFinalReport` call:
 
 ```typescript
-// Update application status
-await supabaseAdmin
-  .from("applications")
-  .update({ status: "ready" })
-  .eq("id", reportRun.application_id);
+// Line 759-770: Before
+await createFinalReport(
+  supabase,
+  reportRunId,
+  applicationId,
+  grantVersionId,
+  templateVersionId,
+  userId,        // <-- BUG: admin's ID
+  inputs,
+  reportContent,
+  citations,
+  emailOnComplete
+);
 
-// Send email if enabled
-if (reportRun.email_on_complete) {
-  const ownerUserId = (reportRun.application as any).user_id;
-  try {
-    const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-    const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-      },
-      body: JSON.stringify({
-        reportRunId: reportRun.id,
-        reportId: existingReport.id,
-        applicationId: reportRun.application_id,
-        userId: ownerUserId,
-      }),
-    });
-  } catch (e) {
-    console.error("Failed to send recovery email:", e);
-  }
-}
+// After
+await createFinalReport(
+  supabase,
+  reportRunId,
+  applicationId,
+  grantVersionId,
+  templateVersionId,
+  ownerUserId,   // <-- FIX: application owner's ID
+  inputs,
+  reportContent,
+  citations,
+  emailOnComplete
+);
 ```
-
-**resend-email/index.ts** -- new edge function:
-- Accepts `{ emailOutboxId }` 
-- Validates caller is admin via `is_admin` RPC
-- Reads original outbox row (template_key, to_email, subject, variables_json)
-- Re-sends via Brevo API using same template/variables
-- Inserts a new outbox row with status tracking
-
-**EmailLogs.tsx** -- add Resend button:
-- New "Actions" column in the table
-- "Resend" button calls `resend-email` function
-- Shows loading spinner during send
-- Toast on success/failure
-- Refetches email logs after resend
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `supabase/functions/resume-report-run/index.ts` | Add email + app status update to final-step-recovery branch |
-| `supabase/functions/resend-email/index.ts` | New edge function to resend any email from outbox |
-| `src/pages/admin/EmailLogs.tsx` | Add Resend button column |
+| Database | Update report `4bbcf8d6` user_id to Gavin's ID |
+| `supabase/functions/resume-report-run/index.ts` | Line 765: change `userId` to `ownerUserId` |
+
+### Risk
+
+Low. The `ownerUserId` is already resolved and validated earlier in the function (line 365). This is the same variable used for the email notification (line 423). The fix ensures consistency between report ownership and email recipient.
+
