@@ -1,37 +1,49 @@
 
 
-## Fix: Delete User FK Constraint Violation
+## Improve Stalled Runs Table with Diagnostic Context
 
-### Root Cause
+### Problem
 
-The `applications` table has a foreign key `entitlement_consumption_id` referencing `entitlement_consumptions.id`. The current deletion order in `supabase/functions/delete-user/index.ts` is:
+The Stalled Runs table only shows step number and duration, but no diagnostic information to help admins understand **why** a run stalled. The current run (Step 20, clean_citations_apa) has been stuck for 18+ minutes with no error -- admins need to see the step name, engine, and phase to make informed recovery decisions.
 
-```text
-1. Delete entitlement_consumptions (by report_run_id)   <-- FAILS here
-2. Delete reports
-3. Delete report_runs
-4. Delete applications                                   <-- still references the consumption
-```
+### Current Stall
 
-PostgreSQL enforces FK constraints regardless of service role, so deleting a consumption that an application still references causes a constraint violation error.
+| Field | Value |
+|---|---|
+| Run ID | `6baf879d` |
+| Step | 20 of 22 (clean_citations_apa) |
+| Phase | assembly |
+| Engine | cloud_run |
+| Duration stuck | ~18 minutes |
+| Error | None (worker silently stopped) |
+
+The "Force Fail" button will clean this up and refund the credit.
 
 ### Fix
 
-In `supabase/functions/delete-user/index.ts`, null out `applications.entitlement_consumption_id` before deleting any entitlement_consumptions. This breaks the FK reference so the consumption rows can be safely deleted.
+**`src/components/admin/StalledRunsTable.tsx`** -- Add step name, engine, and phase columns to give admins diagnostic context at a glance.
 
-Add this line **before** the entitlement_consumptions delete (before line 100):
+**`src/pages/admin/AdminDashboard.tsx`** -- Expand the stalled runs query to include `phase` and `execution_engine` from `report_runs`, and fetch the step name from `report_run_steps` for the current step.
 
-```typescript
-// Null out FK reference from applications before deleting consumptions
-await adminClient
-  .from("applications")
-  .update({ entitlement_consumption_id: null })
-  .eq("user_id", userId);
-```
+### Updated Stalled Runs Table Columns
+
+| Column | Source | Current | New |
+|---|---|---|---|
+| User | applications.profiles.email | Yes | Yes |
+| Application | applications.title | Yes | Yes |
+| Step | step number badge | Number only (e.g. "Step 20/22") | Name + number (e.g. "clean_citations_apa (20/22)") |
+| Engine | report_runs.execution_engine | No | Yes (badge: cloud_run / edge) |
+| Stalled For | computed duration | Yes | Yes |
+| Action | Force Fail button | Yes | Yes |
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `supabase/functions/delete-user/index.ts` | Add `update({ entitlement_consumption_id: null })` on applications before deleting entitlement_consumptions |
+| `src/pages/admin/AdminDashboard.tsx` | Add `phase`, `execution_engine` to stalled runs query; fetch current step name from `report_run_steps` |
+| `src/components/admin/StalledRunsTable.tsx` | Add `step_name` and `execution_engine` to the interface and table columns; show step name alongside number; show engine badge |
 
+### Notes
+
+- Phase column omitted from the table to avoid clutter -- the step name already implies the phase (assembly steps are obvious from names like `assemble_sections_html`).
+- The existing "Force Fail" flow remains unchanged.
