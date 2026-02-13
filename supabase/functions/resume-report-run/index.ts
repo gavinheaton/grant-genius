@@ -436,7 +436,7 @@ serve(async (req) => {
     }
 
     // Only accept pending status for resume
-    if (reportRun.status !== "pending" && reportRun.status !== "failed") {
+    if (reportRun.status !== "pending" && reportRun.status !== "failed" && reportRun.status !== "running") {
       return new Response(
         JSON.stringify({ error: "Report run is not in a resumable status" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
