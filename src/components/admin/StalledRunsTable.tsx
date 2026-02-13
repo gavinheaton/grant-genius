@@ -61,7 +61,7 @@ export function StalledRunsTable({ runs, isLoading, isSuperAdmin = false }: Stal
     setActionState({ runId, action: "resume" });
     try {
       const response = await supabase.functions.invoke("resume-report-run", {
-        body: { runId },
+        body: { reportRunId: runId },
       });
 
       if (response.error) throw new Error(response.error.message);
@@ -80,7 +80,7 @@ export function StalledRunsTable({ runs, isLoading, isSuperAdmin = false }: Stal
     setActionState({ runId, action: "restart" });
     try {
       const response = await supabase.functions.invoke("clear-and-restart-run", {
-        body: { runId },
+        body: { reportRunId: runId },
       });
 
       if (response.error) throw new Error(response.error.message);
