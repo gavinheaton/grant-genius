@@ -226,6 +226,25 @@ export default function GrantEdit() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error("Not authenticated");
 
+      // Reset grant version statuses so the concurrency guard allows re-processing
+      const { error: resetError } = await supabase
+        .from("grant_versions")
+        .update({
+          ai_analysis_status: "pending",
+          pipeline_generation_status: "none",
+          prompt_bundle_id: null,
+          ai_suggestions_json: {},
+        })
+        .eq("id", selectedVersionId);
+
+      if (resetError) throw new Error("Failed to reset grant version: " + resetError.message);
+
+      // Update local state immediately so UI reflects the reset
+      setAiAnalysisStatus("pending");
+      setPipelineStatus("none");
+      setPromptBundleId(null);
+      setAiSuggestions(null);
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/process-grant-guidelines`,
         {
