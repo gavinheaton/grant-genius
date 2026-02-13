@@ -762,7 +762,7 @@ async function processSingleStep(
           applicationId,
           grantVersionId,
           templateVersionId,
-          userId,
+          ownerUserId,
           inputs,
           reportContent,
           citations,
