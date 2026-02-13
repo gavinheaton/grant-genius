@@ -78,6 +78,12 @@ Deno.serve(async (req) => {
     const appIds = apps?.map((a) => a.id) || [];
 
     if (appIds.length > 0) {
+      // Null out FK reference from applications before deleting consumptions
+      await adminClient
+        .from("applications")
+        .update({ entitlement_consumption_id: null })
+        .eq("user_id", userId);
+
       // Delete report-related data
       const { data: reports } = await adminClient
         .from("reports")
