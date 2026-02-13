@@ -105,6 +105,7 @@ export default function AdminDashboard() {
             total_steps,
             created_at,
             started_at,
+            execution_engine,
             applications!inner(title, user_id, profiles:user_id(email))
           `)
           .in("status", ["running", "pending"])
@@ -206,18 +207,25 @@ export default function AdminDashboard() {
         const runIds = candidateRuns.map((r: any) => r.id);
         const { data: stepData } = await supabase
           .from("report_run_steps")
-          .select("report_run_id, started_at, completed_at")
+          .select("report_run_id, step_name, step_number, started_at, completed_at")
           .in("report_run_id", runIds)
           .order("step_number", { ascending: false });
 
-        // Build map of latest activity per run
+        // Build map of latest activity per run + current step name
         const latestActivityMap = new Map<string, Date>();
+        const currentStepNameMap = new Map<string, string>();
         for (const step of (stepData || [])) {
           const runId = step.report_run_id;
-          if (latestActivityMap.has(runId)) continue; // already have the latest (ordered desc)
-          const timestamps = [step.started_at, step.completed_at].filter(Boolean).map((t: string) => new Date(t));
-          if (timestamps.length > 0) {
-            latestActivityMap.set(runId, new Date(Math.max(...timestamps.map(t => t.getTime()))));
+          if (!latestActivityMap.has(runId)) {
+            const timestamps = [step.started_at, step.completed_at].filter(Boolean).map((t: string) => new Date(t));
+            if (timestamps.length > 0) {
+              latestActivityMap.set(runId, new Date(Math.max(...timestamps.map(t => t.getTime()))));
+            }
+          }
+          // Match step name to current_step for this run
+          const run = candidateRuns.find((r: any) => r.id === runId);
+          if (run && step.step_number === run.current_step && !currentStepNameMap.has(runId)) {
+            currentStepNameMap.set(runId, step.step_name);
           }
         }
 
@@ -240,6 +248,8 @@ export default function AdminDashboard() {
               } : null,
               user_email: run.applications?.profiles?.email || null,
               stalled_duration_minutes: differenceInMinutes(now, lastActivity),
+              step_name: currentStepNameMap.get(run.id) || null,
+              execution_engine: run.execution_engine || null,
               lastActivity,
             };
           })
