@@ -1,49 +1,50 @@
 
 
-## Improve Stalled Runs Table with Diagnostic Context
+## Add Resume and Restart Buttons to Stalled Runs Table
 
 ### Problem
 
-The Stalled Runs table only shows step number and duration, but no diagnostic information to help admins understand **why** a run stalled. The current run (Step 20, clean_citations_apa) has been stuck for 18+ minutes with no error -- admins need to see the step name, engine, and phase to make informed recovery decisions.
+The Stalled Runs table on the Admin Dashboard only offers "Force Fail" for stuck runs. The "Resume" and "Clear & Restart" actions exist on the Run Detail page but only appear for `failed` runs. This forces admins into a clunky two-step workflow: Force Fail, then navigate to the run detail page to Resume.
 
-### Current Stall
+For stalled runs (still in `running`/`pending` status), admins should be able to attempt a Resume directly -- the worker may have silently died but the run state is still valid for resumption.
 
-| Field | Value |
-|---|---|
-| Run ID | `6baf879d` |
-| Step | 20 of 22 (clean_citations_apa) |
-| Phase | assembly |
-| Engine | cloud_run |
-| Duration stuck | ~18 minutes |
-| Error | None (worker silently stopped) |
+### Changes
 
-The "Force Fail" button will clean this up and refund the credit.
+**File: `src/components/admin/StalledRunsTable.tsx`**
 
-### Fix
+1. Add a `handleResume` function that calls the `resume-report-run` edge function with the run ID
+2. Add a `handleRestart` function that calls `clear-and-restart-run` (Super Admin only)
+3. Replace the single "Force Fail" button with a button group containing:
+   - **Resume** (primary) -- attempts to re-dispatch the stalled step
+   - **Force Fail** (destructive, with confirmation dialog) -- existing behavior
+4. Accept `isSuperAdmin` as a prop to conditionally show "Clear & Restart"
 
-**`src/components/admin/StalledRunsTable.tsx`** -- Add step name, engine, and phase columns to give admins diagnostic context at a glance.
+**File: `src/pages/admin/AdminDashboard.tsx`**
 
-**`src/pages/admin/AdminDashboard.tsx`** -- Expand the stalled runs query to include `phase` and `execution_engine` from `report_runs`, and fetch the step name from `report_run_steps` for the current step.
+1. Pass `isSuperAdmin` from `useAdminAuth()` down to `StalledRunsTable`
 
-### Updated Stalled Runs Table Columns
+### Updated Action Column Layout
 
-| Column | Source | Current | New |
-|---|---|---|---|
-| User | applications.profiles.email | Yes | Yes |
-| Application | applications.title | Yes | Yes |
-| Step | step number badge | Number only (e.g. "Step 20/22") | Name + number (e.g. "clean_citations_apa (20/22)") |
-| Engine | report_runs.execution_engine | No | Yes (badge: cloud_run / edge) |
-| Stalled For | computed duration | Yes | Yes |
-| Action | Force Fail button | Yes | Yes |
+```text
+[ Resume ]  [ Force Fail ]        (for all admins)
+[ Resume ]  [ Restart ]  [ Force Fail ]   (for super admins)
+```
+
+- Resume: outline variant, Play icon
+- Restart: outline variant, RotateCcw icon (super admin only)
+- Force Fail: destructive variant with confirmation dialog (unchanged)
+
+### Technical Notes
+
+- The `resume-report-run` edge function already accepts runs in both `pending` and `failed` states, so it will work for stalled runs without modification
+- The `clear-and-restart-run` function works on any non-completed run
+- Loading states will track which action is in progress per run (e.g., `actionState: { runId, action }`)
+- After any action succeeds, the dashboard query is invalidated to refresh the table
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `src/pages/admin/AdminDashboard.tsx` | Add `phase`, `execution_engine` to stalled runs query; fetch current step name from `report_run_steps` |
-| `src/components/admin/StalledRunsTable.tsx` | Add `step_name` and `execution_engine` to the interface and table columns; show step name alongside number; show engine badge |
+| `src/components/admin/StalledRunsTable.tsx` | Add Resume and Restart handlers; expand action column with button group; accept `isSuperAdmin` prop |
+| `src/pages/admin/AdminDashboard.tsx` | Import `useAdminAuth`, pass `isSuperAdmin` to `StalledRunsTable` |
 
-### Notes
-
-- Phase column omitted from the table to avoid clutter -- the step name already implies the phase (assembly steps are obvious from names like `assemble_sections_html`).
-- The existing "Force Fail" flow remains unchanged.
