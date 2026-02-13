@@ -40,6 +40,8 @@ interface StalledRun {
   } | null;
   user_email: string | null;
   stalled_duration_minutes: number;
+  step_name: string | null;
+  execution_engine: string | null;
 }
 
 interface StalledRunsTableProps {
@@ -115,6 +117,7 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
           <TableHead>User</TableHead>
           <TableHead>Application</TableHead>
           <TableHead>Step</TableHead>
+          <TableHead>Engine</TableHead>
           <TableHead>Stalled For</TableHead>
           <TableHead className="text-right">Action</TableHead>
         </TableRow>
@@ -133,9 +136,21 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
               </span>
             </TableCell>
             <TableCell>
-              <Badge variant="outline" className="gap-1">
-                <AlertTriangle className="h-3 w-3 text-warning" />
-                Step {run.current_step}/{run.total_steps}
+              <div className="flex flex-col gap-1">
+                <Badge variant="outline" className="gap-1 w-fit">
+                  <AlertTriangle className="h-3 w-3 text-warning" />
+                  Step {run.current_step}/{run.total_steps}
+                </Badge>
+                {run.step_name && (
+                  <span className="text-xs text-muted-foreground font-mono truncate max-w-[180px]">
+                    {run.step_name}
+                  </span>
+                )}
+              </div>
+            </TableCell>
+            <TableCell>
+              <Badge variant={run.execution_engine === "edge" ? "secondary" : "outline"} className="text-xs">
+                {run.execution_engine || "unknown"}
               </Badge>
             </TableCell>
             <TableCell>
