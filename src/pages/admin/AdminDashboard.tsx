@@ -12,6 +12,7 @@ import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
 import { StalledRunsTable } from "@/components/admin/StalledRunsTable";
 import { QuickHealthWidget } from "@/components/admin/QuickHealthWidget";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 
 // Helper to check if an error message indicates cancellation
 function isCancellation(errorMessage: string | null | undefined): boolean {
@@ -21,6 +22,7 @@ function isCancellation(errorMessage: string | null | undefined): boolean {
 }
 
 export default function AdminDashboard() {
+  const { isSuperAdmin } = useAdminAuth();
   const todayStart = startOfDay(new Date()).toISOString();
   const thirtyDaysAgo = subDays(new Date(), 30).toISOString();
   const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
@@ -328,7 +330,7 @@ export default function AdminDashboard() {
             </div>
           </CardHeader>
           <CardContent>
-            <StalledRunsTable runs={data?.stalledRuns ?? []} isLoading={isLoading} />
+            <StalledRunsTable runs={data?.stalledRuns ?? []} isLoading={isLoading} isSuperAdmin={isSuperAdmin} />
           </CardContent>
         </Card>
       )}

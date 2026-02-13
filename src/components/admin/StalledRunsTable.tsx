@@ -21,8 +21,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { formatDistanceToNow } from "date-fns";
-import { AlertTriangle, Clock, Loader2, XCircle } from "lucide-react";
+import { Clock, Loader2, Play, RotateCcw, XCircle } from "lucide-react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -47,14 +46,57 @@ interface StalledRun {
 interface StalledRunsTableProps {
   runs: StalledRun[];
   isLoading: boolean;
+  isSuperAdmin?: boolean;
 }
 
-export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
-  const [cleaningRunId, setCleaningRunId] = useState<string | null>(null);
+type ActionState = { runId: string; action: "resume" | "restart" | "fail" } | null;
+
+export function StalledRunsTable({ runs, isLoading, isSuperAdmin = false }: StalledRunsTableProps) {
+  const [actionState, setActionState] = useState<ActionState>(null);
   const queryClient = useQueryClient();
 
+  const isActioning = (runId: string) => actionState?.runId === runId;
+
+  const handleResume = async (runId: string) => {
+    setActionState({ runId, action: "resume" });
+    try {
+      const response = await supabase.functions.invoke("resume-report-run", {
+        body: { runId },
+      });
+
+      if (response.error) throw new Error(response.error.message);
+
+      toast.success("Run resumed — worker re-dispatched");
+      queryClient.invalidateQueries({ queryKey: ["admin-dashboard-stats"] });
+    } catch (error) {
+      console.error("Resume error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to resume run");
+    } finally {
+      setActionState(null);
+    }
+  };
+
+  const handleRestart = async (runId: string) => {
+    setActionState({ runId, action: "restart" });
+    try {
+      const response = await supabase.functions.invoke("clear-and-restart-run", {
+        body: { runId },
+      });
+
+      if (response.error) throw new Error(response.error.message);
+
+      toast.success("Run cleared and restarted from step 0");
+      queryClient.invalidateQueries({ queryKey: ["admin-dashboard-stats"] });
+    } catch (error) {
+      console.error("Restart error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to restart run");
+    } finally {
+      setActionState(null);
+    }
+  };
+
   const handleForceFail = async (runId: string) => {
-    setCleaningRunId(runId);
+    setActionState({ runId, action: "fail" });
     try {
       const { data: session } = await supabase.auth.getSession();
       if (!session?.session?.access_token) {
@@ -66,9 +108,7 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
         body: { run_id: runId },
       });
 
-      if (response.error) {
-        throw new Error(response.error.message);
-      }
+      if (response.error) throw new Error(response.error.message);
 
       const result = response.data;
       if (result.cleaned && result.cleaned.length > 0) {
@@ -80,13 +120,12 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
         toast.info("Run was already cleaned up or not found");
       }
 
-      // Refresh dashboard data
       queryClient.invalidateQueries({ queryKey: ["admin-dashboard-stats"] });
     } catch (error) {
       console.error("Force fail error:", error);
       toast.error(error instanceof Error ? error.message : "Failed to clean up run");
     } finally {
-      setCleaningRunId(null);
+      setActionState(null);
     }
   };
 
@@ -119,7 +158,7 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
           <TableHead>Step</TableHead>
           <TableHead>Engine</TableHead>
           <TableHead>Stalled For</TableHead>
-          <TableHead className="text-right">Action</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -138,7 +177,6 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
             <TableCell>
               <div className="flex flex-col gap-1">
                 <Badge variant="outline" className="gap-1 w-fit">
-                  <AlertTriangle className="h-3 w-3 text-warning" />
                   Step {run.current_step}/{run.total_steps}
                 </Badge>
                 {run.step_name && (
@@ -161,46 +199,85 @@ export function StalledRunsTable({ runs, isLoading }: StalledRunsTableProps) {
               </span>
             </TableCell>
             <TableCell className="text-right">
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
+              <div className="flex items-center justify-end gap-1">
+                {/* Resume */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isActioning(run.id)}
+                  onClick={() => handleResume(run.id)}
+                >
+                  {actionState?.runId === run.id && actionState.action === "resume" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Play className="h-4 w-4 mr-1" />
+                      Resume
+                    </>
+                  )}
+                </Button>
+
+                {/* Restart (Super Admin only) */}
+                {isSuperAdmin && (
                   <Button
-                    variant="destructive"
+                    variant="outline"
                     size="sm"
-                    disabled={cleaningRunId === run.id}
+                    disabled={isActioning(run.id)}
+                    onClick={() => handleRestart(run.id)}
                   >
-                    {cleaningRunId === run.id ? (
+                    {actionState?.runId === run.id && actionState.action === "restart" ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
                       <>
-                        <XCircle className="h-4 w-4 mr-1" />
-                        Force Fail
+                        <RotateCcw className="h-4 w-4 mr-1" />
+                        Restart
                       </>
                     )}
                   </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Force fail this run?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will mark the run as failed, update the step with a timeout error,
-                      and refund the user's credit if one was consumed.
-                      <br /><br />
-                      <strong>User:</strong> {run.user_email || "Unknown"}<br />
-                      <strong>Application:</strong> {run.application?.title || "Untitled"}<br />
-                      <strong>Stuck at:</strong> Step {run.current_step}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() => handleForceFail(run.id)}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                )}
+
+                {/* Force Fail */}
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={isActioning(run.id)}
                     >
-                      Force Fail & Refund
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                      {actionState?.runId === run.id && actionState.action === "fail" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>
+                          <XCircle className="h-4 w-4 mr-1" />
+                          Fail
+                        </>
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Force fail this run?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will mark the run as failed, update the step with a timeout error,
+                        and refund the user's credit if one was consumed.
+                        <br /><br />
+                        <strong>User:</strong> {run.user_email || "Unknown"}<br />
+                        <strong>Application:</strong> {run.application?.title || "Untitled"}<br />
+                        <strong>Stuck at:</strong> Step {run.current_step}{run.step_name ? ` (${run.step_name})` : ""}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => handleForceFail(run.id)}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Force Fail & Refund
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </TableCell>
           </TableRow>
         ))}
