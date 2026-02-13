@@ -42,7 +42,7 @@ function extractVariables(...templates: (string | undefined)[]): string[] {
   return [...vars];
 }
 
-function buildStepForAnalysis(s: PipelineStep) {
+function buildStepForAnalysis(s: PipelineStep, totalSteps: number) {
   const stepType = s.step_type || "ai_prompt";
   const config = (s.step_config_json || {}) as Record<string, unknown>;
 
@@ -70,6 +70,21 @@ function buildStepForAnalysis(s: PipelineStep) {
     base.prompt_length = s.prompt_template.length;
     base.variables_used = extractVariables(s.prompt_template);
   }
+
+  // Pre-validate all {{stepN}} references programmatically
+  const stepRefs = (base.variables_used as string[])
+    .filter(v => /^step\d+$/.test(v))
+    .map(v => {
+      const n = parseInt(v.replace("step", ""));
+      if (n >= totalSteps) return { ref: v, status: "nonexistent" };
+      if (n >= s.step_number) return { ref: v, status: "forward_reference" };
+      return { ref: v, status: "valid" };
+    });
+
+  base.reference_check = {
+    all_valid: stepRefs.every(r => r.status === "valid"),
+    details: stepRefs.filter(r => r.status !== "valid"),
+  };
 
   return base;
 }
@@ -119,9 +134,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    const stepsForAnalysis = steps
-      .sort((a, b) => a.step_number - b.step_number)
-      .map(buildStepForAnalysis);
+    const sortedSteps = steps.sort((a, b) => a.step_number - b.step_number);
+    const totalSteps = sortedSteps.length > 0 ? sortedSteps[sortedSteps.length - 1].step_number + 1 : 0;
+    const stepsForAnalysis = sortedSteps.map(s => buildStepForAnalysis(s, totalSteps));
 
     const systemPrompt = `You are a pipeline validation expert for research grant report generation pipelines. You analyse sequences of AI prompt steps that together produce a structured research commercialisation report.
 
@@ -156,6 +171,14 @@ BASE VARIABLES (always available, injected at runtime — NEVER flag these as mi
 
 These are hydrated from the application context before execution. If a step references one of these, it is VALID regardless of step position. Do NOT flag them as "not produced by preceding steps."
 Only flag {{stepN}} references where N >= the current step number (forward references) or where N does not correspond to any step in the pipeline.
+
+STEP REFERENCE VALIDATION:
+Each step includes a "reference_check" field that has been pre-computed programmatically.
+- If "all_valid" is true, ALL {{stepN}} references in that step are confirmed valid backward references. Do NOT flag any data_flow issues for step references in that step.
+- If "all_valid" is false, the "details" array lists the specific problematic references. Only flag those specific references.
+- Do NOT attempt your own arithmetic to validate step references. Trust the pre-computed check.
+
+Also note: The "STEP N" label inside prompt text may differ from the actual step_number due to pipeline offset. Always use the step_number field, not the label in the prompt text.
 
 Return your analysis as a JSON object with this exact schema:
 {
