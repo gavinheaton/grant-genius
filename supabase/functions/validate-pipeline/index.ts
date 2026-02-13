@@ -146,7 +146,16 @@ Your job is to identify issues across 5 categories. Each category has strict bou
 
 5. **contract_mismatch**: ONLY flag when a downstream step references a specific field or structure that the upstream step's prompt explicitly does not produce. If the upstream step's output is ambiguous or flexible, do not flag it.
 
-Each step uses {{stepN}} variables to reference outputs of step N, or {{step_name}} variables to reference outputs by name. Steps also use base variables like {{summary}}, {{grantName}}, {{requiredInputs}}, {{sources}}, {{unknowns}}, {{articleContent}}, etc.
+Each step uses {{stepN}} variables to reference outputs of step N, or {{step_name}} variables to reference outputs by name.
+
+BASE VARIABLES (always available, injected at runtime — NEVER flag these as missing or unproduced):
+- User inputs: {{summary}}, {{publicArticleUrl}}, {{articleContent}}, {{trl}}, {{ipStatus}}
+- Grant context: {{grantName}}, {{grantVersionLabel}}, {{grantGuidelines}}, {{grantRubric}}, {{grantRubricJson}}, {{grantSummary}}, {{requiredInputs}}
+- Firecrawl outputs: {{sources}}, {{unknowns}}
+- Any key from the applicant's inputs_json (e.g., {{project_description_summary}}, {{commercialisation_plan}}, {{innovation_novelty_pitch}}, {{trl_level}}, {{ip_status}})
+
+These are hydrated from the application context before execution. If a step references one of these, it is VALID regardless of step position. Do NOT flag them as "not produced by preceding steps."
+Only flag {{stepN}} references where N >= the current step number (forward references) or where N does not correspond to any step in the pipeline.
 
 Return your analysis as a JSON object with this exact schema:
 {
