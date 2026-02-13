@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,13 +24,16 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Search, ChevronDown, ChevronRight } from "lucide-react";
+import { Search, ChevronDown, ChevronRight, RotateCw, Loader2 } from "lucide-react";
 import { format } from "date-fns";
+import { toast } from "@/hooks/use-toast";
 
 export default function EmailLogs() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [resendingId, setResendingId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: emails, isLoading } = useQuery({
     queryKey: ["admin-email-logs"],
@@ -72,6 +75,32 @@ export default function EmailLogs() {
       newExpanded.add(id);
     }
     setExpandedRows(newExpanded);
+  };
+
+  const handleResend = async (emailId: string) => {
+    setResendingId(emailId);
+    try {
+      const { data, error } = await supabase.functions.invoke("resend-email", {
+        body: { emailOutboxId: emailId },
+      });
+
+      if (error) throw error;
+
+      toast({
+        title: "Email resent",
+        description: "The email has been queued for delivery.",
+      });
+
+      queryClient.invalidateQueries({ queryKey: ["admin-email-logs"] });
+    } catch (err) {
+      toast({
+        title: "Resend failed",
+        description: err instanceof Error ? err.message : "Failed to resend email",
+        variant: "destructive",
+      });
+    } finally {
+      setResendingId(null);
+    }
   };
 
   const getStatusBadgeVariant = (status: string) => {
@@ -132,18 +161,19 @@ export default function EmailLogs() {
               <TableHead>Subject</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Sent</TableHead>
+              <TableHead className="w-[80px]">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-8">
+                <TableCell colSpan={7} className="text-center py-8">
                   Loading email logs...
                 </TableCell>
               </TableRow>
             ) : filteredEmails?.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-8">
+                <TableCell colSpan={7} className="text-center py-8">
                   No emails found
                 </TableCell>
               </TableRow>
@@ -187,10 +217,25 @@ export default function EmailLogs() {
                           ? format(new Date(email.sent_at), "MMM d, HH:mm")
                           : format(new Date(email.created_at), "MMM d, HH:mm")}
                       </TableCell>
+                      <TableCell>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleResend(email.id)}
+                          disabled={resendingId === email.id}
+                          title="Resend email"
+                        >
+                          {resendingId === email.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RotateCw className="h-4 w-4" />
+                          )}
+                        </Button>
+                      </TableCell>
                     </TableRow>
                     <CollapsibleContent asChild>
                       <TableRow className="bg-muted/50">
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={7}>
                           <div className="py-2 pl-12">
                             <p className="text-sm font-medium mb-2">Events</p>
                             {email.email_events?.length === 0 ? (

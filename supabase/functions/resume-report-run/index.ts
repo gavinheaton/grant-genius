@@ -390,7 +390,7 @@ serve(async (req) => {
         .maybeSingle();
 
       if (existingReport) {
-        // Report already created - just mark run as completed and return success
+        // Report already created - mark run as completed
         await supabaseAdmin
           .from("report_runs")
           .update({
@@ -399,10 +399,40 @@ serve(async (req) => {
           })
           .eq("id", reportRunId);
 
+        // Update application status to ready
+        await supabaseAdmin
+          .from("applications")
+          .update({ status: "ready" })
+          .eq("id", reportRun.application_id);
+
+        // Send email notification if enabled (was skipped when run stalled)
+        if (reportRun.email_on_complete) {
+          try {
+            const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+            const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+            await fetch(`${SUPABASE_URL}/functions/v1/send-report-email`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+              },
+              body: JSON.stringify({
+                reportRunId,
+                reportId: existingReport.id,
+                applicationId: reportRun.application_id,
+                userId: ownerUserId,
+              }),
+            });
+            console.log(`Recovery email sent for report ${existingReport.id}`);
+          } catch (emailError) {
+            console.error("Failed to send recovery email:", emailError);
+          }
+        }
+
         return new Response(
           JSON.stringify({ 
             success: true, 
-            message: "Report already completed. Please refresh to view.",
+            message: "Report already completed. Email notification sent. Please refresh to view.",
             code: "ALREADY_COMPLETE"
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }

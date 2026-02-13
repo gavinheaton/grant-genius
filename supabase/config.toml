@@ -80,3 +80,6 @@ verify_jwt = false
 
 [functions.send-magic-link]
 verify_jwt = false
+
+[functions.resend-email]
+verify_jwt = false
