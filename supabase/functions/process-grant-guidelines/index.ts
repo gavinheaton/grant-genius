@@ -2768,6 +2768,19 @@ Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, .
       is_heavy: step.model_tier === "pro",
       is_assembly_step: false
     }));
+
+    // Rewrite {{stepN}} references in prompt_template to account for Firecrawl offset
+    // The AI generates steps assuming build_source_pack is step 0, but after prepending
+    // Firecrawl steps, all step numbers shift by firecrawlOffset.
+    if (firecrawlOffset > 0) {
+      for (const step of aiAnalysisSteps) {
+        step.prompt_template = step.prompt_template.replace(
+          /\{\{step(\d+)\}\}/g,
+          (_match: string, num: string) => `{{step${parseInt(num) + firecrawlOffset}}}`
+        );
+      }
+      console.log(`Rewrote {{stepN}} references in ${aiAnalysisSteps.length} AI steps with offset +${firecrawlOffset}`);
+    }
     
     const maxResearchStep = Math.max(...aiAnalysisSteps.map((s: any) => s.step_number));
 
