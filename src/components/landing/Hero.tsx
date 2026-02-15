@@ -4,22 +4,27 @@ import { Link } from "react-router-dom";
 import { useHomepageSettings } from "@/hooks/useHomepageSettings";
 import { iconMap } from "@/lib/iconMap";
 
-export function Hero() {
-  const { data: settings } = useHomepageSettings();
+interface HeroProps {
+  overrideContent?: Record<string, any>;
+}
 
-  const badge = settings?.hero_badge_text ?? "For Australian University Researchers";
-  const headline = settings?.hero_headline ?? "Win More Commercialisation Grants with AI-Assisted Applications";
-  const subheadline = settings?.hero_subheadline ?? "Transform your research into compelling grant applications. Our AI-powered assistant helps you structure, write, and refine your commercialisation proposals with evidence-based recommendations.";
-  const ctaPrimaryText = settings?.hero_cta_primary_text ?? "Start Your Application";
-  const ctaPrimaryLink = settings?.hero_cta_primary_link ?? "/auth";
-  const ctaSecondaryText = settings?.hero_cta_secondary_text ?? "View Pricing";
-  const ctaSecondaryLink = settings?.hero_cta_secondary_link ?? "#pricing";
-  const trustItems = settings?.hero_trust_items ?? [
+export function Hero({ overrideContent }: HeroProps = {}) {
+  const { data: settings } = useHomepageSettings();
+  const oc = overrideContent;
+
+  const badge = oc?.badge ?? settings?.hero_badge_text ?? "For Australian University Researchers";
+  const headline = oc?.headline ?? settings?.hero_headline ?? "Win More Commercialisation Grants with AI-Assisted Applications";
+  const subheadline = oc?.subheadline ?? settings?.hero_subheadline ?? "Transform your research into compelling grant applications. Our AI-powered assistant helps you structure, write, and refine your commercialisation proposals with evidence-based recommendations.";
+  const ctaPrimaryText = oc?.cta_primary_text ?? settings?.hero_cta_primary_text ?? "Start Your Application";
+  const ctaPrimaryLink = oc?.cta_primary_link ?? settings?.hero_cta_primary_link ?? "/auth";
+  const ctaSecondaryText = oc?.cta_secondary_text ?? settings?.hero_cta_secondary_text ?? "View Pricing";
+  const ctaSecondaryLink = oc?.cta_secondary_link ?? settings?.hero_cta_secondary_link ?? "#pricing";
+  const trustItems = oc?.trust_items ?? settings?.hero_trust_items ?? [
     { icon: "FileCheck", label: "Evidence-Based Sections" },
     { icon: "Shield", label: "University-Grade Security" },
     { icon: "Sparkles", label: "AI-Powered Insights" },
   ];
-  const heroImage = settings?.hero_image_url;
+  const heroImage = oc?.image_url ?? settings?.hero_image_url;
 
   // Split headline on text wrapped in * for primary color emphasis
   const renderHeadline = () => {

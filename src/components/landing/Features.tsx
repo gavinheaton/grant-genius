@@ -10,12 +10,18 @@ const defaultFeatures: FeatureItem[] = [
   { icon: "Lock", title: "Secure & Private", description: "Your research data is encrypted and never shared. University-grade security standards." },
 ];
 
-export function Features() {
+interface FeaturesProps {
+  overrideHeading?: string | null;
+  overrideSubheading?: string | null;
+  overrideItems?: FeatureItem[] | null;
+}
+
+export function Features({ overrideHeading, overrideSubheading, overrideItems }: FeaturesProps = {}) {
   const { data: settings } = useHomepageSettings();
 
-  const heading = settings?.features_heading ?? "Everything You Need to Win Grants";
-  const subheading = settings?.features_subheading ?? "From initial research summary to final submission-ready documents, our platform guides you through every step.";
-  const features = settings?.features_items ?? defaultFeatures;
+  const heading = overrideHeading ?? settings?.features_heading ?? "Everything You Need to Win Grants";
+  const subheading = overrideSubheading ?? settings?.features_subheading ?? "From initial research summary to final submission-ready documents, our platform guides you through every step.";
+  const features = overrideItems ?? settings?.features_items ?? defaultFeatures;
 
   return (
     <section id="features" className="py-20 bg-muted/30">
