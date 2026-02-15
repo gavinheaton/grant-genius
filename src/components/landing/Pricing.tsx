@@ -40,15 +40,22 @@ const defaultPlans: PricingPlan[] = [
   },
 ];
 
-export function Pricing() {
+interface PricingProps {
+  overrideHeading?: string | null;
+  overrideSubheading?: string | null;
+  overridePlans?: PricingPlan[] | null;
+  overrideFooterNote?: string | null;
+}
+
+export function Pricing({ overrideHeading, overrideSubheading, overridePlans, overrideFooterNote }: PricingProps = {}) {
   const navigate = useNavigate();
   const { purchaseReport, purchaseBundle, isLoading } = usePurchase();
   const { data: settings } = useHomepageSettings();
 
-  const heading = settings?.pricing_heading ?? "Simple, Transparent Pricing";
-  const subheading = settings?.pricing_subheading ?? "Pay only for what you need. No subscriptions, no hidden fees.";
-  const plans = settings?.pricing_plans ?? defaultPlans;
-  const footerNote = settings?.pricing_footer_note ?? "All prices in AUD. GST applies to Australian customers. Have a coupon? Enter it at checkout.";
+  const heading = overrideHeading ?? settings?.pricing_heading ?? "Simple, Transparent Pricing";
+  const subheading = overrideSubheading ?? settings?.pricing_subheading ?? "Pay only for what you need. No subscriptions, no hidden fees.";
+  const plans = overridePlans ?? settings?.pricing_plans ?? defaultPlans;
+  const footerNote = overrideFooterNote ?? settings?.pricing_footer_note ?? "All prices in AUD. GST applies to Australian customers. Have a coupon? Enter it at checkout.";
 
   const handlePurchase = async (type: "single" | "bundle") => {
     const result = type === "bundle" ? await purchaseBundle() : await purchaseReport();
