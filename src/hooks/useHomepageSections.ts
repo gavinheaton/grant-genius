@@ -113,6 +113,7 @@ export function useUpdateSection() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["homepage-sections"] });
+      toast({ title: "Section saved" });
     },
     onError: (err: any) => {
       toast({ title: "Failed to update section", description: err.message, variant: "destructive" });
