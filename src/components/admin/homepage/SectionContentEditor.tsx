@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Plus, Trash2, Save } from "lucide-react";
+import { Slider } from "@/components/ui/slider";
 import { iconNames } from "@/lib/iconMap";
 import type { HomepageSection } from "@/hooks/useHomepageSections";
 import { useUploadHeroImage } from "@/hooks/useHomepageSettings";
@@ -60,6 +61,13 @@ export function SectionContentEditor({ section, onUpdate }: Props) {
               {content.image_url && <img src={content.image_url} alt="Hero" className="max-h-32 rounded mb-2 object-cover w-full" />}
               <Input type="file" accept="image/*" onChange={(e) => handleImageUpload(e, "image_url")} className="max-w-xs" />
             </div>
+            {content.image_url && (
+              <div>
+                <Label>Image Overlay Opacity ({content.overlay_opacity ?? 80}%)</Label>
+                <Slider value={[content.overlay_opacity ?? 80]} min={0} max={100} step={5} onValueChange={([v]) => updateContent("overlay_opacity", v)} className="mt-2" />
+                <p className="text-xs text-muted-foreground mt-1">0% = fully visible image, 100% = fully hidden</p>
+              </div>
+            )}
             <ArrayEditor
               label="Trust Items"
               items={content.trust_items ?? []}

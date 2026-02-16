@@ -25,6 +25,7 @@ export function Hero({ overrideContent }: HeroProps = {}) {
     { icon: "Sparkles", label: "AI-Powered Insights" },
   ];
   const heroImage = oc?.image_url ?? settings?.hero_image_url;
+  const overlayOpacity = (oc?.overlay_opacity ?? 80) / 100;
 
   // Split headline on text wrapped in * for primary color emphasis
   const renderHeadline = () => {
@@ -50,7 +51,7 @@ export function Hero({ overrideContent }: HeroProps = {}) {
             className="absolute inset-0 bg-cover bg-center"
             style={{ backgroundImage: `url(${heroImage})` }}
           />
-          <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+          <div className="absolute inset-0 backdrop-blur-sm" style={{ backgroundColor: `hsl(var(--background) / ${overlayOpacity})` }} />
         </>
       ) : (
         <>
