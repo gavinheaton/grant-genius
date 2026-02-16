@@ -1,20 +1,31 @@
 
-## Add Hero Image Transparency Slider
+
+## Add Save Feedback to Homepage Section Editor
 
 ### Problem
-The hero background image overlay is hardcoded to 80% opacity (`bg-background/80`), making the image very faded. Admins need control over this.
+When clicking "Save Section" in the homepage editor, nothing visually indicates the save succeeded. The mutation completes silently.
 
 ### Changes
 
-**1. `src/components/admin/homepage/SectionContentEditor.tsx`**
-- Add a slider (0-100) inside the `hero` case labeled "Image Overlay Opacity"
-- Stores the value as `content_json.overlay_opacity` (number, 0-100, default 80)
+**File: `src/components/admin/homepage/SectionContentEditor.tsx`**
 
-**2. `src/components/landing/Hero.tsx`**
-- Read `overlay_opacity` from `overrideContent` or `settings` (default 80)
-- Replace the hardcoded `bg-background/80` class with an inline style: `backgroundColor: hsl(var(--background) / {opacity})`
+1. Import `toast` from `sonner` (the simpler toast system already used in the project)
+2. Update the `save` function to show a success toast after calling `onUpdate`
+
+**File: `src/hooks/useHomepageSections.ts`**
+
+1. Add a success toast (`"Section updated"`) to the `useUpdateSection` mutation's `onSuccess` callback -- this is the cleanest place since all section updates flow through it
+
+This is a one-line addition to the `onSuccess` handler in `useUpdateSection`, adding:
+```
+toast({ title: "Section saved" });
+```
+
+The hook already imports `useToast` and uses it for error handling, so the success toast follows the same pattern with zero new dependencies.
+
+### Files Changed
 
 | File | Change |
 |---|---|
-| `src/components/admin/homepage/SectionContentEditor.tsx` | Add opacity slider (0-100) in the hero editor |
-| `src/components/landing/Hero.tsx` | Use dynamic overlay opacity from content data instead of hardcoded 80% |
+| `src/hooks/useHomepageSections.ts` | Add success toast to `useUpdateSection.onSuccess` |
+
