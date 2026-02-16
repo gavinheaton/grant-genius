@@ -115,8 +115,44 @@ export function SectionContentEditor({ section, onUpdate }: Props) {
                     <div><Label>Price</Label><Input value={plan.basePrice ?? ""} onChange={(e) => update({ ...plan, basePrice: e.target.value })} /></div>
                   </div>
                   <div><Label>Description</Label><Input value={plan.description ?? ""} onChange={(e) => update({ ...plan, description: e.target.value })} /></div>
-                  <div><Label>GST Note</Label><Input value={plan.gstNote ?? ""} onChange={(e) => update({ ...plan, gstNote: e.target.value })} /></div>
-                  <div><Label>CTA Text</Label><Input value={plan.cta ?? ""} onChange={(e) => update({ ...plan, cta: e.target.value })} /></div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><Label>GST Note</Label><Input value={plan.gstNote ?? ""} onChange={(e) => update({ ...plan, gstNote: e.target.value })} /></div>
+                    <div><Label>CTA Text</Label><Input value={plan.cta ?? ""} onChange={(e) => update({ ...plan, cta: e.target.value })} /></div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 items-end">
+                    <div>
+                      <Label>Type</Label>
+                      <Select value={plan.type ?? "single"} onValueChange={(v) => update({ ...plan, type: v })}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="single">Single Report</SelectItem>
+                          <SelectItem value="bundle">Bundle (10-Pack)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2 pb-2">
+                      <input type="checkbox" id={`highlighted-${i}`} checked={plan.highlighted ?? false} onChange={(e) => update({ ...plan, highlighted: e.target.checked })} className="rounded border-input" />
+                      <Label htmlFor={`highlighted-${i}`} className="mb-0">Highlighted (Best Value)</Label>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <Label>Features</Label>
+                      <Button size="sm" variant="ghost" onClick={() => update({ ...plan, features: [...(plan.features ?? []), ""] })}>
+                        <Plus className="h-3 w-3 mr-1" /> Add Feature
+                      </Button>
+                    </div>
+                    <div className="space-y-1">
+                      {(plan.features ?? []).map((feat: string, fi: number) => (
+                        <div key={fi} className="flex gap-2 items-center">
+                          <Input value={feat} onChange={(e) => { const f = [...(plan.features ?? [])]; f[fi] = e.target.value; update({ ...plan, features: f }); }} placeholder="Feature text" className="flex-1" />
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => update({ ...plan, features: (plan.features ?? []).filter((_: any, j: number) => j !== fi) })}>
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
               newItem={() => ({ name: "", basePrice: "", gstNote: "", description: "", cta: "Purchase", features: [], highlighted: false, type: "single" })}
