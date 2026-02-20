@@ -33,7 +33,6 @@ serve(async (req) => {
     const { email } = await req.json();
 
     if (!email || typeof email !== "string") {
-      // Generic response to prevent account enumeration
       return new Response(
         JSON.stringify({ success: true }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -64,7 +63,6 @@ serve(async (req) => {
 
     if (linkError) {
       logStep("Error generating link", { error: linkError.message });
-      // Generic response
       return new Response(
         JSON.stringify({ success: true }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -72,6 +70,8 @@ serve(async (req) => {
     }
 
     const magicLinkUrl = linkData?.properties?.action_link;
+    const otpCode = linkData?.properties?.email_otp;
+
     if (!magicLinkUrl) {
       logStep("No action_link returned");
       return new Response(
@@ -80,7 +80,7 @@ serve(async (req) => {
       );
     }
 
-    logStep("Magic link generated successfully");
+    logStep("Magic link generated successfully", { hasOtp: !!otpCode });
 
     if (!brevoApiKey) {
       logStep("WARNING: BREVO_API_KEY not configured, cannot send email");
@@ -89,6 +89,21 @@ serve(async (req) => {
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // Build the OTP code section for the email
+    const otpSection = otpCode ? `
+    <div style="background: #F3F4F6; border-radius: 12px; padding: 24px; margin-bottom: 24px; text-align: center;">
+      <p style="color: #374151; margin: 0 0 8px 0; font-size: 14px;">Your sign-in code:</p>
+      <div style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #4F46E5; font-family: monospace; margin: 12px 0;">
+        ${otpCode}
+      </div>
+      <p style="color: #6B7280; margin: 8px 0 0 0; font-size: 13px;">Enter this code on the sign-in page</p>
+    </div>
+    
+    <div style="text-align: center; margin-bottom: 20px;">
+      <p style="color: #9CA3AF; font-size: 13px; margin: 0;">— or use the link below —</p>
+    </div>
+    ` : '';
 
     const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
@@ -99,7 +114,7 @@ serve(async (req) => {
       body: JSON.stringify({
         sender: { name: "Grant Genius", email: "grantgenius@disruptorsco.com" },
         to: [{ email: email.trim() }],
-        subject: "Your Grant Genius Sign-In Link",
+        subject: otpCode ? `Your Grant Genius Code: ${otpCode}` : "Your Grant Genius Sign-In Link",
         htmlContent: `
 <!DOCTYPE html>
 <html>
@@ -111,13 +126,15 @@ serve(async (req) => {
   <div style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); padding: 30px; border-radius: 12px; margin-bottom: 30px;">
     <h2 style="color: white; margin: 0;">Sign In to Grant Genius</h2>
     <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">
-      Click the button below to securely sign in to your account.
+      ${otpCode ? 'Use the code below or click the button to sign in.' : 'Click the button below to securely sign in to your account.'}
     </p>
   </div>
   
   <div style="background: white; border-radius: 12px; padding: 30px; margin-bottom: 20px;">
     <p style="color: #374151; margin-top: 0;">Hi there,</p>
-    <p style="color: #374151;">You requested a sign-in link for Grant Genius. Click the button below to access your account:</p>
+    <p style="color: #374151;">You requested to sign in to Grant Genius.</p>
+    
+    ${otpSection}
     
     <div style="text-align: center; margin: 30px 0;">
       <a href="${magicLinkUrl}" style="background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%); color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block;">
@@ -133,7 +150,7 @@ serve(async (req) => {
   <hr style="border: none; border-top: 1px solid #E5E7EB; margin: 20px 0;">
   
   <p style="color: #9CA3AF; font-size: 12px; text-align: center;">
-    If you didn't request this link, you can safely ignore this email.<br>
+    If you didn't request this, you can safely ignore this email.<br>
     &copy; Grant Genius by Disruptors Co.
   </p>
 </body>
@@ -181,7 +198,6 @@ serve(async (req) => {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logStep("ERROR", { message: errorMessage });
-    // Always return success to prevent account enumeration
     return new Response(
       JSON.stringify({ success: true }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
