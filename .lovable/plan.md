@@ -1,102 +1,64 @@
 
+## Fix: Outlook Pre-Fetching Consuming Magic Links
 
-## Expose Report Generation Pipeline as a Secure API
+### Problem
+Outlook's "Safe Links" feature automatically pre-fetches URLs in emails to scan for threats. This consumes the one-time magic link token before the user actually clicks it, resulting in "Email link is invalid or has expired" errors.
 
-### Overview
-Create an API layer that allows your other apps to trigger report generation and retrieve results, with usage tracking, and an admin toggle to enable/disable API access.
+### Solution: Switch to OTP Code Authentication
 
-### Authentication and Security
-- **API_SECRET_KEY** shared secret, validated server-side in edge functions
-- Option B: API calls bypass credit checks entirely (trusted internal apps only)
-- Admin can disable API access via a settings toggle
+Instead of sending a clickable link (which Outlook consumes), send a **6-digit verification code** that the user types into the sign-in page. Codes are immune to pre-fetching because there is no URL to scan.
 
-### New Database Tables
+The user experience changes from:
+1. Enter email -> check inbox -> click link -> signed in
 
-**`api_usage_logs`** -- tracks every API call for analytics
-| Column | Type | Notes |
-|---|---|---|
-| id | uuid | PK |
-| api_key_name | text | Identifier for which app is calling (passed as header) |
-| endpoint | text | e.g. "generate-report", "report-status" |
-| report_run_id | uuid | Nullable, linked run |
-| source | text | "api" (vs "web" for UI calls) |
-| response_status | integer | HTTP status returned |
-| created_at | timestamptz | Auto |
+To:
+1. Enter email -> check inbox -> copy 6-digit code -> type code on sign-in page -> signed in
 
-**`api_settings`** -- single-row config table
-| Column | Type | Default |
-|---|---|---|
-| id | uuid | PK |
-| is_enabled | boolean | true |
-| default_grant_id | uuid | Nullable, the "General" grant |
-| updated_at | timestamptz | Auto |
-| updated_by | uuid | Nullable |
+### Changes
 
-Both tables get admin-only RLS policies.
+**1. `supabase/functions/send-magic-link/index.ts`**
+- Switch from `generateLink({ type: "magiclink" })` to `generateLink({ type: "magiclink" })` but extract the OTP token from the response (`linkData.properties.hashed_token`) -- actually, use Supabase's built-in email OTP: call `supabase.auth.signInWithOtp()` server-side is not available via admin API
+- Better approach: keep `generateLink` but extract the **OTP code** from `linkData.properties.email_otp` (Supabase returns both the link and a 6-digit OTP when generating magic links)
+- Update the Brevo email template to show the **6-digit code** prominently instead of (or in addition to) the clickable link
+- Keep the clickable link as a fallback for non-Outlook users
 
-### New Edge Functions
+**2. `src/pages/Auth.tsx`**
+- After the "check your inbox" success screen, add an **OTP input field** (6 digits) where the user can type the code
+- On submission, call `supabase.auth.verifyOtp({ email, token, type: 'magiclink' })` to complete sign-in
+- Keep a "Use magic link instead" note for users who prefer clicking
 
-**1. `supabase/functions/api-generate-report/index.ts`**
-- Validates `API_SECRET_KEY` from Bearer token
-- Checks `api_settings.is_enabled` -- returns 503 if disabled
-- Accepts: `{ summary, public_article_url?, grant_id?, trl?, ip_status?, webhook_url?, client_name? }`
-- Looks up default published grant version (or uses provided `grant_id`)
-- Creates application record with `api_source = client_name` using service role
-- Creates report run and calls `enqueue-report`
-- Logs to `api_usage_logs`
-- Returns `{ run_id, status: "enqueued", poll_url }`
-- **Bypasses credit/entitlement checks** (Option B)
+### Updated User Flow
 
-**2. `supabase/functions/api-report-status/index.ts`**
-- Validates `API_SECRET_KEY`
-- Accepts query param `run_id`
-- Returns run status, step progress, and when completed: report HTML + citations
-- Logs to `api_usage_logs`
-
-### Webhook Support
-- Add `webhook_url` (text, nullable) column to `report_runs`
-- Add `api_source` (text, nullable) column to `applications`
-- Update `worker-proxy` post-save logic: after saving a completed report, check if `webhook_url` is set on the run and POST the result to it
-
-### Admin UI: API Management
-- New section in the Admin Dashboard or System Health page
-- Toggle to enable/disable API access
-- Usage stats: total API calls, calls today, calls by client name
-- Table showing recent API usage logs
-
-### Config Updates
-- Add both new functions to `supabase/config.toml` with `verify_jwt = false`
-- New secret: `API_SECRET_KEY` (will request from you before implementing)
-
-### Implementation Sequence
-
-1. **Database migration** -- create `api_usage_logs`, `api_settings` tables; add `webhook_url` to `report_runs`, `api_source` to `applications`
-2. **Request API_SECRET_KEY secret** from you
-3. **Create `api-generate-report` edge function** -- core API endpoint
-4. **Create `api-report-status` edge function** -- polling/result endpoint
-5. **Update `worker-proxy`** -- add webhook callback on report completion
-6. **Build admin API management UI** -- toggle, usage stats, logs table
-
-### API Usage Example (for your other apps)
-
-```text
-POST /functions/v1/api-generate-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{
-  "summary": "Research on novel polymer...",
-  "public_article_url": "https://...",
-  "client_name": "my-other-app"
-}
-
-Response: { "run_id": "uuid", "poll_url": "/functions/v1/api-report-status?run_id=uuid" }
+```
+Enter email
+    |
+    v
+"Check your inbox" screen
+    |
+    v
+[  _ _ _ _ _ _  ]   <-- 6-digit OTP input
+[   Verify Code  ]
+    |
+    v
+Signed in -> /dashboard
 ```
 
-```text
-GET /functions/v1/api-report-status?run_id=uuid
-Authorization: Bearer <API_SECRET_KEY>
+### Technical Details
 
-Response (completed): { "status": "completed", "report_html": "...", "citations": [...] }
+| File | Change |
+|---|---|
+| `supabase/functions/send-magic-link/index.ts` | Extract OTP from `linkData.properties.email_otp`; update Brevo email to show code prominently + keep link as fallback |
+| `src/pages/Auth.tsx` | Add OTP input after email submission; call `verifyOtp()` on submit; keep existing magic link flow as fallback |
+
+### Email Template Update
+The email will change from just a "Sign In" button to:
+
+```
+Your sign-in code: 123456
+Enter this code on the sign-in page.
+
+Or click the button below:
+[Sign In to Grant Genius]
 ```
 
+This gives users two ways to authenticate -- the code (Outlook-safe) and the link (convenient for other email clients).

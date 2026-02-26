@@ -14,6 +14,76 @@ export type Database = {
   }
   public: {
     Tables: {
+      api_settings: {
+        Row: {
+          default_grant_id: string | null
+          id: string
+          is_enabled: boolean
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          default_grant_id?: string | null
+          id?: string
+          is_enabled?: boolean
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          default_grant_id?: string | null
+          id?: string
+          is_enabled?: boolean
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_settings_default_grant_id_fkey"
+            columns: ["default_grant_id"]
+            isOneToOne: false
+            referencedRelation: "grants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      api_usage_logs: {
+        Row: {
+          client_name: string | null
+          created_at: string
+          endpoint: string
+          id: string
+          report_run_id: string | null
+          response_status: number
+          source: string
+        }
+        Insert: {
+          client_name?: string | null
+          created_at?: string
+          endpoint: string
+          id?: string
+          report_run_id?: string | null
+          response_status: number
+          source?: string
+        }
+        Update: {
+          client_name?: string | null
+          created_at?: string
+          endpoint?: string
+          id?: string
+          report_run_id?: string | null
+          response_status?: number
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "api_usage_logs_report_run_id_fkey"
+            columns: ["report_run_id"]
+            isOneToOne: false
+            referencedRelation: "report_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       app_events: {
         Row: {
           created_at: string
@@ -40,6 +110,7 @@ export type Database = {
       }
       applications: {
         Row: {
+          api_source: string | null
           created_at: string
           entitlement_consumption_id: string | null
           grant_version_id: string
@@ -53,6 +124,7 @@ export type Database = {
           user_id: string
         }
         Insert: {
+          api_source?: string | null
           created_at?: string
           entitlement_consumption_id?: string | null
           grant_version_id: string
@@ -66,6 +138,7 @@ export type Database = {
           user_id: string
         }
         Update: {
+          api_source?: string | null
           created_at?: string
           entitlement_consumption_id?: string | null
           grant_version_id?: string
@@ -1225,6 +1298,7 @@ export type Database = {
           started_at: string | null
           status: Database["public"]["Enums"]["step_status"]
           total_steps: number
+          webhook_url: string | null
         }
         Insert: {
           application_id: string
@@ -1243,6 +1317,7 @@ export type Database = {
           started_at?: string | null
           status?: Database["public"]["Enums"]["step_status"]
           total_steps?: number
+          webhook_url?: string | null
         }
         Update: {
           application_id?: string
@@ -1261,6 +1336,7 @@ export type Database = {
           started_at?: string | null
           status?: Database["public"]["Enums"]["step_status"]
           total_steps?: number
+          webhook_url?: string | null
         }
         Relationships: [
           {
