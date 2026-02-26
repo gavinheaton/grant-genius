@@ -988,12 +988,12 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     // Non-fatal, continue
   }
 
-  // === Post-save: email notification, review workflow, application status ===
+  // === Post-save: email notification, review workflow, application status, webhook ===
   try {
-    // 1. Check email_on_complete
+    // 1. Check email_on_complete and webhook_url
     const { data: runForEmail } = await supabase
       .from("report_runs")
-      .select("email_on_complete")
+      .select("email_on_complete, webhook_url")
       .eq("id", report_run_id)
       .single();
 
