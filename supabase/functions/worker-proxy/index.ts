@@ -77,7 +77,7 @@ function errorResponse(message: string, status = 400) {
 }
 
 // Map Lovable AI models to Replit-compatible Gemini models
-// Worker defaults to Gemini 3 Pro when empty/null is passed
+// Worker defaults to Gemini 3.1 Pro when empty/null is passed
 function mapToReplitModel(lovableModel: string | null | undefined): string {
   if (!lovableModel) {
     return ""; // Empty = use worker default (Gemini 3 Pro)
