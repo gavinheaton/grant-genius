@@ -9,6 +9,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { RefreshCw, Globe, Activity, BarChart3, Clock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
+import DeveloperIntegrationCard from "@/components/admin/DeveloperIntegrationCard";
 
 interface ApiSettings {
   id: string;
