@@ -37,6 +37,7 @@ interface UsageStats {
 }
 
 export default function ApiManagement() {
+  const { isSuperAdmin } = useAdminAuth();
   const [settings, setSettings] = useState<ApiSettings | null>(null);
   const [logs, setLogs] = useState<UsageLog[]>([]);
   const [stats, setStats] = useState<UsageStats>({ total: 0, today: 0, byClient: {}, byEndpoint: {} });
