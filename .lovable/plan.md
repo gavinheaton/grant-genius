@@ -1,64 +1,27 @@
 
-## Fix: Outlook Pre-Fetching Consuming Magic Links
 
-### Problem
-Outlook's "Safe Links" feature automatically pre-fetches URLs in emails to scan for threats. This consumes the one-time magic link token before the user actually clicks it, resulting in "Email link is invalid or has expired" errors.
+## Migrate from Gemini 3 Pro Preview to Gemini 3.1 Pro Preview
 
-### Solution: Switch to OTP Code Authentication
+### Why
+Google is discontinuing `gemini-3-pro-preview` on March 9, 2026. All references must be updated to `gemini-3.1-pro-preview` to avoid service disruption.
 
-Instead of sending a clickable link (which Outlook consumes), send a **6-digit verification code** that the user types into the sign-in page. Codes are immune to pre-fetching because there is no URL to scan.
-
-The user experience changes from:
-1. Enter email -> check inbox -> click link -> signed in
-
-To:
-1. Enter email -> check inbox -> copy 6-digit code -> type code on sign-in page -> signed in
+### Scope
+A find-and-replace of the model identifier `google/gemini-3-pro-preview` to `google/gemini-3.1-pro-preview` across 6 files, plus updating display labels.
 
 ### Changes
 
-**1. `supabase/functions/send-magic-link/index.ts`**
-- Switch from `generateLink({ type: "magiclink" })` to `generateLink({ type: "magiclink" })` but extract the OTP token from the response (`linkData.properties.hashed_token`) -- actually, use Supabase's built-in email OTP: call `supabase.auth.signInWithOtp()` server-side is not available via admin API
-- Better approach: keep `generateLink` but extract the **OTP code** from `linkData.properties.email_otp` (Supabase returns both the link and a 6-digit OTP when generating magic links)
-- Update the Brevo email template to show the **6-digit code** prominently instead of (or in addition to) the clickable link
-- Keep the clickable link as a fallback for non-Outlook users
-
-**2. `src/pages/Auth.tsx`**
-- After the "check your inbox" success screen, add an **OTP input field** (6 digits) where the user can type the code
-- On submission, call `supabase.auth.verifyOtp({ email, token, type: 'magiclink' })` to complete sign-in
-- Keep a "Use magic link instead" note for users who prefer clicking
-
-### Updated User Flow
-
-```
-Enter email
-    |
-    v
-"Check your inbox" screen
-    |
-    v
-[  _ _ _ _ _ _  ]   <-- 6-digit OTP input
-[   Verify Code  ]
-    |
-    v
-Signed in -> /dashboard
-```
-
-### Technical Details
-
-| File | Change |
+| File | What changes |
 |---|---|
-| `supabase/functions/send-magic-link/index.ts` | Extract OTP from `linkData.properties.email_otp`; update Brevo email to show code prominently + keep link as fallback |
-| `src/pages/Auth.tsx` | Add OTP input after email submission; call `verifyOtp()` on submit; keep existing magic link flow as fallback |
+| `src/lib/bundleGeneratorSpec.ts` | Update pro tier model identifier |
+| `src/components/admin/PromptStepEditor.tsx` | Update default model references (3 occurrences) |
+| `src/components/admin/InlinePipelineEditor.tsx` | Update model identifier and display label |
+| `supabase/functions/worker-proxy/index.ts` | Update model mapping keys, defaults, and comments |
+| `supabase/functions/process-grant-guidelines/index.ts` | Update pro tier model identifier |
+| `docs/pipeline-generator-prompts.md` | Update documentation reference |
 
-### Email Template Update
-The email will change from just a "Sign In" button to:
+No database migration is needed -- existing `model_override` values stored in `prompt_bundle_steps` rows will still work because the worker-proxy mapping will route the old identifier to the new model. However, any newly generated pipelines will use the updated model name.
 
-```
-Your sign-in code: 123456
-Enter this code on the sign-in page.
+### Notes
+- The worker-proxy mapping will be updated to map both `google/gemini-3.1-pro-preview` (new) and `google/gemini-2.5-pro` (fallback) to the correct external worker model name (`gemini-3.1-pro-preview`)
+- Existing prompt bundles with `model_override = 'google/gemini-3-pro-preview'` will continue to work if we keep a legacy mapping entry, or admins can update them via the UI
 
-Or click the button below:
-[Sign In to Grant Genius]
-```
-
-This gives users two ways to authenticate -- the code (Outlook-safe) and the link (convenient for other email clients).
