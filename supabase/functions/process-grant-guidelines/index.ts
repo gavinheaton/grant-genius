@@ -2733,7 +2733,7 @@ Return JSON: {"enhancements": [{ "step_number": N, "enhanced_prompt": "..." }, .
     const tierToModel: Record<string, string> = {
       lite: "google/gemini-2.5-flash-lite",
       balanced: "google/gemini-3-flash-preview",
-      pro: "google/gemini-3-pro-preview"
+      pro: "google/gemini-3.1-pro-preview"
     };
 
     // Create Firecrawl data-gathering steps

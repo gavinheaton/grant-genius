@@ -1915,7 +1915,7 @@ export function generateBundleFromSpec(
   const tierToModel: Record<string, string> = {
     lite: "google/gemini-2.5-flash-lite",
     balanced: "google/gemini-3-flash-preview",
-    pro: "google/gemini-3-pro-preview"
+    pro: "google/gemini-3.1-pro-preview"
   };
 
   const aiSteps = orderedModules.map((module, idx) => ({

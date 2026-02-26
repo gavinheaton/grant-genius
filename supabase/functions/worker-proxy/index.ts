@@ -77,7 +77,7 @@ function errorResponse(message: string, status = 400) {
 }
 
 // Map Lovable AI models to Replit-compatible Gemini models
-// Worker defaults to Gemini 3 Pro when empty/null is passed
+// Worker defaults to Gemini 3.1 Pro when empty/null is passed
 function mapToReplitModel(lovableModel: string | null | undefined): string {
   if (!lovableModel) {
     return ""; // Empty = use worker default (Gemini 3 Pro)
@@ -85,9 +85,10 @@ function mapToReplitModel(lovableModel: string | null | undefined): string {
   
   // Direct mapping from Lovable AI identifiers to Replit-supported models
   const mapping: Record<string, string> = {
-    // Pro tier → gemini-3-pro-preview (new worker default)
-    "google/gemini-3-pro-preview": "gemini-3-pro-preview",
-    "google/gemini-2.5-pro": "gemini-3-pro-preview",
+    // Pro tier → gemini-3.1-pro-preview (worker default)
+    "google/gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+    "google/gemini-3-pro-preview": "gemini-3.1-pro-preview", // Legacy mapping
+    "google/gemini-2.5-pro": "gemini-3.1-pro-preview",
     // Flash tier → gemini-2.0-flash (balanced)
     "google/gemini-3-flash-preview": "gemini-2.0-flash",
     "google/gemini-2.5-flash": "gemini-2.0-flash",
@@ -102,11 +103,11 @@ function mapToReplitModel(lovableModel: string | null | undefined): string {
 // Heavy steps (2, 6-8, 11+) use Pro; others use Flash/Lite
 function getDefaultModelForStep(stepNumber: number): string {
   // Step 2: Competitor Research - benefits from Pro reasoning
-  if (stepNumber === 2) return "google/gemini-3-pro-preview";
+  if (stepNumber === 2) return "google/gemini-3.1-pro-preview";
   // Steps 6-8: TAM/SAM/SOM - complex market calculations
-  if (stepNumber >= 6 && stepNumber <= 8) return "google/gemini-3-pro-preview";
+  if (stepNumber >= 6 && stepNumber <= 8) return "google/gemini-3.1-pro-preview";
   // Steps 11+: Assembly and finalization
-  if (stepNumber >= 11) return "google/gemini-3-pro-preview";
+  if (stepNumber >= 11) return "google/gemini-3.1-pro-preview";
   // Early steps: use balanced Flash
   if (stepNumber <= 5) return "google/gemini-3-flash-preview";
   // Default fallback
