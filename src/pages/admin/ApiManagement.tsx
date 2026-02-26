@@ -146,6 +146,9 @@ export default function ApiManagement() {
         </Button>
       </div>
 
+      {/* Developer Integration (Super Admin only) */}
+      {isSuperAdmin && <DeveloperIntegrationCard />}
+
       {/* API Toggle */}
       <Card>
         <CardHeader>
