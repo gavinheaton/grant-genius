@@ -83,3 +83,9 @@ verify_jwt = false
 
 [functions.resend-email]
 verify_jwt = false
+
+[functions.api-generate-report]
+verify_jwt = false
+
+[functions.api-report-status]
+verify_jwt = false

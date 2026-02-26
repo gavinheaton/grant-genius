@@ -35,6 +35,7 @@ import ReportReview from "./pages/admin/ReportReview";
 import ReviewsList from "./pages/admin/ReviewsList";
 import HomepageEditor from "./pages/admin/HomepageEditor";
 import RunDetail from "./pages/admin/RunDetail";
+import ApiManagement from "./pages/admin/ApiManagement";
 
 const queryClient = new QueryClient();
 
@@ -77,6 +78,7 @@ const App = () => (
             <Route path="/admin/reviews" element={<AdminLayout><ReviewsList /></AdminLayout>} />
             <Route path="/admin/reviews/:reviewId" element={<AdminLayout><ReportReview /></AdminLayout>} />
             <Route path="/admin/runs/:runId" element={<AdminLayout><RunDetail /></AdminLayout>} />
+            <Route path="/admin/api" element={<AdminLayout><ApiManagement /></AdminLayout>} />
             
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

@@ -988,12 +988,12 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     // Non-fatal, continue
   }
 
-  // === Post-save: email notification, review workflow, application status ===
+  // === Post-save: email notification, review workflow, application status, webhook ===
   try {
-    // 1. Check email_on_complete
+    // 1. Check email_on_complete and webhook_url
     const { data: runForEmail } = await supabase
       .from("report_runs")
-      .select("email_on_complete")
+      .select("email_on_complete, webhook_url")
       .eq("id", report_run_id)
       .single();
 
@@ -1038,8 +1038,38 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
         console.error("Failed to send email notification:", emailError);
       }
     }
+    // 4. Fire webhook callback if configured
+    const webhookUrl = runForEmail?.webhook_url;
+    if (webhookUrl) {
+      try {
+        const contentObj = content_json as Record<string, unknown>;
+        let reportHtml: string | null = null;
+        if (contentObj?.assembledReport) {
+          const assembled = contentObj.assembledReport as Record<string, unknown>;
+          reportHtml = (assembled.report_html as string) || null;
+        }
+
+        await fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            event: "report.completed",
+            run_id: report_run_id,
+            report_id: report.id,
+            application_id: application.id,
+            status: "completed",
+            report_html: reportHtml,
+            citations: citations_json || [],
+          }),
+        });
+        console.log(`[WEBHOOK] Callback sent to ${webhookUrl} for report ${report.id}`);
+      } catch (webhookErr) {
+        console.error("[WEBHOOK] Failed to send callback:", webhookErr);
+        // Non-blocking
+      }
+    }
   } catch (postSaveError) {
-    console.error("Post-save processing error (email/workflow):", postSaveError);
+    console.error("Post-save processing error (email/workflow/webhook):", postSaveError);
   }
 
   return jsonResponse({ success: true, report_id: report.id });
