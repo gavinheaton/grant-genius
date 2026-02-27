@@ -1,41 +1,48 @@
 
+## Expose Report Generation Pipeline as a Secure API
 
-## Fix: Citation Lint False Positive on DOI Fragments
+### Status: ✅ IMPLEMENTED
 
-### Problem
-The citation linter's "Naked source ID" regex pattern (`/\bS\d+-\d+\b/gi`) is matching DOI substrings like `s41560-023` from academic journal references (e.g., `doi.org/10.1038/s41560-023-01234-5`). This causes valid reports with proper academic citations to be rejected with a 400 error.
+### What was built
 
-### Root Cause
-Line 645 in `worker-proxy/index.ts`:
+1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
+2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
+3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
+4. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
+5. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
+6. **Sidebar**: "API Access" link added to admin sidebar under System section
+
+### Fixes Applied (v2)
+
+1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
+2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
+3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+
+### API Usage
+
 ```
-{ pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked source ID S0-1' }
-```
-This pattern is too broad -- it catches any `S` followed by digits-dash-digits, which is a common DOI format (Nature journals use identifiers like `s41560`, `s41586`, etc.).
+POST /functions/v1/api-generate-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
 
-### Fix
+{
+  "summary": "Research on novel polymer...",
+  "public_article_url": "https://...",
+  "client_name": "my-other-app",
+  "webhook_url": "https://my-app.com/webhook"
+}
 
-**File: `supabase/functions/worker-proxy/index.ts`** (line 645)
-
-Update the naked source ID pattern to exclude matches that appear inside URLs or DOI strings. Two changes:
-
-1. Add a negative lookbehind to skip matches preceded by `/` or `.` (which indicates a URL/DOI context like `10.1038/s41560-023`)
-2. Tighten the pattern to only match the internal marker format: short prefix (1-2 digits), not long journal-style identifiers (5+ digits)
-
-Replace:
-```typescript
-{ pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked source ID S0-1' },
+Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
 ```
 
-With:
-```typescript
-{ pattern: /(?<![\/\.])\bS\d{1,2}-\d{1,3}\b(?!["'\d])/gi, name: 'Naked source ID S0-1' },
+```
+GET /functions/v1/api-report-status?run_id=uuid
+Authorization: Bearer <API_SECRET_KEY>
+
+Response: { "status": "completed", "report_html": "...", "citations": [...] }
 ```
 
-This ensures:
-- `S0-1`, `S1-12`, `S12-3` (internal markers) are still caught
-- `s41560-023` (DOI fragments) are excluded because they have 5 digits and are typically preceded by `/` in URLs
-- The negative lookbehind `(?<![\/\.])` adds an extra safety layer for URL contexts
+### Webhook Events
 
-### No other files need changes
-This is a single-line regex fix in the worker-proxy linter.
-
+**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
+**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
