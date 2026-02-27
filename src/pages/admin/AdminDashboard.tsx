@@ -255,7 +255,7 @@ export default function AdminDashboard() {
               lastActivity,
             };
           })
-          .filter((run: any) => run.lastActivity < fiveMinAgo);
+          .filter((run: any) => run.lastActivity < fifteenMinAgo);
       }
 
       return {
