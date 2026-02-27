@@ -144,7 +144,7 @@ export function StalledRunsTable({ runs, isLoading, isSuperAdmin = false }: Stal
       <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
         <Clock className="h-8 w-8 mb-2 opacity-50" />
         <p className="text-sm">No stalled runs detected</p>
-        <p className="text-xs mt-1">Runs are considered stalled after 5+ minutes without progress</p>
+        <p className="text-xs mt-1">Runs are considered stalled after 15+ minutes without progress</p>
       </div>
     );
   }

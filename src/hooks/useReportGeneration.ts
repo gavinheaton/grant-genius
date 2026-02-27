@@ -34,8 +34,8 @@ export interface ReportRunStep {
   error_message: string | null;
 }
 
-// 5 minutes stale threshold
-const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+// 15 minutes stale threshold (reports typically take 10-20 min)
+const STALE_THRESHOLD_MS = 15 * 60 * 1000;
 
 // 504 timeout patterns for auto-retry detection
 const TRANSIENT_ERROR_PATTERNS = [
