@@ -16,6 +16,7 @@ export type Database = {
     Tables: {
       api_settings: {
         Row: {
+          api_system_user_id: string | null
           default_grant_id: string | null
           id: string
           is_enabled: boolean
@@ -23,6 +24,7 @@ export type Database = {
           updated_by: string | null
         }
         Insert: {
+          api_system_user_id?: string | null
           default_grant_id?: string | null
           id?: string
           is_enabled?: boolean
@@ -30,6 +32,7 @@ export type Database = {
           updated_by?: string | null
         }
         Update: {
+          api_system_user_id?: string | null
           default_grant_id?: string | null
           id?: string
           is_enabled?: boolean

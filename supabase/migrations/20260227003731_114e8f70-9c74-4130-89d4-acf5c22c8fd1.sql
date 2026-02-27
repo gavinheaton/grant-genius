@@ -1,0 +1,1 @@
+ALTER TABLE public.api_settings ADD COLUMN api_system_user_id UUID NULL;
