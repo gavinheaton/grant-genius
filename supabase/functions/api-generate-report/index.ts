@@ -44,7 +44,7 @@ serve(async (req) => {
     // 2. Check if API access is enabled
     const { data: settings } = await supabase
       .from("api_settings")
-      .select("is_enabled, default_grant_id")
+      .select("is_enabled, default_grant_id, api_system_user_id")
       .limit(1)
       .single();
 
@@ -80,45 +80,33 @@ serve(async (req) => {
     // 4. Find the published grant version
     const targetGrantId = grant_id || settings.default_grant_id;
 
+    if (!targetGrantId) {
+      responseStatus = 400;
+      return new Response(
+        JSON.stringify({ error: "No grant_id provided and no default grant configured. Set a default grant in the API Management admin page." }),
+        { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     let grantVersionId: string;
 
-    if (targetGrantId) {
-      const { data: gv, error: gvError } = await supabase
-        .from("grant_versions")
-        .select("id")
-        .eq("grant_id", targetGrantId)
-        .eq("is_published", true)
-        .order("version_number", { ascending: false })
-        .limit(1)
-        .single();
+    const { data: gv, error: gvError } = await supabase
+      .from("grant_versions")
+      .select("id")
+      .eq("grant_id", targetGrantId)
+      .eq("is_published", true)
+      .order("version_number", { ascending: false })
+      .limit(1)
+      .single();
 
-      if (gvError || !gv) {
-        responseStatus = 404;
-        return new Response(
-          JSON.stringify({ error: "No published grant version found for the specified grant" }),
-          { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      grantVersionId = gv.id;
-    } else {
-      // Fallback: find any published grant version from an active grant
-      const { data: gv, error: gvError } = await supabase
-        .from("grant_versions")
-        .select("id, grant:grants!inner(id, is_active)")
-        .eq("is_published", true)
-        .order("version_number", { ascending: false })
-        .limit(1)
-        .single();
-
-      if (gvError || !gv) {
-        responseStatus = 404;
-        return new Response(
-          JSON.stringify({ error: "No published grant version found" }),
-          { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      grantVersionId = gv.id;
+    if (gvError || !gv) {
+      responseStatus = 404;
+      return new Response(
+        JSON.stringify({ error: "No published grant version found for the specified grant" }),
+        { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
+    grantVersionId = gv.id;
 
     // 5. Find published report template version
     const { data: templateVersion, error: tvError } = await supabase
@@ -137,24 +125,27 @@ serve(async (req) => {
       );
     }
 
-    // 6. Find or create a system user for API-created applications
-    // Use the first super_admin as the owner
-    const { data: adminRole } = await supabase
-      .from("user_roles")
-      .select("user_id")
-      .eq("role", "super_admin")
-      .limit(1)
-      .single();
+    // 6. Determine the application owner
+    // Prefer configured api_system_user_id; fall back to first super_admin
+    let systemUserId = settings.api_system_user_id;
 
-    if (!adminRole) {
-      responseStatus = 500;
-      return new Response(
-        JSON.stringify({ error: "No system user configured" }),
-        { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (!systemUserId) {
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("user_id")
+        .eq("role", "super_admin")
+        .limit(1)
+        .single();
+
+      if (!adminRole) {
+        responseStatus = 500;
+        return new Response(
+          JSON.stringify({ error: "No system user configured. Set an API System User in the API Management admin page." }),
+          { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      systemUserId = adminRole.user_id;
     }
-
-    const systemUserId = adminRole.user_id;
 
     // 7. Create application record
     const inputsJson = {

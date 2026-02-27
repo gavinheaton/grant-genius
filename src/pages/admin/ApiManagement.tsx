@@ -5,8 +5,9 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Globe, Activity, BarChart3, Clock } from "lucide-react";
+import { RefreshCw, Globe, Activity, BarChart3, Clock, Settings2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
@@ -16,6 +17,7 @@ interface ApiSettings {
   id: string;
   is_enabled: boolean;
   default_grant_id: string | null;
+  api_system_user_id: string | null;
   updated_at: string;
 }
 
@@ -36,52 +38,59 @@ interface UsageStats {
   byEndpoint: Record<string, number>;
 }
 
+interface Grant {
+  id: string;
+  name: string;
+  is_active: boolean;
+}
+
+interface Profile {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+}
+
 export default function ApiManagement() {
   const { isSuperAdmin } = useAdminAuth();
   const [settings, setSettings] = useState<ApiSettings | null>(null);
   const [logs, setLogs] = useState<UsageLog[]>([]);
   const [stats, setStats] = useState<UsageStats>({ total: 0, today: 0, byClient: {}, byEndpoint: {} });
+  const [grants, setGrants] = useState<Grant[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isToggling, setIsToggling] = useState(false);
 
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      // Fetch settings
-      const { data: settingsData } = await supabase
-        .from("api_settings")
-        .select("*")
-        .limit(1)
-        .single();
+      // Fetch settings, logs, grants, and profiles in parallel
+      const [settingsRes, logsRes, grantsRes, profilesRes] = await Promise.all([
+        supabase.from("api_settings").select("*").limit(1).single(),
+        supabase.from("api_usage_logs").select("*").order("created_at", { ascending: false }).limit(50),
+        supabase.from("grants").select("id, name, is_active").eq("is_active", true).order("name"),
+        supabase.from("profiles").select("user_id, email, full_name").order("email"),
+      ]);
 
-      if (settingsData) setSettings(settingsData as unknown as ApiSettings);
-
-      // Fetch recent logs
-      const { data: logsData } = await supabase
-        .from("api_usage_logs")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(50);
-
-      const typedLogs = (logsData || []) as unknown as UsageLog[];
+      if (settingsRes.data) setSettings(settingsRes.data as unknown as ApiSettings);
+      
+      const typedLogs = (logsRes.data || []) as unknown as UsageLog[];
       setLogs(typedLogs);
+      setGrants((grantsRes.data || []) as unknown as Grant[]);
+      setProfiles((profilesRes.data || []) as unknown as Profile[]);
 
       // Calculate stats
       const now = new Date();
       const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-
       const total = typedLogs.length;
       const today = typedLogs.filter((l) => l.created_at >= todayStart).length;
 
       const byClient: Record<string, number> = {};
       const byEndpoint: Record<string, number> = {};
-
       for (const log of typedLogs) {
         const client = log.client_name || "unknown";
         byClient[client] = (byClient[client] || 0) + 1;
         byEndpoint[log.endpoint] = (byEndpoint[log.endpoint] || 0) + 1;
       }
-
       setStats({ total, today, byClient, byEndpoint });
     } catch (err) {
       console.error("Failed to fetch API data:", err);
@@ -102,9 +111,7 @@ export default function ApiManagement() {
         .from("api_settings")
         .update({ is_enabled: enabled, updated_at: new Date().toISOString() })
         .eq("id", settings.id);
-
       if (error) throw error;
-
       setSettings({ ...settings, is_enabled: enabled });
       toast.success(`API access ${enabled ? "enabled" : "disabled"}`);
     } catch (err) {
@@ -112,6 +119,22 @@ export default function ApiManagement() {
       toast.error("Failed to update API settings");
     } finally {
       setIsToggling(false);
+    }
+  };
+
+  const handleUpdateSetting = async (field: string, value: string | null) => {
+    if (!settings) return;
+    try {
+      const { error } = await supabase
+        .from("api_settings")
+        .update({ [field]: value, updated_at: new Date().toISOString() } as Record<string, unknown>)
+        .eq("id", settings.id);
+      if (error) throw error;
+      setSettings({ ...settings, [field]: value } as ApiSettings);
+      toast.success("Setting updated");
+    } catch (err) {
+      console.error("Failed to update setting:", err);
+      toast.error("Failed to update setting");
     }
   };
 
@@ -136,9 +159,7 @@ export default function ApiManagement() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">API Management</h1>
-          <p className="text-muted-foreground">
-            Manage external API access and monitor usage
-          </p>
+          <p className="text-muted-foreground">Manage external API access and monitor usage</p>
         </div>
         <Button onClick={fetchData} variant="outline" size="sm">
           <RefreshCw className="h-4 w-4 mr-2" />
@@ -156,16 +177,12 @@ export default function ApiManagement() {
             <Globe className="h-5 w-5" />
             API Access Control
           </CardTitle>
-          <CardDescription>
-            Enable or disable external API access for report generation
-          </CardDescription>
+          <CardDescription>Enable or disable external API access for report generation</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between">
             <div className="space-y-1">
-              <Label htmlFor="api-toggle" className="text-base font-medium">
-                External API Access
-              </Label>
+              <Label htmlFor="api-toggle" className="text-base font-medium">External API Access</Label>
               <p className="text-sm text-muted-foreground">
                 {settings?.is_enabled
                   ? "External apps can trigger report generation"
@@ -178,6 +195,68 @@ export default function ApiManagement() {
               onCheckedChange={handleToggleApi}
               disabled={isToggling}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* API Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Settings2 className="h-5 w-5" />
+            API Configuration
+          </CardTitle>
+          <CardDescription>
+            Configure the default grant and system user for API-triggered reports
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-6 md:grid-cols-2">
+            {/* Default Grant */}
+            <div className="space-y-2">
+              <Label>Default Grant</Label>
+              <Select
+                value={settings?.default_grant_id || "none"}
+                onValueChange={(val) => handleUpdateSetting("default_grant_id", val === "none" ? null : val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a default grant" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— No default —</SelectItem>
+                  {grants.map((g) => (
+                    <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Used when API callers don't specify a grant_id. If not set, requests without a grant_id will be rejected.
+              </p>
+            </div>
+
+            {/* System User */}
+            <div className="space-y-2">
+              <Label>API System User (Application Owner)</Label>
+              <Select
+                value={settings?.api_system_user_id || "none"}
+                onValueChange={(val) => handleUpdateSetting("api_system_user_id", val === "none" ? null : val)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a system user" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">— Fall back to first Super Admin —</SelectItem>
+                  {profiles.map((p) => (
+                    <SelectItem key={p.user_id} value={p.user_id}>
+                      {p.full_name ? `${p.full_name} (${p.email})` : p.email}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                All API-generated applications will be owned by this user. Create a dedicated service account for cleaner tracking.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -222,9 +301,7 @@ export default function ApiManagement() {
             <div className="flex items-center gap-2">
               <Globe className="h-4 w-4 text-muted-foreground" />
               <div>
-                <p className="text-2xl font-bold">
-                  {stats.byEndpoint["generate-report"] || 0}
-                </p>
+                <p className="text-2xl font-bold">{stats.byEndpoint["generate-report"] || 0}</p>
                 <p className="text-xs text-muted-foreground">Reports Generated</p>
               </div>
             </div>
@@ -260,9 +337,7 @@ export default function ApiManagement() {
         </CardHeader>
         <CardContent>
           {logs.length === 0 ? (
-            <p className="text-muted-foreground text-sm py-4 text-center">
-              No API calls recorded yet
-            </p>
+            <p className="text-muted-foreground text-sm py-4 text-center">No API calls recorded yet</p>
           ) : (
             <Table>
               <TableHeader>

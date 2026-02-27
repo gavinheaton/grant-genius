@@ -561,8 +561,35 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
     return errorResponse("Failed to update run", 500);
   }
 
-  // Fire-and-forget: Send failure notification email
+  // Fire-and-forget: Send failure notification email + webhook
   if (status === "failed") {
+    // Send failure webhook to caller (e.g. PitchShop)
+    try {
+      const { data: runData } = await supabase
+        .from("report_runs")
+        .select("webhook_url")
+        .eq("id", report_run_id)
+        .single();
+
+      if (runData?.webhook_url) {
+        const haltMsg = (halt_reason as string) || "No halt reason provided";
+        await fetch(runData.webhook_url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            event: "report.failed",
+            run_id: report_run_id,
+            status: "failed",
+            halt_reason: haltMsg,
+          }),
+        });
+        console.log(`[WEBHOOK] Failure webhook sent for run ${report_run_id} to ${runData.webhook_url}`);
+      }
+    } catch (webhookErr) {
+      console.error("[WEBHOOK] Failed to send failure webhook:", webhookErr);
+    }
+
+    // Send failure notification email to admin
     try {
       const brevoApiKey = Deno.env.get("BREVO_API_KEY");
       const appUrl = Deno.env.get("APP_URL") || "https://grantgenius.disruptorsco.com";
@@ -595,7 +622,6 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
       }
     } catch (emailErr) {
       console.error("[NOTIFY] Failed to send failure email:", emailErr);
-      // Non-blocking: don't affect the response
     }
   }
 
