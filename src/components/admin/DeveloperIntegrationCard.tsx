@@ -167,6 +167,29 @@ const res = await fetch(
 // → { status: "completed", report_html, citations }`}</pre>
             </div>
 
+            {/* Cancel Report */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Badge variant="destructive">POST</Badge>
+                <code className="text-sm font-mono">/api-cancel-report</code>
+              </div>
+              <pre className="bg-muted p-3 rounded-md text-xs overflow-x-auto whitespace-pre">{`// Cancel a running report
+const res = await fetch(BASE_URL + "/api-cancel-report", {
+  method: "POST",
+  headers: {
+    "Authorization": "Bearer <API_KEY>",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({
+    run_id: "<run_id>",           // required
+    client_name: "my-app"         // optional
+  })
+});
+// → { success: true, message: "Report generation cancelled" }
+// Already stopped:
+// → { success: true, message: "...", already_stopped: true }`}</pre>
+            </div>
+
             {/* Webhook */}
             <div className="space-y-1">
               <p className="text-sm font-medium text-foreground">Webhook Callback</p>

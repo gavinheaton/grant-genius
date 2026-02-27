@@ -1,45 +1,63 @@
 
+## Expose Report Generation Pipeline as a Secure API
 
-## Add API Cancel Report Endpoint
+### Status: ✅ IMPLEMENTED
 
-### Why a new endpoint?
-The existing `cancel-report-run` function authenticates via Supabase JWT and checks user ownership. The external API authenticates via `API_SECRET_KEY`. Mixing both auth strategies into one function would add unnecessary complexity. A dedicated `api-cancel-report` endpoint keeps the pattern consistent with the other two API endpoints.
+### What was built
 
-### Changes
+1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
+2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
+3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
+4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
+5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
+6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
+7. **Sidebar**: "API Access" link added to admin sidebar under System section
 
-**1. New edge function: `supabase/functions/api-cancel-report/index.ts`**
-- Authenticates via `API_SECRET_KEY` (same pattern as `api-generate-report`)
-- Checks `api_settings.is_enabled`
-- Accepts `{ "run_id": "uuid" }` in the request body
-- Validates the run exists and is cancellable (pending/running)
-- Performs the same cancellation logic as the existing function: marks run as failed, fails pending/running steps, clears logs, refunds credit
-- Fires the failure webhook if `webhook_url` is set on the run
-- Logs the call to `api_usage_logs`
-- Returns `{ "success": true, "message": "..." }` or idempotent success if already stopped
+### Fixes Applied (v2)
 
-**2. Update `supabase/config.toml`**
-- Add `[functions.api-cancel-report]` with `verify_jwt = false`
+1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
+2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
+3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
 
-**3. Update `src/components/admin/DeveloperIntegrationCard.tsx`**
-- Add the cancel endpoint to the integration guide documentation
+### API Endpoints
 
-**4. Update `.lovable/plan.md`**
-- Document the new endpoint
+#### Generate Report
+```
+POST /functions/v1/api-generate-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
 
-### API Contract
+{
+  "summary": "Research on novel polymer...",
+  "public_article_url": "https://...",
+  "client_name": "my-other-app",
+  "webhook_url": "https://my-app.com/webhook"
+}
 
-```text
+Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
+```
+
+#### Report Status
+```
+GET /functions/v1/api-report-status?run_id=uuid
+Authorization: Bearer <API_SECRET_KEY>
+
+Response: { "status": "completed", "report_html": "...", "citations": [...] }
+```
+
+#### Cancel Report
+```
 POST /functions/v1/api-cancel-report
 Authorization: Bearer <API_SECRET_KEY>
 Content-Type: application/json
 
-Body: { "run_id": "uuid" }
+{ "run_id": "uuid", "client_name": "my-app" }
 
 Success: { "success": true, "message": "Report generation cancelled" }
 Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
 ```
 
-### Technical Notes
-- No database migration needed
-- Credit refund logic is identical to existing `cancel-report-run`
-- Webhook notification reuses the same `report.failed` event format already implemented in `worker-proxy`
+### Webhook Events
+
+**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
+**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
