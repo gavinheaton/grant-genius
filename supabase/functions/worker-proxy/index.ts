@@ -642,7 +642,7 @@ const FORBIDDEN_PATTERNS_LINT = [
   { pattern: /<sup>\s*\[[A-Z][A-Z0-9]*-[A-Z0-9]+\]\s*<\/sup>/gi, name: 'Superscript internal ID' },
   
   // Naked source IDs (without brackets)
-  { pattern: /\bS\d+-\d+\b(?!["'])/gi, name: 'Naked source ID S0-1' },
+  { pattern: /(?<![\/\.])\bS\d{1,2}-\d{1,3}\b(?!["'\d])/gi, name: 'Naked source ID S0-1' },
   
   // Step reference patterns
   { pattern: /\[step\d+\]/gi, name: '[stepN] reference' },
