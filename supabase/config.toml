@@ -90,5 +90,8 @@ verify_jwt = false
 [functions.api-report-status]
 verify_jwt = false
 
+[functions.api-cancel-report]
+verify_jwt = false
+
 [functions.get-api-key]
 verify_jwt = false
