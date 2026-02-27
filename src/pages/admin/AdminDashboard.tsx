@@ -231,7 +231,7 @@ export default function AdminDashboard() {
           }
         }
 
-        const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+        const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
 
         stalledRuns = candidateRuns
           .map((run: any) => {
@@ -322,7 +322,7 @@ export default function AdminDashboard() {
                 <div>
                   <CardTitle className="text-destructive">Stalled Runs Detected</CardTitle>
                   <CardDescription>
-                    These runs have been stuck for 5+ minutes and may need manual intervention
+                    These runs have been stuck for 15+ minutes and may need manual intervention
                   </CardDescription>
                 </div>
               </div>
