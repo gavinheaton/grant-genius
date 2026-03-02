@@ -7,11 +7,13 @@ interface VirtualPhase {
 }
 
 const PHASES: VirtualPhase[] = [
-  { label: "Initializing...", progress: 5 },
-  { label: "Preparing prompt and context...", progress: 15 },
-  { label: "Calling Claude API...", progress: 30 },
-  { label: "Waiting for AI response...", progress: 50 },
-  { label: "Processing result...", progress: 75 },
+  { label: "Initializing...", progress: 3 },
+  { label: "Preparing prompt and context...", progress: 10 },
+  { label: "Calling Claude API...", progress: 20 },
+  { label: "Waiting for AI response...", progress: 40 },
+  { label: "Processing result...", progress: 55 },
+  { label: "Validating references...", progress: 65 },
+  { label: "Checking sources with AI...", progress: 78 },
   { label: "Saving report...", progress: 90 },
   { label: "Report generation complete", progress: 100 },
 ];
@@ -21,8 +23,11 @@ const PHASE_TRIGGERS: [string, number][] = [
   ["Calling Claude API", 2],
   ["Waiting for AI", 3],
   ["Claude response received", 4],
-  ["Report saved", 5],
-  ["Report generation complete", 6],
+  ["Validating references", 5],
+  ["Running AI verification", 6],
+  ["Reference validation complete", 7],
+  ["Report saved", 7],
+  ["Report generation complete", 8],
 ];
 
 /**
