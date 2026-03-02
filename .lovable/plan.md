@@ -1,86 +1,50 @@
-## Expose Report Generation Pipeline as a Secure API
 
-### Status: ✅ IMPLEMENTED
 
-### What was built
+## Move Claude to Grant Details as "Single Prompt" Processing Mode
 
-1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
-2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
-3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
-4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
-5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
-6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
-7. **Sidebar**: "API Access" link added to admin sidebar under System section
+### Overview
+Add "Single Prompt (Claude)" as a third processing mode option alongside "Automated (AI Pipeline)" and "Manual (Admin Review)" in the Grant Details tab. When selected, it automatically sets `execution_engine_default` to `claude` on the grant version. This simplifies the admin experience -- no need to dig into the Advanced tab to switch engines.
 
-### Fixes Applied (v2)
+### Changes
 
-1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
-2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
-3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+**1. `src/pages/admin/GrantEdit.tsx`**
+- Expand `processingMode` state type from `"automated" | "manual"` to `"automated" | "manual" | "single_prompt"`
+- Add a third radio button: "Single Prompt (Claude)" with description text
+- When `processingMode` changes to `single_prompt`, automatically set `executionEngineDefault` to `"claude"` on the grant version
+- When `processingMode` changes away from `single_prompt`, reset `executionEngineDefault` to `"cloud_run"`
+- On load, if `execution_engine_default === "claude"`, set `processingMode` to `"single_prompt"` (sync state)
+- Hide the `EngineSettingsCard` Claude option from the Advanced tab (keep Cloud Run / Edge there for the automated mode)
 
-## Add Claude Single-Prompt Engine
+**2. Database migration**
+- Update the `grants.processing_mode` column default or allowed values to include `"single_prompt"` (it's a text column so no enum change needed, just documentation)
 
-### Status: ✅ IMPLEMENTED
+**3. `src/pages/ApplicationWorkspace.tsx`**
+- Handle `processing_mode === "single_prompt"` -- treat it like `"automated"` for the researcher experience (they still click "Generate Report" the same way). No UI changes needed for researchers since the engine difference is transparent.
 
-### What was built
+**4. `src/pages/admin/GrantEdit.tsx` -- Save handler**
+- When saving grant details, if `processingMode === "single_prompt"`, also ensure the grant version's `execution_engine_default` is set to `"claude"`
+- When saving with `processingMode === "automated"`, ensure engine is `"cloud_run"` (unless manually overridden in Advanced)
 
-1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
-2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
-3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
-4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
-5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
-6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
+### UI in Grant Details Tab
 
-### Shortcodes
-- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
-- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
-- Conditional: `{{#variable}}...{{/variable}}`
-
-### Admin Flow
-1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
-2. Grant Edit > Guidelines tab > Upload PDF (existing)
-3. Grant Edit > Pipeline tab > Edit Claude prompt template
-4. Publish version
-
-### API Endpoints
-
-#### Generate Report
-```
-POST /functions/v1/api-generate-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{
-  "summary": "Research on novel polymer...",
-  "public_article_url": "https://...",
-  "client_name": "my-other-app",
-  "webhook_url": "https://my-app.com/webhook"
-}
-
-Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
+```text
+Processing Mode:
+  (o) Automated (AI Pipeline)
+      Reports generated automatically using the multi-step research pipeline.
+  ( ) Single Prompt (Claude)  
+      Complete report generated in one AI call. Edit the prompt in the Pipeline tab.
+  ( ) Manual (Admin Review)
+      Submissions sent to an admin for manual report preparation.
 ```
 
-#### Report Status
-```
-GET /functions/v1/api-report-status?run_id=uuid
-Authorization: Bearer <API_SECRET_KEY>
+### Technical Details
 
-Response: { "status": "completed", "report_html": "...", "citations": [...] }
-```
+- `processing_mode` lives on the `grants` table (applies to all versions of a grant)
+- `execution_engine_default` lives on `grant_versions` (per-version setting)
+- When processing mode is `single_prompt`, the engine is always `claude` -- the Advanced tab engine selector becomes read-only or hidden for that mode
+- The Pipeline tab already conditionally shows the Claude prompt editor vs pipeline editor based on `executionEngineDefault`, so that continues to work automatically
+- The guidelines upload optimization (skip pipeline generation for Claude) also continues to work since it checks `execution_engine_default`
 
-#### Cancel Report
-```
-POST /functions/v1/api-cancel-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{ "run_id": "uuid", "client_name": "my-app" }
-
-Success: { "success": true, "message": "Report generation cancelled" }
-Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
-```
-
-### Webhook Events
-
-**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
-**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
+### Files Modified
+1. `src/pages/admin/GrantEdit.tsx` -- add third radio option, sync engine on mode change
+2. `src/pages/ApplicationWorkspace.tsx` -- treat `single_prompt` same as `automated` for researcher flow
