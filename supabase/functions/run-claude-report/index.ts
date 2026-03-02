@@ -182,7 +182,7 @@ serve(async (req) => {
     // Update run to running
     await supabase
       .from("report_runs")
-      .update({ status: "running", started_at: new Date().toISOString(), current_step: 1 })
+      .update({ status: "running", started_at: new Date().toISOString(), current_step: 1, total_steps: 1 })
       .eq("id", report_run_id);
 
     // Create single step record
@@ -289,62 +289,7 @@ serve(async (req) => {
       .eq("report_run_id", report_run_id)
       .eq("step_number", 0);
 
-    // --- Reference Validation Phase ---
-    let finalHtml = reportHtml;
-    let validationSummary: Record<string, unknown> | null = null;
-
-    // Create validation step record
-    await supabase.from("report_run_steps").insert({
-      report_run_id,
-      step_number: 1,
-      step_name: "validate_references",
-      status: "running",
-      started_at: new Date().toISOString(),
-    });
-
-    await supabase
-      .from("report_runs")
-      .update({ current_step: 2, total_steps: 2 })
-      .eq("id", report_run_id);
-
-    try {
-      await logMessage(supabase, report_run_id, "info", "Validating references with Firecrawl + AI...");
-
-      const validateResponse = await fetch(`${supabaseUrl}/functions/v1/validate-references`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${serviceRoleKey}`,
-        },
-        body: JSON.stringify({ report_html: reportHtml, report_run_id }),
-      });
-
-      if (validateResponse.ok) {
-        const validationResult = await validateResponse.json();
-        finalHtml = validationResult.validated_html || reportHtml;
-        validationSummary = validationResult.validation_summary || null;
-      } else {
-        const errText = await validateResponse.text();
-        console.error("Reference validation failed:", errText);
-        await logMessage(supabase, report_run_id, "warn", "Reference validation failed — using unvalidated report");
-      }
-    } catch (validationError) {
-      console.error("Reference validation error:", validationError);
-      await logMessage(supabase, report_run_id, "warn", "Reference validation unavailable — using unvalidated report");
-    }
-
-    // Mark validation step completed
-    await supabase
-      .from("report_run_steps")
-      .update({
-        status: "completed",
-        completed_at: new Date().toISOString(),
-        outputs_json: validationSummary ? { validation_summary: validationSummary } : {},
-      })
-      .eq("report_run_id", report_run_id)
-      .eq("step_number", 1);
-
-    // Save report
+    // Save report IMMEDIATELY (before validation)
     const { data: newReport, error: reportError } = await supabase.from("reports").insert({
       application_id: app.id,
       user_id: app.user_id,
@@ -353,8 +298,9 @@ serve(async (req) => {
       report_template_version_id: run.report_template_version_id,
       inputs_snapshot_json: inputs,
       content_json: {
-        report_html: finalHtml,
-        validation_summary: validationSummary,
+        report_html: reportHtml,
+        validation_summary: null,
+        validated_at: null,
       },
       citations_json: [],
     }).select("id").single();
@@ -387,6 +333,26 @@ serve(async (req) => {
       .eq("id", app.id);
 
     await logMessage(supabase, report_run_id, "info", "Report generation complete");
+
+    // Fire-and-forget: trigger async reference validation
+    if (newReport?.id) {
+      fetch(`${supabaseUrl}/functions/v1/validate-references`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${serviceRoleKey}`,
+        },
+        body: JSON.stringify({
+          report_html: reportHtml,
+          report_run_id,
+          report_id: newReport.id,
+        }),
+      }).catch((err) => {
+        console.error("Failed to trigger async reference validation:", err);
+      });
+
+      await logMessage(supabase, report_run_id, "info", "Reference validation triggered in background");
+    }
 
     // Send completion email if requested
     if (run.email_on_complete) {
@@ -451,7 +417,6 @@ async function markRunFailed(supabase: any, runId: string, reason: string) {
     })
     .eq("id", runId);
 
-  // Also update step
   await supabase
     .from("report_run_steps")
     .update({
@@ -462,7 +427,6 @@ async function markRunFailed(supabase: any, runId: string, reason: string) {
     .eq("report_run_id", runId)
     .eq("step_number", 0);
 
-  // Get application id and update status
   const { data: run } = await supabase
     .from("report_runs")
     .select("application_id, webhook_url")
@@ -476,7 +440,6 @@ async function markRunFailed(supabase: any, runId: string, reason: string) {
       .eq("id", run.application_id);
   }
 
-  // Fire failure webhook
   if (run?.webhook_url) {
     try {
       await fetch(run.webhook_url, {
