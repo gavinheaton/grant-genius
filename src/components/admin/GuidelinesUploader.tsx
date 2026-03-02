@@ -10,6 +10,7 @@ interface GuidelinesUploaderProps {
   versionId: string;
   versionNumber: number;
   currentPath?: string | null;
+  executionEngine?: string;
   onUploadComplete: (path: string, rawText: string) => void;
   onUploadStart?: () => void;
   onProcessingStart?: () => void;
@@ -72,6 +73,7 @@ export function GuidelinesUploader({
           body: JSON.stringify({
             grant_version_id: versionId,
             guidelines_text: rawText,
+            execution_engine: executionEngine || "cloud_run",
           }),
         }
       );
@@ -86,7 +88,9 @@ export function GuidelinesUploader({
       if (!data.skipped) {
         toast({
           title: "Processing complete",
-          description: `Generated ${data.step_count}-step research pipeline`,
+          description: data.analysis_only 
+            ? "Guidelines analyzed — rubric and inputs extracted"
+            : `Generated ${data.step_count}-step research pipeline`,
         });
       }
     } catch (error) {
