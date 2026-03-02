@@ -79,5 +79,6 @@ export function useVirtualProgress(logs: ReportLog[], isRunning: boolean) {
     phaseLabel: phase.label,
     phaseIndex,
     isWaitingForAI: phaseIndex >= 2 && phaseIndex <= 3,
+    isValidatingRefs: phaseIndex >= 5 && phaseIndex <= 6,
   };
 }
