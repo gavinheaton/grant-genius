@@ -21,6 +21,7 @@ export function GuidelinesUploader({
   versionId,
   versionNumber,
   currentPath,
+  executionEngine,
   onUploadComplete,
   onUploadStart,
   onProcessingStart,
