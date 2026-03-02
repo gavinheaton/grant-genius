@@ -1,72 +1,86 @@
+## Expose Report Generation Pipeline as a Secure API
 
+### Status: ✅ IMPLEMENTED
 
-## Add Post-Generation Reference Validation to Claude Reports
+### What was built
 
-### Problem
-Claude's single-prompt reports contain hallucinated or outdated URLs in the references section. There is no verification step before the report is saved and delivered to the user.
+1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
+2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
+3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
+4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
+5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
+6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
+7. **Sidebar**: "API Access" link added to admin sidebar under System section
 
-### Solution
-Add a two-phase reference validation step between Claude's response and report save, using Firecrawl (already connected) and Gemini (via Lovable AI, no extra key needed).
+### Fixes Applied (v2)
 
-### Architecture
+1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
+2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
+3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
 
-```text
-Claude generates report HTML
-        |
-  [Phase 1] Extract all URLs from HTML
-        |
-  [Phase 2] Validate each URL via Firecrawl scrape
-        |
-  [Phase 3] AI review: compare cited claims vs actual page content
-        |
-  [Phase 4] Patch HTML -- remove/flag invalid refs, update reference list
-        |
-  Save validated report
+## Add Claude Single-Prompt Engine
+
+### Status: ✅ IMPLEMENTED
+
+### What was built
+
+1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
+2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
+3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
+4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
+5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
+6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
+
+### Shortcodes
+- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
+- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
+- Conditional: `{{#variable}}...{{/variable}}`
+
+### Admin Flow
+1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
+2. Grant Edit > Guidelines tab > Upload PDF (existing)
+3. Grant Edit > Pipeline tab > Edit Claude prompt template
+4. Publish version
+
+### API Endpoints
+
+#### Generate Report
+```
+POST /functions/v1/api-generate-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
+
+{
+  "summary": "Research on novel polymer...",
+  "public_article_url": "https://...",
+  "client_name": "my-other-app",
+  "webhook_url": "https://my-app.com/webhook"
+}
+
+Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
 ```
 
-### Technical Changes
+#### Report Status
+```
+GET /functions/v1/api-report-status?run_id=uuid
+Authorization: Bearer <API_SECRET_KEY>
 
-**New edge function: `supabase/functions/validate-references/index.ts`**
-
-Accepts `{ report_html: string, report_run_id: string }` and returns `{ validated_html: string, validation_summary: object }`.
-
-Logic:
-1. Parse HTML, extract all anchor hrefs and reference list URLs
-2. For each URL (up to ~30, with 5s timeout per request):
-   - Call Firecrawl scrape endpoint to fetch page content
-   - If Firecrawl returns error/404/timeout, mark as "dead"
-3. Send a batch to Gemini (google/gemini-2.5-flash via Lovable AI) with the citation context and the scraped page snippet, asking:
-   - Does this URL support the claim made in the report? (yes/partially/no)
-   - Is this a real, current source? (yes/no)
-4. For dead or hallucinated references:
-   - Replace the in-text citation with "[Source not verified]"
-   - Move to a "Unverified References" appendix at the end
-   - Log each flagged reference
-5. Return patched HTML + summary (total refs, verified count, flagged count)
-
-**Modified: `supabase/functions/run-claude-report/index.ts`**
-
-After receiving Claude's response (line ~279), before saving the report (line ~293):
-1. Update progress: "Validating references..."
-2. Call `validate-references` function
-3. Use the validated HTML instead of raw Claude output
-4. Store validation summary in `content_json` alongside `report_html`
-5. Update `total_steps` from 1 to 2 and track step progress for the validation phase
-
-**Modified: `src/hooks/useVirtualProgress.ts`**
-
-Add a "Validating References" phase to the virtual progress display so users see what's happening during the extra processing time.
-
-### Edge Cases
-- If Firecrawl is rate-limited or unavailable, the validation step degrades gracefully -- references are kept but marked as "unverified" rather than blocking the entire report
-- URLs behind paywalls will be marked as "access restricted -- unable to verify" rather than flagged as hallucinated
-- Maximum of 30 URLs validated per report to keep execution time reasonable (est. 30-60 seconds for the validation pass)
-
-### Config.toml Addition
-```toml
-[functions.validate-references]
-verify_jwt = false
+Response: { "status": "completed", "report_html": "...", "citations": [...] }
 ```
 
-### No Database Changes Required
-Validation summary is stored in the existing `content_json` JSONB column on the `reports` table.
+#### Cancel Report
+```
+POST /functions/v1/api-cancel-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
+
+{ "run_id": "uuid", "client_name": "my-app" }
+
+Success: { "success": true, "message": "Report generation cancelled" }
+Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
+```
+
+### Webhook Events
+
+**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
+**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
