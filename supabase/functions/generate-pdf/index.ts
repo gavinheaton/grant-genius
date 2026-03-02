@@ -828,7 +828,6 @@ Deno.serve(async (req) => {
         )
       `)
       .eq("id", reportId)
-      .eq("user_id", userId)
       .single();
 
     if (reportError || !report) {
