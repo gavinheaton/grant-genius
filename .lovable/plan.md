@@ -1,86 +1,73 @@
-## Expose Report Generation Pipeline as a Secure API
 
-### Status: ✅ IMPLEMENTED
 
-### What was built
+## Fix Reference Validation Timeouts and Improve Dead Link Handling
 
-1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
-2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
-3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
-4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
-5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
-6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
-7. **Sidebar**: "API Access" link added to admin sidebar under System section
+### Root Cause
 
-### Fixes Applied (v2)
+The `run-claude-report` edge function is timing out because it runs two heavy operations sequentially within a single edge function invocation:
+1. Claude API call (~60-120 seconds)
+2. `validate-references` call (~30-60 seconds for scraping + AI)
 
-1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
-2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
-3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+Edge functions have a ~150s wall-clock limit, and the combined time frequently exceeds this. The logs confirm: `Http: connection closed before message completed` (504 timeout on `run-claude-report`).
 
-## Add Claude Single-Prompt Engine
+Additionally, even when validation partially completes, dead/404 links are only *flagged* with a superscript label but the broken URLs remain clickable -- users still land on 404 pages.
 
-### Status: ✅ IMPLEMENTED
+### Solution: Decouple Validation from Generation
 
-### What was built
+Split the flow so `run-claude-report` saves the report immediately after Claude responds, then triggers validation asynchronously. The validation function updates the saved report in-place when it completes.
 
-1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
-2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
-3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
-4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
-5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
-6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
-
-### Shortcodes
-- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
-- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
-- Conditional: `{{#variable}}...{{/variable}}`
-
-### Admin Flow
-1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
-2. Grant Edit > Guidelines tab > Upload PDF (existing)
-3. Grant Edit > Pipeline tab > Edit Claude prompt template
-4. Publish version
-
-### API Endpoints
-
-#### Generate Report
-```
-POST /functions/v1/api-generate-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{
-  "summary": "Research on novel polymer...",
-  "public_article_url": "https://...",
-  "client_name": "my-other-app",
-  "webhook_url": "https://my-app.com/webhook"
-}
-
-Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
+```text
+run-claude-report:
+  Claude API call --> Save report (unvalidated) --> Mark run complete
+       |
+       +--> Fire-and-forget call to validate-references
+                 |
+                 +--> Scrape URLs (reduced to 15 max, 5s timeout)
+                 +--> AI verify reachable refs
+                 +--> Patch report HTML in DB
+                 +--> Log validation summary
 ```
 
-#### Report Status
-```
-GET /functions/v1/api-report-status?run_id=uuid
-Authorization: Bearer <API_SECRET_KEY>
+### Technical Changes
 
-Response: { "status": "completed", "report_html": "...", "citations": [...] }
-```
+**1. `supabase/functions/run-claude-report/index.ts`**
 
-#### Cancel Report
-```
-POST /functions/v1/api-cancel-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
+- Save the report immediately after Claude responds (move report save before validation)
+- Call `validate-references` as fire-and-forget (don't await the response)
+- Pass the `report_id` to `validate-references` so it can update the saved report directly
+- Mark the run as `completed` without waiting for validation
+- Remove the validation step tracking from the synchronous flow
 
-{ "run_id": "uuid", "client_name": "my-app" }
+**2. `supabase/functions/validate-references/index.ts`**
 
-Success: { "success": true, "message": "Report generation cancelled" }
-Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
-```
+- Accept optional `report_id` parameter for async updates
+- When `report_id` is provided, update the report's `content_json` directly in the database after validation
+- Reduce `MAX_URLS` from 30 to 15 to stay within edge function limits
+- Use simple `HEAD` requests (2s timeout) for initial reachability before Firecrawl scraping -- only scrape URLs that respond to HEAD
+- Add a 45-second overall timeout guard to ensure the function always completes
+- Replace dead link `href` attributes with `javascript:void(0)` and add strikethrough styling so users can't click through to 404 pages
+- For unverified links, keep the URL but add a clear visual warning
 
-### Webhook Events
+**3. `src/hooks/useVirtualProgress.ts`**
 
-**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
-**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
+- Remove the "Validating references" and "Checking sources" phases from the synchronous progress bar
+- Add a post-completion phase: "Enhancing references..." that shows briefly after report is saved (cosmetic -- the report is already viewable)
+
+### Dead Link Handling (Improved)
+
+Currently, dead links get a tiny superscript `[Link unavailable]` but the anchor still points to the broken URL. The fix will:
+- Replace the `href` with `#` on dead links
+- Add `style="text-decoration: line-through; color: #999;"` to dead link anchors
+- Keep the citation text visible but clearly marked as unavailable
+- The "Unverified References" appendix remains for transparency
+
+### Edge Cases
+
+- If `validate-references` fails or times out, the report is already saved and accessible -- validation is purely additive
+- A `validated_at` timestamp field in `content_json` lets the UI show "References checked" vs "References pending" status
+- If the user views the report before validation completes, they see the raw Claude output (functional, just unvalidated)
+
+### No Database Schema Changes Required
+
+All validation data is stored in the existing `content_json` JSONB column on the `reports` table.
+
