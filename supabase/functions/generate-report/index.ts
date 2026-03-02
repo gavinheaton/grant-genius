@@ -365,7 +365,8 @@ serve(async (req) => {
           execution_engine_default,
           edge_allowed,
           prompt_bundle_id,
-          pipeline_generation_status
+          pipeline_generation_status,
+          claude_prompt_template
         )
       `)
       .eq("id", applicationId)
@@ -455,6 +456,92 @@ serve(async (req) => {
     const grantVersion = Array.isArray(grantVersionData) ? grantVersionData[0] : grantVersionData;
     const executionEngine = grantVersion?.execution_engine_default || "cloud_run";
     let executionEngineReason = "grant_version_default";
+
+    // Claude engine: simplified single-step pipeline
+    if (executionEngine === "claude") {
+      // For Claude, we use a single step
+      const pipelineSteps = [{ step_number: 0, step_name: "claude_single_prompt", description: "Generating report with Claude" }];
+      const usingGrantPipeline = true;
+      executionEngineReason = "claude_single_prompt";
+
+      // Create report run with single step
+      const { data: reportRun, error: runError } = await supabaseAdmin
+        .from("report_runs")
+        .insert({
+          application_id: applicationId,
+          report_template_version_id: templateVersion.id,
+          status: "pending",
+          current_step: 0,
+          total_steps: 1,
+          phase: "research",
+          started_at: new Date().toISOString(),
+          execution_engine: "claude",
+          execution_engine_reason: executionEngineReason,
+        })
+        .select("id, execution_engine")
+        .single();
+
+      if (runError || !reportRun) {
+        console.error("Error creating report run:", runError);
+        return new Response(
+          JSON.stringify({ error: "Failed to start report generation" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      console.log(`Claude report run ${reportRun.id} created`);
+
+      // Update application status
+      await supabaseAdmin
+        .from("applications")
+        .update({ status: "in_progress" })
+        .eq("id", applicationId);
+
+      // Consume entitlement
+      await supabaseAdmin
+        .from("entitlements")
+        .update({ used_quantity: availableEntitlement.used_quantity + 1 })
+        .eq("id", availableEntitlement.id);
+
+      await supabaseAdmin.from("entitlement_consumptions").insert({
+        entitlement_id: availableEntitlement.id,
+        report_id: null,
+        report_run_id: reportRun.id,
+      });
+
+      // Dispatch to Claude engine
+      try {
+        console.log(`Dispatching report run ${reportRun.id} to run-claude-report`);
+        const claudeResp = await fetch(
+          `${Deno.env.get("SUPABASE_URL")}/functions/v1/run-claude-report`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            },
+            body: JSON.stringify({ report_run_id: reportRun.id }),
+          }
+        );
+        if (!claudeResp.ok) {
+          const errorText = await claudeResp.text();
+          console.error(`run-claude-report failed: ${claudeResp.status} - ${errorText}`);
+        }
+      } catch (err) {
+        console.error("Error calling run-claude-report:", err);
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          reportRunId: reportRun.id,
+          status: "enqueued",
+          executionEngine: "claude",
+          message: "Claude report generation started",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     // Determine which pipeline steps to use (grant-specific or default)
     let pipelineSteps: Array<{ step_number: number; step_name: string; description?: string }>;
@@ -555,32 +642,59 @@ serve(async (req) => {
       report_run_id: reportRun.id, // Track which run consumed this credit
     });
 
-    // DISPATCHER LOGIC: Always use enqueue-report to trigger external worker
-    try {
-      console.log(`Dispatching report run ${reportRun.id} to enqueue-report`);
-      
-      const enqueueResponse = await fetch(
-        `${Deno.env.get("SUPABASE_URL")}/functions/v1/enqueue-report`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-          },
-          body: JSON.stringify({ report_run_id: reportRun.id }),
-        }
-      );
+    // DISPATCHER LOGIC: Route based on execution engine
+    if (executionEngine === "claude") {
+      // Claude single-prompt engine: dispatch to run-claude-report
+      try {
+        console.log(`Dispatching report run ${reportRun.id} to run-claude-report (Claude engine)`);
+        
+        const claudeResponse = await fetch(
+          `${Deno.env.get("SUPABASE_URL")}/functions/v1/run-claude-report`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            },
+            body: JSON.stringify({ report_run_id: reportRun.id }),
+          }
+        );
 
-      if (!enqueueResponse.ok) {
-        const errorText = await enqueueResponse.text();
-        console.error(`enqueue-report failed: ${enqueueResponse.status} - ${errorText}`);
-        // Don't fail the request - the run is created and can be manually retried
-      } else {
-        console.log(`Report run ${reportRun.id} successfully enqueued`);
+        if (!claudeResponse.ok) {
+          const errorText = await claudeResponse.text();
+          console.error(`run-claude-report failed: ${claudeResponse.status} - ${errorText}`);
+        } else {
+          console.log(`Report run ${reportRun.id} dispatched to Claude engine`);
+        }
+      } catch (claudeError) {
+        console.error("Error calling run-claude-report:", claudeError);
       }
-    } catch (enqueueError) {
-      console.error("Error calling enqueue-report:", enqueueError);
-      // Don't fail the request - the run is created and can be manually retried
+    } else {
+      // Default: use enqueue-report to trigger external worker
+      try {
+        console.log(`Dispatching report run ${reportRun.id} to enqueue-report`);
+        
+        const enqueueResponse = await fetch(
+          `${Deno.env.get("SUPABASE_URL")}/functions/v1/enqueue-report`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            },
+            body: JSON.stringify({ report_run_id: reportRun.id }),
+          }
+        );
+
+        if (!enqueueResponse.ok) {
+          const errorText = await enqueueResponse.text();
+          console.error(`enqueue-report failed: ${enqueueResponse.status} - ${errorText}`);
+        } else {
+          console.log(`Report run ${reportRun.id} successfully enqueued`);
+        }
+      } catch (enqueueError) {
+        console.error("Error calling enqueue-report:", enqueueError);
+      }
     }
 
     return new Response(

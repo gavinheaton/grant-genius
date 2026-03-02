@@ -640,6 +640,7 @@ export type Database = {
         Row: {
           ai_analysis_status: string | null
           ai_suggestions_json: Json | null
+          claude_prompt_template: string | null
           created_at: string
           edge_allowed: boolean | null
           execution_engine_default: string | null
@@ -659,6 +660,7 @@ export type Database = {
         Insert: {
           ai_analysis_status?: string | null
           ai_suggestions_json?: Json | null
+          claude_prompt_template?: string | null
           created_at?: string
           edge_allowed?: boolean | null
           execution_engine_default?: string | null
@@ -678,6 +680,7 @@ export type Database = {
         Update: {
           ai_analysis_status?: string | null
           ai_suggestions_json?: Json | null
+          claude_prompt_template?: string | null
           created_at?: string
           edge_allowed?: boolean | null
           execution_engine_default?: string | null
