@@ -67,6 +67,7 @@ serve(async (req) => {
       webhook_url,
       client_name,
       title,
+      engine,
     } = body;
 
     if (!summary) {
@@ -178,14 +179,16 @@ serve(async (req) => {
     }
 
     // 8. Create report run
+    const executionEngine = engine === "claude" ? "claude" : "cloud_run";
     const { data: reportRun, error: runError } = await supabase
       .from("report_runs")
       .insert({
         application_id: application.id,
         report_template_version_id: templateVersion.id,
         status: "pending",
-        execution_engine: "cloud_run",
-        execution_engine_reason: "api_triggered",
+        total_steps: executionEngine === "claude" ? 1 : 15,
+        execution_engine: executionEngine,
+        execution_engine_reason: executionEngine === "claude" ? "api_triggered_claude" : "api_triggered",
         webhook_url: webhook_url || null,
       })
       .select("id")
@@ -206,21 +209,26 @@ serve(async (req) => {
       .update({ status: "in_progress" })
       .eq("id", application.id);
 
-    // 10. Trigger enqueue-report
-    const enqueueUrl = `${supabaseUrl}/functions/v1/enqueue-report`;
+    // 10. Trigger report generation
+    const functionName = executionEngine === "claude" ? "run-claude-report" : "enqueue-report";
+    const triggerUrl = `${supabaseUrl}/functions/v1/${functionName}`;
     const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-    const enqueueResp = await fetch(enqueueUrl, {
+    const triggerPayload = executionEngine === "claude"
+      ? { report_run_id: reportRun.id }
+      : { report_run_id: reportRun.id };
+
+    const triggerResp = await fetch(triggerUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${anonKey}`,
       },
-      body: JSON.stringify({ report_run_id: reportRun.id }),
+      body: JSON.stringify(triggerPayload),
     });
 
-    const enqueueBody = await enqueueResp.text();
-    console.log(`enqueue-report response: ${enqueueResp.status} - ${enqueueBody.substring(0, 200)}`);
+    const triggerBody = await triggerResp.text();
+    console.log(`${functionName} response: ${triggerResp.status} - ${triggerBody.substring(0, 200)}`);
 
     responseStatus = 200;
 
