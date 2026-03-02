@@ -1480,7 +1480,7 @@ serve(async (req) => {
       });
     }
 
-    const { grant_version_id, guidelines_text } = await req.json();
+    const { grant_version_id, guidelines_text, execution_engine } = await req.json();
 
     if (!grant_version_id || !guidelines_text) {
       return new Response(
@@ -1508,6 +1508,7 @@ serve(async (req) => {
         id,
         version_number,
         grant_id,
+        execution_engine_default,
         grant:grants (
           id,
           name,
@@ -1803,6 +1804,9 @@ Return ONLY valid JSON matching the schema.`;
     const selectedModules = selectModulesForArchetype(archetype);
     console.log(`Selected ${selectedModules.length} modules for archetype`);
 
+    // Determine effective engine for conditional pipeline generation
+    const effectiveEngine = execution_engine || (grantVersion as any).execution_engine_default || "cloud_run";
+
     // Save extraction results with archetype
     await supabaseAdmin
       .from("grant_versions")
@@ -1817,9 +1821,37 @@ Return ONLY valid JSON matching the schema.`;
         required_inputs_json: suggestions.required_inputs || [],
         rubric_json: { sections: suggestions.rubric?.sections || [] },
         guidelines_raw_text: guidelines_text.substring(0, 100000),
-        pipeline_generation_status: "generating"
+        pipeline_generation_status: effectiveEngine === "claude" ? "not_required" : "generating"
       })
       .eq("id", grant_version_id);
+
+    // For Claude engine, skip pipeline generation entirely
+    if (effectiveEngine === "claude") {
+      console.log("Claude engine detected — skipping pipeline generation, analysis only");
+      
+      // Log to audit
+      await supabaseAdmin.from("audit_logs").insert({
+        entity_type: "grant_version",
+        entity_id: grant_version_id,
+        action: "GUIDELINES_ANALYZED",
+        user_id: userId,
+        new_value_json: { 
+          archetype, 
+          archetype_confidence: archetypeConfidence,
+          analysis_only: true,
+          engine: "claude"
+        }
+      });
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        analysis_only: true,
+        archetype,
+        archetype_confidence: archetypeConfidence,
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     console.log("Step 3: Generating rubric + required inputs driven research pipeline...");
 

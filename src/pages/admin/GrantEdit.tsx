@@ -259,6 +259,7 @@ export default function GrantEdit() {
           body: JSON.stringify({
             grant_version_id: selectedVersionId,
             guidelines_text: guidelinesRawText,
+            execution_engine: executionEngineDefault,
           }),
         }
       );
@@ -271,7 +272,9 @@ export default function GrantEdit() {
 
       toast({
         title: "Processing complete",
-        description: `Generated ${data.step_count}-step research pipeline`,
+        description: data.analysis_only
+          ? "Guidelines analyzed — rubric and inputs extracted"
+          : `Generated ${data.step_count}-step research pipeline`,
       });
       
       queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
@@ -756,6 +759,7 @@ export default function GrantEdit() {
                       versionId={selectedVersionId}
                       versionNumber={selectedVersion?.version_number || 1}
                       currentPath={guidelinesPath}
+                      executionEngine={executionEngineDefault}
                       onUploadStart={() => {
                         setIsUploading(true);
                       }}
