@@ -1,4 +1,3 @@
-
 ## Expose Report Generation Pipeline as a Secure API
 
 ### Status: ✅ IMPLEMENTED
@@ -18,6 +17,30 @@
 1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
 2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
 3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+
+## Add Claude Single-Prompt Engine
+
+### Status: ✅ IMPLEMENTED
+
+### What was built
+
+1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
+2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
+3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
+4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
+5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
+6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
+
+### Shortcodes
+- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
+- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
+- Conditional: `{{#variable}}...{{/variable}}`
+
+### Admin Flow
+1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
+2. Grant Edit > Guidelines tab > Upload PDF (existing)
+3. Grant Edit > Pipeline tab > Edit Claude prompt template
+4. Publish version
 
 ### API Endpoints
 
