@@ -48,7 +48,7 @@ export default function GrantEdit() {
   const [description, setDescription] = useState("");
   const [isActive, setIsActive] = useState(true);
   const [isTesting, setIsTesting] = useState(false);
-  const [processingMode, setProcessingMode] = useState<"automated" | "manual">("automated");
+  const [processingMode, setProcessingMode] = useState<"automated" | "manual" | "single_prompt">("automated");
   const [adminNotificationEmail, setAdminNotificationEmail] = useState("");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [versionInputs, setVersionInputs] = useState("");
@@ -131,7 +131,14 @@ export default function GrantEdit() {
       setDescription(grantData.description || "");
       setIsActive(grantData.is_active);
       setIsTesting(grantData.is_testing || false);
-      setProcessingMode(grantData.processing_mode || "automated");
+      // Sync processing mode: if DB says "automated" but engine is "claude", treat as single_prompt
+      const dbMode = grantData.processing_mode || "automated";
+      const latestVersion = grantData.grant_versions?.sort((a: any, b: any) => b.version_number - a.version_number)[0];
+      if (dbMode === "automated" && latestVersion?.execution_engine_default === "claude") {
+        setProcessingMode("single_prompt");
+      } else {
+        setProcessingMode(dbMode);
+      }
       setAdminNotificationEmail(grantData.admin_notification_email || "");
 
       if (grantData.grant_versions?.length > 0) {
@@ -292,6 +299,9 @@ export default function GrantEdit() {
 
   const updateGrantMutation = useMutation({
     mutationFn: async () => {
+      // Map single_prompt back to "automated" in DB (processing_mode only has automated/manual)
+      const dbProcessingMode = processingMode === "single_prompt" ? "automated" : processingMode;
+      
       const { error } = await supabase
         .from("grants")
         .update({ 
@@ -299,12 +309,22 @@ export default function GrantEdit() {
           description, 
           is_active: isActive,
           is_testing: isTesting,
-          processing_mode: processingMode,
+          processing_mode: dbProcessingMode,
           admin_notification_email: adminNotificationEmail || null,
         })
         .eq("id", id);
 
       if (error) throw error;
+
+      // Sync execution engine on the grant version
+      if (selectedVersionId) {
+        const engineForMode = processingMode === "single_prompt" ? "claude" : "cloud_run";
+        const { error: versionError } = await supabase
+          .from("grant_versions")
+          .update({ execution_engine_default: engineForMode })
+          .eq("id", selectedVersionId);
+        if (versionError) console.error("Failed to sync engine:", versionError);
+      }
     },
     onSuccess: () => {
       toast({ title: "Grant updated successfully" });
@@ -566,36 +586,59 @@ export default function GrantEdit() {
               {/* Processing Mode */}
               <div className="space-y-3 pt-4 border-t">
                 <Label>Processing Mode</Label>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
+                <div className="flex flex-col gap-3">
+                  <label className="flex items-start gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="processingMode"
                       value="automated"
                       checked={processingMode === "automated"}
-                      onChange={() => setProcessingMode("automated")}
-                      className="accent-primary"
+                      onChange={() => {
+                        setProcessingMode("automated");
+                        setExecutionEngineDefault("cloud_run");
+                      }}
+                      className="accent-primary mt-1"
                     />
-                    <span>Automated (AI Pipeline)</span>
+                    <div>
+                      <span className="font-medium">Automated (AI Pipeline)</span>
+                      <p className="text-sm text-muted-foreground">Reports generated automatically using the multi-step research pipeline.</p>
+                    </div>
                   </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="processingMode"
+                      value="single_prompt"
+                      checked={processingMode === "single_prompt"}
+                      onChange={() => {
+                        setProcessingMode("single_prompt");
+                        setExecutionEngineDefault("claude");
+                      }}
+                      className="accent-primary mt-1"
+                    />
+                    <div>
+                      <span className="font-medium">Single Prompt (Claude)</span>
+                      <p className="text-sm text-muted-foreground">Complete report generated in one AI call. Edit the prompt in the Pipeline tab.</p>
+                    </div>
+                  </label>
+                  <label className="flex items-start gap-2 cursor-pointer">
                     <input
                       type="radio"
                       name="processingMode"
                       value="manual"
                       checked={processingMode === "manual"}
-                      onChange={() => setProcessingMode("manual")}
-                      className="accent-primary"
+                      onChange={() => {
+                        setProcessingMode("manual");
+                        setExecutionEngineDefault("cloud_run");
+                      }}
+                      className="accent-primary mt-1"
                     />
-                    <span>Manual (Admin Review)</span>
+                    <div>
+                      <span className="font-medium">Manual (Admin Review)</span>
+                      <p className="text-sm text-muted-foreground">Submissions sent to an admin for manual report preparation.</p>
+                    </div>
                   </label>
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  {processingMode === "automated" 
-                    ? "Reports will be generated automatically using the AI pipeline."
-                    : "Submissions will be sent to an admin for manual report preparation."
-                  }
-                </p>
               </div>
 
               {/* Admin Notification Email (only for manual mode) */}

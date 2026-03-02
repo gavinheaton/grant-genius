@@ -297,6 +297,7 @@ export default function ApplicationWorkspace() {
   const inputsComplete = (inputs.summary || '').trim() !== "";
   
   // Check if this is a manual processing grant
+  // Treat "single_prompt" same as "automated" for the researcher experience
   const isManualGrant = application?.grant_version?.grant?.processing_mode === "manual";
   const manualStatus = application?.manual_status;
 
