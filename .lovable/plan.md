@@ -1,60 +1,86 @@
+## Expose Report Generation Pipeline as a Secure API
 
+### Status: ✅ IMPLEMENTED
 
-## Improve Progress Reporting for Claude Single-Prompt Runs
+### What was built
 
-### Problem
-When generating a report with the Claude (Single Prompt) engine, the progress indicator shows "Step 1/1: Claude Single Prompt" with a bar stuck at 0% until it jumps to 100%. There's no sense of progress during what can be a 2-5 minute wait.
+1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
+2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
+3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
+4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
+5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
+6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
+7. **Sidebar**: "API Access" link added to admin sidebar under System section
 
-### Solution: Virtual Progress Phases
-Break the single API call into visible phases that advance based on **log messages** from the backend. The edge function already writes logs at key moments -- we add a few more, and the frontend maps them to virtual progress stages.
+### Fixes Applied (v2)
 
-### Changes
+1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
+2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
+3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
 
-**1. Backend: Add more log messages to `run-claude-report/index.ts`**
+## Add Claude Single-Prompt Engine
 
-Insert additional `logMessage` calls at each logical phase:
-- "Preparing prompt and context..." (after building variables)
-- "Prompt assembled (N chars). Calling Claude API..." (already exists)
-- "Waiting for AI response..." (right after the fetch call starts)
-- "Claude response received (N chars). Saving report..." (already exists)
-- "Report saved. Finalizing..." (after report insert)
-- "Report generation complete" (already exists)
+### Status: ✅ IMPLEMENTED
 
-This gives 5-6 distinct log events the frontend can react to.
+### What was built
 
-**2. Frontend: Add a phase-based progress display for single-step runs in `GenerationProgress.tsx`**
+1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
+2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
+3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
+4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
+5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
+6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
 
-When `totalSteps <= 1` and `status === "running"`:
-- Define virtual phases: Preparing -> Calling AI -> Waiting for Response -> Processing Result -> Saving Report -> Complete
-- Map incoming log messages (from `ReportLogViewer`'s data) to phase transitions
-- Show the current phase name instead of "Step 1/1: Claude Single Prompt"
-- Advance the progress bar proportionally (e.g., 10% -> 25% -> 50% -> 75% -> 90% -> 100%)
-- Add a gentle animated pulse/shimmer on the progress bar during the long "Waiting for Response" phase to signal activity
+### Shortcodes
+- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
+- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
+- Conditional: `{{#variable}}...{{/variable}}`
 
-**3. Frontend: Pass logs data up from `useReportLogs` into `GenerationProgress`**
+### Admin Flow
+1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
+2. Grant Edit > Guidelines tab > Upload PDF (existing)
+3. Grant Edit > Pipeline tab > Edit Claude prompt template
+4. Publish version
 
-- Add a `logs` prop to `GenerationProgress` (or use the hook directly inside it)
-- The component already renders `ReportLogViewer` and has `activeRunId` -- we'll use the same hook internally to read log messages and derive the current phase
+### API Endpoints
 
-### Technical Details
+#### Generate Report
+```
+POST /functions/v1/api-generate-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
 
-**Phase mapping logic** (inside `GenerationProgress.tsx`):
-```text
-Log message contains         -> Phase index (0-5) -> Progress %
-"Preparing prompt"           -> 1                  -> 15%
-"Calling Claude API"         -> 2                  -> 30%
-"Waiting for AI"             -> 3                  -> 50%
-"Claude response received"   -> 4                  -> 75%
-"Report saved"               -> 5                  -> 90%
-"complete"                   -> 6                  -> 100%
+{
+  "summary": "Research on novel polymer...",
+  "public_article_url": "https://...",
+  "client_name": "my-other-app",
+  "webhook_url": "https://my-app.com/webhook"
+}
+
+Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
 ```
 
-Between phases, the progress bar will smoothly animate using a CSS transition (already in place via the Progress component's `transition-all`). During the longest phase ("Waiting for Response"), a subtle time-based interpolation will inch the bar forward to prevent it from appearing frozen.
+#### Report Status
+```
+GET /functions/v1/api-report-status?run_id=uuid
+Authorization: Bearer <API_SECRET_KEY>
 
-**Files to modify:**
-- `supabase/functions/run-claude-report/index.ts` -- add 2-3 new log messages
-- `src/components/workspace/GenerationProgress.tsx` -- add single-step phase detection and display
-- `src/hooks/useReportLogs.ts` -- expose logs for consumption (may already be suitable)
+Response: { "status": "completed", "report_html": "...", "citations": [...] }
+```
 
-No database changes required.
+#### Cancel Report
+```
+POST /functions/v1/api-cancel-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
 
+{ "run_id": "uuid", "client_name": "my-app" }
+
+Success: { "success": true, "message": "Report generation cancelled" }
+Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
+```
+
+### Webhook Events
+
+**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
+**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`

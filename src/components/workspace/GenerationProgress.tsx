@@ -7,6 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Loader2, CheckCircle, AlertCircle, Clock, XCircle, RefreshCw, Mail, Pause, Play, Trash2, Wrench, X } from "lucide-react";
 import { ReportRunStep } from "@/hooks/useReportGeneration";
 import { ReportLogViewer } from "./ReportLogViewer";
+import { useReportLogs } from "@/hooks/useReportLogs";
+import { useVirtualProgress } from "@/hooks/useVirtualProgress";
 
 const AUTO_RETRY_SECONDS = 30;
 
@@ -122,18 +124,27 @@ export function GenerationProgress({
     onRestart?.();
   }, [onRestart]);
 
+  // Use report logs for virtual progress on single-step runs
+  const isSingleStepRun = totalSteps <= 1;
+  const { logs } = useReportLogs(isSingleStepRun ? activeRunId : null);
+  const virtualProgress = useVirtualProgress(logs, status === "running" && isSingleStepRun);
+
   // Calculate progress based on completed steps (force 100% when run is completed)
   const progressPercent = status === "completed" 
     ? 100 
-    : (totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0);
+    : isSingleStepRun && status === "running"
+      ? virtualProgress.progress
+      : (totalSteps > 0 ? (completedSteps / totalSteps) * 100 : 0);
   
   // Get current step name from steps array
   const currentStepData = steps.find(s => s.step_number === currentStep);
   const runningStep = steps.find(s => s.status === 'running');
   const displayStep = runningStep || currentStepData;
-  const currentStepName = displayStep?.step_name 
-    ? formatStepName(displayStep.step_name)
-    : "Initializing...";
+  const currentStepName = isSingleStepRun && status === "running"
+    ? virtualProgress.phaseLabel
+    : displayStep?.step_name 
+      ? formatStepName(displayStep.step_name)
+      : "Initializing...";
 
   const isInProgress = status === "running" || status === "pending" || isStarting;
 
@@ -196,7 +207,7 @@ export function GenerationProgress({
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">
-              {status === "running" && `Step ${completedSteps + 1}/${totalSteps}: ${currentStepName}`}
+              {status === "running" && (isSingleStepRun ? currentStepName : `Step ${completedSteps + 1}/${totalSteps}: ${currentStepName}`)}
               {status === "completed" && "Report generation complete!"}
               {status === "failed" && "Generation failed"}
               {status === "pending" && (completedSteps === 0 ? "Starting generation..." : `Preparing step ${completedSteps + 1}...`)}
@@ -204,7 +215,7 @@ export function GenerationProgress({
             </span>
             <span className="font-medium">{Math.round(progressPercent)}%</span>
           </div>
-          <Progress value={progressPercent} className="h-2" />
+          <Progress value={progressPercent} className={`h-2 ${isSingleStepRun && virtualProgress.isWaitingForAI ? 'animate-pulse' : ''}`} />
         </div>
 
 {status === "failed" && (() => {

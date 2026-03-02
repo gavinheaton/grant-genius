@@ -231,7 +231,8 @@ serve(async (req) => {
 
     const assembledPrompt = interpolatePrompt(promptTemplate, variables);
     
-    await logMessage(supabase, report_run_id, "info", `Prompt assembled (${assembledPrompt.length} chars). Calling Claude API...`);
+    await logMessage(supabase, report_run_id, "info", `Preparing prompt and context (${assembledPrompt.length} chars)...`);
+    await logMessage(supabase, report_run_id, "info", "Calling Claude API...");
 
     // Call Anthropic Claude API
     const claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
@@ -275,7 +276,7 @@ serve(async (req) => {
       );
     }
 
-    await logMessage(supabase, report_run_id, "info", `Claude response received (${reportHtml.length} chars). Saving report...`);
+    await logMessage(supabase, report_run_id, "info", `Claude response received (${reportHtml.length} chars). Processing result...`);
 
     // Mark step completed
     await supabase
@@ -308,6 +309,8 @@ serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    await logMessage(supabase, report_run_id, "info", "Report saved. Finalizing...");
 
     // Mark run completed
     await supabase
