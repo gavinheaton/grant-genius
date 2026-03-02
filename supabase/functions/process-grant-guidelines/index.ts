@@ -1808,7 +1808,7 @@ Return ONLY valid JSON matching the schema.`;
     const effectiveEngine = execution_engine || (grantVersion as any).execution_engine_default || "cloud_run";
 
     // Save extraction results with archetype
-    await supabaseAdmin
+    const { error: saveError } = await supabaseAdmin
       .from("grant_versions")
       .update({
         ai_analysis_status: "completed",
@@ -1824,6 +1824,12 @@ Return ONLY valid JSON matching the schema.`;
         pipeline_generation_status: effectiveEngine === "claude" ? "not_required" : "generating"
       })
       .eq("id", grant_version_id);
+
+    if (saveError) {
+      console.error("Failed to save extraction results:", saveError);
+      throw new Error(`Failed to save analysis results: ${saveError.message}`);
+    }
+    console.log("Successfully saved extraction results to grant version");
 
     // For Claude engine, skip pipeline generation entirely
     if (effectiveEngine === "claude") {
