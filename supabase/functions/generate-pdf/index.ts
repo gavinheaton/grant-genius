@@ -892,7 +892,6 @@ Deno.serve(async (req) => {
         landscape: false,
         format: template.page_format,
         use_print: true,
-        sandbox: true,
         wait_for_network: false,      // Don't wait for network idle (static HTML)
         disable_javascript: true,     // No JS needed, prevents hanging connections
         ignore_long_polling: true,    // Ignore any long-poll requests
