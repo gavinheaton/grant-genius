@@ -215,7 +215,7 @@ export function GenerationProgress({
             </span>
             <span className="font-medium">{Math.round(progressPercent)}%</span>
           </div>
-          <Progress value={progressPercent} className="h-2" />
+          <Progress value={progressPercent} className={`h-2 ${isSingleStepRun && virtualProgress.isWaitingForAI ? 'animate-pulse' : ''}`} />
         </div>
 
 {status === "failed" && (() => {
