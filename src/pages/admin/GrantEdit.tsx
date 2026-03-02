@@ -35,6 +35,7 @@ import { EngineSettingsCard } from "@/components/admin/EngineSettingsCard";
 import { usePromptBundles, usePromptBundle } from "@/hooks/usePromptBundles";
 import { InlinePipelineEditor } from "@/components/admin/InlinePipelineEditor";
 import { WorkflowTab } from "@/components/admin/WorkflowTab";
+import { DEFAULT_CLAUDE_PROMPT } from "@/lib/defaultClaudePrompt";
 
 export default function GrantEdit() {
   const { id } = useParams<{ id: string }>();
@@ -218,7 +219,7 @@ export default function GrantEdit() {
     setAiSuggestions(version.ai_suggestions_json || null);
     setExecutionEngineDefault(version.execution_engine_default || "cloud_run");
     setEdgeAllowed(version.edge_allowed || false);
-    setClaudePromptTemplate(version.claude_prompt_template || "");
+    setClaudePromptTemplate(version.claude_prompt_template || DEFAULT_CLAUDE_PROMPT);
   };
 
   const handleRetryProcessing = async () => {
@@ -825,13 +826,9 @@ export default function GrantEdit() {
                   <div className="flex items-center justify-between">
                     <Label htmlFor="claude-prompt">Claude Prompt Template</Label>
                     <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setClaudePromptTemplate("")}
-                      >
-                        Clear
-                      </Button>
+                      <Badge variant={claudePromptTemplate !== DEFAULT_CLAUDE_PROMPT ? "default" : "secondary"}>
+                        {claudePromptTemplate !== DEFAULT_CLAUDE_PROMPT ? "Custom Prompt" : "Using Default"}
+                      </Badge>
                       <Button
                         variant="outline"
                         size="sm"
@@ -842,7 +839,7 @@ export default function GrantEdit() {
                             .update({ claude_prompt_template: null } as any)
                             .eq("id", selectedVersionId);
                           if (!error) {
-                            setClaudePromptTemplate("");
+                            setClaudePromptTemplate(DEFAULT_CLAUDE_PROMPT);
                             toast({ title: "Reset to default prompt" });
                           }
                         }}
@@ -861,7 +858,7 @@ export default function GrantEdit() {
                     onChange={(e) => setClaudePromptTemplate(e.target.value)}
                     rows={30}
                     className="font-mono text-sm"
-                    placeholder="Leave empty to use the default Claude prompt template..."
+                    placeholder="Enter your Claude prompt template..."
                   />
                   <Button
                     onClick={async () => {
