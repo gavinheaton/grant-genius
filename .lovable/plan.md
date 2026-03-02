@@ -1,21 +1,55 @@
 
 
-## Fix: Reset Stalled Grant Version Status
+## Fix: Email Not Sent After Claude Report Completion
 
 ### Problem
-Grant version `4b41f191-1cac-4974-b016-d2fb203597e5` is stuck with `ai_analysis_status = 'analyzing'` from the previous failed attempt. The constraint fix has been applied, but the status was never reset, so the UI still shows it as processing.
+The `run-claude-report` function calls `send-report-email` with the wrong payload shape:
 
-### Solution
-Run a database update to reset the status to `'failed'`, which will show the "Retry Processing" button in the UI. Then you can retry and it should succeed since the constraint now allows `'not_required'`.
-
-### Changes
-**1. Database migration** -- reset the stalled grant version:
-```sql
-UPDATE grant_versions 
-SET ai_analysis_status = 'failed', 
-    pipeline_generation_status = 'none'
-WHERE id = '4b41f191-1cac-4974-b016-d2fb203597e5' 
-  AND ai_analysis_status = 'analyzing';
+**What it sends:**
+```json
+{ "report_run_id": "..." }
 ```
 
-No code changes needed. After this reset, navigate to the grant edit page and click "Retry Processing".
+**What `send-report-email` expects:**
+```json
+{ "reportRunId": "...", "reportId": "...", "applicationId": "...", "userId": "..." }
+```
+
+The function receives no `reportId`, `applicationId`, or `userId`, so it immediately returns a 400 "Missing required fields" error.
+
+### Fix
+Update the email dispatch block in `run-claude-report/index.ts` (around line 220) to:
+1. Capture the report ID after the insert (query it back since the insert doesn't return it directly, or use `.select().single()`)
+2. Send the correct camelCase payload with all four required fields: `reportRunId`, `reportId`, `applicationId`, `userId`
+
+### Technical Details
+
+In `supabase/functions/run-claude-report/index.ts`:
+
+1. Change the report insert to return the new report's ID:
+```typescript
+const { data: newReport, error: reportError } = await supabase
+  .from("reports")
+  .insert({ ... })
+  .select("id")
+  .single();
+```
+
+2. Update the email sending block to pass the full payload:
+```typescript
+await fetch(`${supabaseUrl}/functions/v1/send-report-email`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${serviceRoleKey}`,
+  },
+  body: JSON.stringify({
+    reportRunId: report_run_id,
+    reportId: newReport.id,
+    applicationId: app.id,
+    userId: app.user_id,
+  }),
+});
+```
+
+No other files need changes.
