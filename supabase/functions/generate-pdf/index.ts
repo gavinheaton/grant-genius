@@ -306,6 +306,16 @@ function buildHtml(
       font-style: italic;
     }
     
+    /* Page break rules to prevent content splitting */
+    table { page-break-inside: avoid; }
+    tr { page-break-inside: avoid; }
+    blockquote { page-break-inside: avoid; }
+    section { page-break-inside: avoid; }
+    ul, ol { page-break-inside: avoid; }
+    .report-content h1, .report-content h2, .report-content h3 {
+      page-break-after: avoid;
+    }
+    
     /* Footer branding */
     .footer-branding {
       margin-top: 40px;
