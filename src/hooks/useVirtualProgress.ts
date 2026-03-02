@@ -10,12 +10,12 @@ const PHASES: VirtualPhase[] = [
   { label: "Initializing...", progress: 3 },
   { label: "Preparing prompt and context...", progress: 10 },
   { label: "Calling Claude API...", progress: 20 },
-  { label: "Waiting for AI response...", progress: 40 },
-  { label: "Processing result...", progress: 55 },
-  { label: "Validating references...", progress: 65 },
-  { label: "Checking sources with AI...", progress: 78 },
-  { label: "Saving report...", progress: 90 },
-  { label: "Report generation complete", progress: 100 },
+  { label: "Waiting for AI response...", progress: 45 },
+  { label: "Processing result...", progress: 70 },
+  { label: "Saving report...", progress: 85 },
+  { label: "Report generation complete", progress: 95 },
+  { label: "Enhancing references...", progress: 98 },
+  { label: "Done", progress: 100 },
 ];
 
 const PHASE_TRIGGERS: [string, number][] = [
@@ -23,11 +23,10 @@ const PHASE_TRIGGERS: [string, number][] = [
   ["Calling Claude API", 2],
   ["Waiting for AI", 3],
   ["Claude response received", 4],
-  ["Validating references", 5],
-  ["Running AI verification", 6],
-  ["Reference validation complete", 7],
-  ["Report saved", 7],
-  ["Report generation complete", 8],
+  ["Report saved", 5],
+  ["Report generation complete", 6],
+  ["Reference validation triggered", 7],
+  ["Report updated with validated", 8],
 ];
 
 /**
@@ -79,6 +78,6 @@ export function useVirtualProgress(logs: ReportLog[], isRunning: boolean) {
     phaseLabel: phase.label,
     phaseIndex,
     isWaitingForAI: phaseIndex >= 2 && phaseIndex <= 3,
-    isValidatingRefs: phaseIndex >= 5 && phaseIndex <= 6,
+    isValidatingRefs: false, // Validation now happens async in background
   };
 }
