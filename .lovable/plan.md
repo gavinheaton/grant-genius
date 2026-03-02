@@ -1,86 +1,63 @@
-## Expose Report Generation Pipeline as a Secure API
 
-### Status: ✅ IMPLEMENTED
 
-### What was built
+## Fix PDF Paging and DOCX Formatting Issues
 
-1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
-2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
-3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
-4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
-5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
-6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
-7. **Sidebar**: "API Access" link added to admin sidebar under System section
+### Problem 1: CSS Code Visible in DOCX
+The `convertHtmlToSimpleText()` function in `generate-docx/index.ts` strips HTML tags but leaves the **content inside `<style>` blocks** as visible text. The regex `/<[^>]+>/g` removes `<style>` and `</style>` tags but not the CSS rules between them.
 
-### Fixes Applied (v2)
+**Fix**: Add a pre-processing step to strip `<style>`, `<script>`, and `<head>` blocks (including their content) before any other HTML-to-text conversion.
 
-1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
-2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
-3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+### Problem 2: Missing Table of Contents in DOCX
+The TOC code exists and runs, but the heading detection in `convertHtmlToSimpleText()` uses non-greedy `(.*?)` which fails on multi-line headings or headings containing nested HTML (e.g., `<h2><strong>Market Analysis</strong></h2>`). This means sections aren't recognized as headings, so the TOC has nothing to reference.
 
-## Add Claude Single-Prompt Engine
+**Fix**: Use a more robust heading extraction that handles nested tags inside heading elements, and use `[\s\S]*?` instead of `.*?` for multi-line support.
 
-### Status: ✅ IMPLEMENTED
+### Problem 3: PDF Unusual Paging
+The PDF HTML sent to PDFShift lacks `page-break-inside: avoid` rules, so tables and content blocks get split across pages arbitrarily.
 
-### What was built
+**Fix**: Add CSS rules to prevent breaking inside tables, list items, blockquotes, and short sections. Add `page-break-before: always` for H1 headings (major sections) to create cleaner page structure.
 
-1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
-2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
-3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
-4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
-5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
-6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
+---
 
-### Shortcodes
-- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
-- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
-- Conditional: `{{#variable}}...{{/variable}}`
+### Technical Changes
 
-### Admin Flow
-1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
-2. Grant Edit > Guidelines tab > Upload PDF (existing)
-3. Grant Edit > Pipeline tab > Edit Claude prompt template
-4. Publish version
+**File: `supabase/functions/generate-docx/index.ts`**
 
-### API Endpoints
-
-#### Generate Report
+1. Update `convertHtmlToSimpleText()` to strip `<style>`, `<script>`, and `<head>` blocks before processing:
+```typescript
+// Strip style, script, and head blocks entirely (content + tags)
+text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+text = text.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "");
 ```
-POST /functions/v1/api-generate-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
 
-{
-  "summary": "Research on novel polymer...",
-  "public_article_url": "https://...",
-  "client_name": "my-other-app",
-  "webhook_url": "https://my-app.com/webhook"
+2. Fix heading regex to handle nested HTML inside headings:
+```typescript
+text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_, inner) => `## ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
+text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_, inner) => `### ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
+text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_, inner) => `#### ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
+```
+
+**File: `supabase/functions/generate-pdf/index.ts`**
+
+3. Add page-break CSS rules to the report HTML template (both the `reportHtml` path and legacy path):
+```css
+table { page-break-inside: avoid; }
+tr { page-break-inside: avoid; }
+blockquote { page-break-inside: avoid; }
+.report-content h1, .report-content h2, .report-content h3 {
+  page-break-after: avoid;
 }
-
-Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
+ul, ol { page-break-inside: avoid; }
+section { page-break-inside: avoid; }
 ```
 
-#### Report Status
-```
-GET /functions/v1/api-report-status?run_id=uuid
-Authorization: Bearer <API_SECRET_KEY>
+This adds `page-break-inside: avoid` to tables, blockquotes, lists, and sections so PDFShift won't split them across pages. `page-break-after: avoid` on headings ensures a heading won't appear alone at the bottom of a page.
 
-Response: { "status": "completed", "report_html": "...", "citations": [...] }
-```
+---
 
-#### Cancel Report
-```
-POST /functions/v1/api-cancel-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
+### Files Modified
+- `supabase/functions/generate-docx/index.ts` -- Fix CSS leak and heading parsing
+- `supabase/functions/generate-pdf/index.ts` -- Add page-break CSS rules
 
-{ "run_id": "uuid", "client_name": "my-app" }
-
-Success: { "success": true, "message": "Report generation cancelled" }
-Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
-```
-
-### Webhook Events
-
-**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
-**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
+No database changes required. Both edge functions will auto-deploy.
