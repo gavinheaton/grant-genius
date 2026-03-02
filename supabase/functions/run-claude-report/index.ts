@@ -289,7 +289,7 @@ serve(async (req) => {
       .eq("step_number", 0);
 
     // Save report
-    const { error: reportError } = await supabase.from("reports").insert({
+    const { data: newReport, error: reportError } = await supabase.from("reports").insert({
       application_id: app.id,
       user_id: app.user_id,
       report_run_id,
@@ -298,7 +298,7 @@ serve(async (req) => {
       inputs_snapshot_json: inputs,
       content_json: { report_html: reportHtml },
       citations_json: [],
-    });
+    }).select("id").single();
 
     if (reportError) {
       console.error("Error saving report:", reportError);
@@ -336,7 +336,12 @@ serve(async (req) => {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${serviceRoleKey}`,
           },
-          body: JSON.stringify({ report_run_id }),
+          body: JSON.stringify({
+            reportRunId: report_run_id,
+            reportId: newReport?.id,
+            applicationId: app.id,
+            userId: app.user_id,
+          }),
         });
       } catch (emailError) {
         console.error("Failed to send completion email:", emailError);
