@@ -1804,6 +1804,9 @@ Return ONLY valid JSON matching the schema.`;
     const selectedModules = selectModulesForArchetype(archetype);
     console.log(`Selected ${selectedModules.length} modules for archetype`);
 
+    // Determine effective engine for conditional pipeline generation
+    const effectiveEngine = execution_engine || (grantVersion as any).execution_engine_default || "cloud_run";
+
     // Save extraction results with archetype
     await supabaseAdmin
       .from("grant_versions")
@@ -1823,7 +1826,6 @@ Return ONLY valid JSON matching the schema.`;
       .eq("id", grant_version_id);
 
     // For Claude engine, skip pipeline generation entirely
-    const effectiveEngine = execution_engine || (grantVersion as any).execution_engine_default || "cloud_run";
     if (effectiveEngine === "claude") {
       console.log("Claude engine detected — skipping pipeline generation, analysis only");
       
