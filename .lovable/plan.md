@@ -1,86 +1,34 @@
-## Expose Report Generation Pipeline as a Secure API
 
-### Status: ✅ IMPLEMENTED
 
-### What was built
+## Show Default Claude Prompt in Editor
 
-1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
-2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
-3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
-4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
-5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
-6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
-7. **Sidebar**: "API Access" link added to admin sidebar under System section
+### Problem
+When the `claude_prompt_template` field is empty/null on a grant version, the backend (`run-claude-report`) falls back to a hardcoded `DEFAULT_CLAUDE_PROMPT`. But the admin UI shows an empty textarea with placeholder text, so admins cannot see or edit the actual prompt being used.
 
-### Fixes Applied (v2)
+### Solution
+Extract the default prompt into a shared constant and pre-populate the editor with it when no custom template is saved.
 
-1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
-2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
-3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
+### Changes
 
-## Add Claude Single-Prompt Engine
+**1. Create `src/lib/defaultClaudePrompt.ts`**
+- Export the `DEFAULT_CLAUDE_PROMPT` string (copy from `run-claude-report/index.ts`)
+- This gives the frontend access to the default prompt text
 
-### Status: ✅ IMPLEMENTED
+**2. Update `src/pages/admin/GrantEdit.tsx`**
+- Import `DEFAULT_CLAUDE_PROMPT`
+- When loading a grant version, if `claude_prompt_template` is null/empty, set state to the default prompt
+- "Reset to Default" button restores the textarea to `DEFAULT_CLAUDE_PROMPT` (and saves `null` to DB so the backend also uses its default)
+- Add a visual indicator showing whether the admin is using the default or a custom prompt (e.g., a small badge)
 
-### What was built
+**3. Update `supabase/functions/run-claude-report/index.ts`**
+- No functional change needed -- the backend already falls back to `DEFAULT_CLAUDE_PROMPT` when the column is null, which is the correct behavior
 
-1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
-2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
-3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
-4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
-5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
-6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
+### UI Behavior
+- On load: textarea shows the full default prompt (editable)
+- Admin edits and saves: custom prompt saved to DB
+- "Reset to Default" clicked: textarea reverts to default, DB value set to null
+- A badge or note indicates "Using default prompt" vs "Custom prompt saved"
 
-### Shortcodes
-- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
-- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
-- Conditional: `{{#variable}}...{{/variable}}`
-
-### Admin Flow
-1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
-2. Grant Edit > Guidelines tab > Upload PDF (existing)
-3. Grant Edit > Pipeline tab > Edit Claude prompt template
-4. Publish version
-
-### API Endpoints
-
-#### Generate Report
-```
-POST /functions/v1/api-generate-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{
-  "summary": "Research on novel polymer...",
-  "public_article_url": "https://...",
-  "client_name": "my-other-app",
-  "webhook_url": "https://my-app.com/webhook"
-}
-
-Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
-```
-
-#### Report Status
-```
-GET /functions/v1/api-report-status?run_id=uuid
-Authorization: Bearer <API_SECRET_KEY>
-
-Response: { "status": "completed", "report_html": "...", "citations": [...] }
-```
-
-#### Cancel Report
-```
-POST /functions/v1/api-cancel-report
-Authorization: Bearer <API_SECRET_KEY>
-Content-Type: application/json
-
-{ "run_id": "uuid", "client_name": "my-app" }
-
-Success: { "success": true, "message": "Report generation cancelled" }
-Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
-```
-
-### Webhook Events
-
-**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
-**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`
+### Files
+1. **New**: `src/lib/defaultClaudePrompt.ts`
+2. **Edit**: `src/pages/admin/GrantEdit.tsx` -- populate textarea with default when empty, update reset logic
