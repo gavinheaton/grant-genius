@@ -266,24 +266,29 @@ function convertHtmlToSimpleText(html: string): string {
   
   let text = html;
   
-  // Convert headers
-  text = text.replace(/<h1[^>]*>(.*?)<\/h1>/gi, "## $1\n\n");
-  text = text.replace(/<h2[^>]*>(.*?)<\/h2>/gi, "### $1\n\n");
-  text = text.replace(/<h3[^>]*>(.*?)<\/h3>/gi, "#### $1\n\n");
+  // Strip style, script, and head blocks entirely (content + tags)
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
+  text = text.replace(/<head[^>]*>[\s\S]*?<\/head>/gi, "");
+  
+  // Convert headers (use [\s\S]*? for multi-line support, strip nested tags)
+  text = text.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, (_, inner) => `## ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
+  text = text.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, (_, inner) => `### ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
+  text = text.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, (_, inner) => `#### ${inner.replace(/<[^>]+>/g, '').trim()}\n\n`);
   
   // Convert paragraphs
-  text = text.replace(/<p[^>]*>(.*?)<\/p>/gi, "$1\n\n");
+  text = text.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, "$1\n\n");
   
   // Convert lists
-  text = text.replace(/<li[^>]*>(.*?)<\/li>/gi, "- $1\n");
+  text = text.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "- $1\n");
   text = text.replace(/<\/?ul[^>]*>/gi, "\n");
   text = text.replace(/<\/?ol[^>]*>/gi, "\n");
   
   // Convert bold/italic
-  text = text.replace(/<strong[^>]*>(.*?)<\/strong>/gi, "**$1**");
-  text = text.replace(/<b[^>]*>(.*?)<\/b>/gi, "**$1**");
-  text = text.replace(/<em[^>]*>(.*?)<\/em>/gi, "*$1*");
-  text = text.replace(/<i[^>]*>(.*?)<\/i>/gi, "*$1*");
+  text = text.replace(/<strong[^>]*>([\s\S]*?)<\/strong>/gi, "**$1**");
+  text = text.replace(/<b[^>]*>([\s\S]*?)<\/b>/gi, "**$1**");
+  text = text.replace(/<em[^>]*>([\s\S]*?)<\/em>/gi, "*$1*");
+  text = text.replace(/<i[^>]*>([\s\S]*?)<\/i>/gi, "*$1*");
   
   // Remove remaining HTML tags
   text = text.replace(/<[^>]+>/g, "");
