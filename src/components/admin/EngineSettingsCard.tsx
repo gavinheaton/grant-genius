@@ -1,4 +1,4 @@
-import { AlertTriangle, Server, Zap } from "lucide-react";
+import { AlertTriangle, Server, Zap, Brain } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-type ExecutionEngine = "cloud_run" | "edge";
+type ExecutionEngine = "cloud_run" | "edge" | "claude";
 
 interface EngineSettingsCardProps {
   executionEngineDefault: ExecutionEngine;
@@ -98,11 +98,19 @@ export function EngineSettingsCard({
                   </div>
                 </SelectItem>
               )}
+              <SelectItem value="claude">
+                <div className="flex items-center gap-2">
+                  <Brain className="h-4 w-4" />
+                  <span>Claude (Single Prompt)</span>
+                </div>
+              </SelectItem>
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
             {executionEngineDefault === "cloud_run" 
               ? "Cloud Run has no timeout limits and is recommended for production."
+              : executionEngineDefault === "claude"
+              ? "Generates complete report in one AI call using Claude. Edit the prompt template in the Pipeline tab."
               : "Edge functions are limited to 60 seconds per step. Use for debugging only."}
           </p>
         </div>

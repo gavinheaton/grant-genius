@@ -1,0 +1,1 @@
+ALTER TABLE public.grant_versions ADD COLUMN IF NOT EXISTS claude_prompt_template TEXT;

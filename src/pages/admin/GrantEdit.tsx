@@ -59,12 +59,13 @@ export default function GrantEdit() {
   const [pipelineStatus, setPipelineStatus] = useState("none");
   const [promptBundleId, setPromptBundleId] = useState<string | null>(null);
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
-  const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge">("cloud_run");
+  const [executionEngineDefault, setExecutionEngineDefault] = useState<"cloud_run" | "edge" | "claude">("cloud_run");
   const [edgeAllowed, setEdgeAllowed] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [pipelineExpanded, setPipelineExpanded] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [activeTab, setActiveTab] = useState("details");
+  const [claudePromptTemplate, setClaudePromptTemplate] = useState<string>("");
 
   // Fetch all prompt bundles for the pipeline selector
   const { data: allPromptBundles, isLoading: bundlesLoading } = usePromptBundles();
@@ -114,7 +115,8 @@ export default function GrantEdit() {
             execution_engine_default,
             edge_allowed,
             pipeline_generation_status,
-            prompt_bundle_id
+            prompt_bundle_id,
+            claude_prompt_template
           )
         `)
         .eq("id", id)
@@ -216,6 +218,7 @@ export default function GrantEdit() {
     setAiSuggestions(version.ai_suggestions_json || null);
     setExecutionEngineDefault(version.execution_engine_default || "cloud_run");
     setEdgeAllowed(version.edge_allowed || false);
+    setClaudePromptTemplate(version.claude_prompt_template || "");
   };
 
   const handleRetryProcessing = async () => {
@@ -801,7 +804,9 @@ export default function GrantEdit() {
             <CardHeader>
               <CardTitle>Research Pipeline</CardTitle>
               <CardDescription>
-                Custom research pipeline generated from grant guidelines
+                {executionEngineDefault === "claude" 
+                  ? "Claude single-prompt template for report generation"
+                  : "Custom research pipeline generated from grant guidelines"}
                 {selectedVersion && (
                   <Badge className="ml-2" variant="outline">
                     v{selectedVersion.version_number}
@@ -810,119 +815,197 @@ export default function GrantEdit() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              {/* Pipeline Selector */}
-              <div className="space-y-2">
-                <Label htmlFor="pipeline-select">Attached Pipeline</Label>
-                <Select
-                  value={promptBundleId || "none"}
-                  onValueChange={(value) => {
-                    const newBundleId = value === "none" ? null : value;
-                    setPromptBundleId(newBundleId);
-                    updatePipelineMutation.mutate(newBundleId);
-                  }}
-                  disabled={updatePipelineMutation.isPending || bundlesLoading}
-                >
-                  <SelectTrigger id="pipeline-select" className="w-full max-w-md">
-                    <SelectValue placeholder="Select a pipeline..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">
-                      No pipeline (use global default)
-                    </SelectItem>
-                    {allPromptBundles?.map((bundle) => (
-                      <SelectItem key={bundle.id} value={bundle.id}>
-                        {bundle.name}
-                        {bundle.is_active && " (Global Default)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {updatePipelineMutation.isPending && (
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                    Updating pipeline...
-                  </p>
-                )}
-              </div>
-
-              {/* Pipeline Status & Actions */}
-              {promptBundleId ? (
-                <>
-                  <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
-                    <div>
-                      <p className="font-medium">Pipeline Status</p>
-                      <Badge 
-                        variant={pipelineStatus === "published" ? "default" : "secondary"}
-                        className="mt-1"
-                      >
-                        {pipelineStatus}
-                      </Badge>
-                    </div>
+              {executionEngineDefault === "claude" ? (
+                /* Claude Prompt Template Editor */
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="claude-prompt">Claude Prompt Template</Label>
                     <div className="flex gap-2">
-                      <Button 
-                        variant="outline" 
-                        onClick={() => setPipelineExpanded(!pipelineExpanded)}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setClaudePromptTemplate("")}
                       >
-                        {pipelineExpanded ? (
-                          <ChevronUp className="h-4 w-4 mr-2" />
-                        ) : (
-                          <ChevronDown className="h-4 w-4 mr-2" />
-                        )}
-                        {pipelineExpanded ? "Hide Pipeline Editor" : "View & Edit Pipeline"}
+                        Clear
                       </Button>
-                      {isSuperAdmin && pipelineStatus === "draft" && (
-                        <Button 
-                          onClick={() => publishPipelineMutation.mutate()}
-                          disabled={publishPipelineMutation.isPending}
-                        >
-                          {publishPipelineMutation.isPending && (
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          )}
-                          <CheckCircle className="h-4 w-4 mr-2" />
-                          Publish Pipeline
-                        </Button>
-                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          if (!selectedVersionId) return;
+                          const { error } = await supabase
+                            .from("grant_versions")
+                            .update({ claude_prompt_template: null } as any)
+                            .eq("id", selectedVersionId);
+                          if (!error) {
+                            setClaudePromptTemplate("");
+                            toast({ title: "Reset to default prompt" });
+                          }
+                        }}
+                      >
+                        Reset to Default
+                      </Button>
                     </div>
                   </div>
+                  <p className="text-sm text-muted-foreground">
+                    Edit the prompt template sent to Claude. Use shortcodes: <code className="text-xs bg-muted px-1 rounded">{"{{summary}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{articleContent}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{trl}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{ipStatus}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{grantGuidelines}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{grantRubricFormatted}}"}</code>, <code className="text-xs bg-muted px-1 rounded">{"{{grantName}}"}</code>. 
+                    Use <code className="text-xs bg-muted px-1 rounded">{"{{#variable}}...{{/variable}}"}</code> for conditional blocks.
+                  </p>
+                  <Textarea
+                    id="claude-prompt"
+                    value={claudePromptTemplate}
+                    onChange={(e) => setClaudePromptTemplate(e.target.value)}
+                    rows={30}
+                    className="font-mono text-sm"
+                    placeholder="Leave empty to use the default Claude prompt template..."
+                  />
+                  <Button
+                    onClick={async () => {
+                      if (!selectedVersionId) return;
+                      const { error } = await supabase
+                        .from("grant_versions")
+                        .update({ claude_prompt_template: claudePromptTemplate || null } as any)
+                        .eq("id", selectedVersionId);
+                      if (error) {
+                        toast({ title: "Error saving prompt", variant: "destructive" });
+                      } else {
+                        toast({ title: "Claude prompt template saved" });
+                        queryClient.invalidateQueries({ queryKey: ["admin-grant", id] });
+                      }
+                    }}
+                    disabled={!selectedVersionId}
+                  >
+                    Save Prompt Template
+                  </Button>
 
-                  {pipelineStatus === "draft" && (
-                    <p className="text-sm text-amber-600">
-                      ⚠️ This pipeline is in draft status. Researchers will use the global default pipeline 
-                      until a Super Admin publishes this grant-specific pipeline.
+                  {/* Guidelines reminder */}
+                  <div className="p-4 rounded-lg border bg-muted/30">
+                    <p className="text-sm font-medium mb-1">📄 Grant Guidelines</p>
+                    <p className="text-sm text-muted-foreground">
+                      {guidelinesRawText 
+                        ? `Guidelines uploaded (${guidelinesRawText.length.toLocaleString()} chars). They will be interpolated into the prompt via {{grantGuidelines}}.`
+                        : "No guidelines uploaded yet. Upload them in the Guidelines tab to populate {{grantGuidelines}}."}
                     </p>
-                  )}
-
-                  {pipelineStatus === "published" && (
-                    <p className="text-sm text-green-600">
-                      ✓ This pipeline is active. Researchers applying for this grant will use this 
-                      custom research pipeline.
-                    </p>
-                  )}
-
-                  {/* Inline Pipeline Editor */}
-                  {pipelineExpanded && (
-                    <InlinePipelineEditor 
-                      bundleId={promptBundleId} 
-                      showBundleSettings={false}
-                      className="mt-4"
-                      grantContext={{
-                        grantName: name,
-                        grantSummary: aiSuggestions?.grant_summary,
-                        rubricSummary: versionRubric ? `See rubric` : undefined,
+                  </div>
+                </div>
+              ) : (
+                /* Standard multi-step pipeline editor */
+                <>
+                  {/* Pipeline Selector */}
+                  <div className="space-y-2">
+                    <Label htmlFor="pipeline-select">Attached Pipeline</Label>
+                    <Select
+                      value={promptBundleId || "none"}
+                      onValueChange={(value) => {
+                        const newBundleId = value === "none" ? null : value;
+                        setPromptBundleId(newBundleId);
+                        updatePipelineMutation.mutate(newBundleId);
                       }}
-                    />
+                      disabled={updatePipelineMutation.isPending || bundlesLoading}
+                    >
+                      <SelectTrigger id="pipeline-select" className="w-full max-w-md">
+                        <SelectValue placeholder="Select a pipeline..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">
+                          No pipeline (use global default)
+                        </SelectItem>
+                        {allPromptBundles?.map((bundle) => (
+                          <SelectItem key={bundle.id} value={bundle.id}>
+                            {bundle.name}
+                            {bundle.is_active && " (Global Default)"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {updatePipelineMutation.isPending && (
+                      <p className="text-sm text-muted-foreground flex items-center gap-2">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Updating pipeline...
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Pipeline Status & Actions */}
+                  {promptBundleId ? (
+                    <>
+                      <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+                        <div>
+                          <p className="font-medium">Pipeline Status</p>
+                          <Badge 
+                            variant={pipelineStatus === "published" ? "default" : "secondary"}
+                            className="mt-1"
+                          >
+                            {pipelineStatus}
+                          </Badge>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button 
+                            variant="outline" 
+                            onClick={() => setPipelineExpanded(!pipelineExpanded)}
+                          >
+                            {pipelineExpanded ? (
+                              <ChevronUp className="h-4 w-4 mr-2" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4 mr-2" />
+                            )}
+                            {pipelineExpanded ? "Hide Pipeline Editor" : "View & Edit Pipeline"}
+                          </Button>
+                          {isSuperAdmin && pipelineStatus === "draft" && (
+                            <Button 
+                              onClick={() => publishPipelineMutation.mutate()}
+                              disabled={publishPipelineMutation.isPending}
+                            >
+                              {publishPipelineMutation.isPending && (
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              )}
+                              <CheckCircle className="h-4 w-4 mr-2" />
+                              Publish Pipeline
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      {pipelineStatus === "draft" && (
+                        <p className="text-sm text-amber-600">
+                          ⚠️ This pipeline is in draft status. Researchers will use the global default pipeline 
+                          until a Super Admin publishes this grant-specific pipeline.
+                        </p>
+                      )}
+
+                      {pipelineStatus === "published" && (
+                        <p className="text-sm text-green-600">
+                          ✓ This pipeline is active. Researchers applying for this grant will use this 
+                          custom research pipeline.
+                        </p>
+                      )}
+
+                      {/* Inline Pipeline Editor */}
+                      {pipelineExpanded && (
+                        <InlinePipelineEditor 
+                          bundleId={promptBundleId} 
+                          showBundleSettings={false}
+                          className="mt-4"
+                          grantContext={{
+                            grantName: name,
+                            grantSummary: aiSuggestions?.grant_summary,
+                            rubricSummary: versionRubric ? `See rubric` : undefined,
+                          }}
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-center py-8 border rounded-lg bg-muted/20">
+                      <Workflow className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                      <p className="text-muted-foreground mb-2">
+                        No pipeline attached
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Select a pipeline from the dropdown above, or upload guidelines to auto-generate one.
+                      </p>
+                    </div>
                   )}
                 </>
-              ) : (
-                <div className="text-center py-8 border rounded-lg bg-muted/20">
-                  <Workflow className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                  <p className="text-muted-foreground mb-2">
-                    No pipeline attached
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    Select a pipeline from the dropdown above, or upload guidelines to auto-generate one.
-                  </p>
-                </div>
               )}
             </CardContent>
           </Card>
