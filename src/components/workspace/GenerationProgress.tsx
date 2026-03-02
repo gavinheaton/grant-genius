@@ -207,7 +207,7 @@ export function GenerationProgress({
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">
-              {status === "running" && `Step ${completedSteps + 1}/${totalSteps}: ${currentStepName}`}
+              {status === "running" && (isSingleStepRun ? currentStepName : `Step ${completedSteps + 1}/${totalSteps}: ${currentStepName}`)}
               {status === "completed" && "Report generation complete!"}
               {status === "failed" && "Generation failed"}
               {status === "pending" && (completedSteps === 0 ? "Starting generation..." : `Preparing step ${completedSteps + 1}...`)}
