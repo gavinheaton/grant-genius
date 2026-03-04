@@ -22,6 +22,16 @@ interface PdfTemplate {
   include_toc: boolean;
   section_page_breaks: boolean;
   watermark_text: string;
+  show_grant_genius_branding?: boolean;
+  powered_by_text?: string;
+  cover_layout_json?: {
+    logo_position?: string;
+    title_text?: string;
+    subtitle_template?: string;
+    show_date?: boolean;
+    show_version?: boolean;
+    background_style?: string;
+  };
 }
 
 interface ReportContent {
@@ -119,7 +129,8 @@ function buildHtml(
   report: any,
   template: PdfTemplate,
   logoUrl: string | null,
-  grantName: string
+  grantName: string,
+  projectTitle: string
 ): string {
   const content = (report.content_json || {}) as ReportContent;
   const citations = (report.citations_json || []) as any[];
