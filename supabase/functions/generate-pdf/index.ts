@@ -146,14 +146,23 @@ function buildHtml(
   const reportHtml = extractReportHtml(content);
   const htmlHasReferences = hasReferencesInHtml(reportHtml || "");
   
-  // Cover page
+  // Cover page - use cover_layout_json if available
+  const coverLayout = template.cover_layout_json || {};
+  const coverTitle = coverLayout.title_text || "Research Commercialisation Report";
+  const subtitleTemplate = coverLayout.subtitle_template || "{project_title}";
+  const coverSubtitle = subtitleTemplate
+    .replace("{project_title}", projectTitle)
+    .replace("{grant_name}", grantName)
+    .replace("{date}", createdAt)
+    .replace("{version}", String(report.version_number));
+
   const coverPageHtml = template.include_cover_page
     ? `<div class="cover-page">
         ${logoUrl ? `<img src="${logoUrl}" alt="Logo" class="cover-logo" />` : ""}
-        <h1 class="cover-title">Research Commercialisation Report</h1>
-        <h2 class="cover-subtitle">${escapeHtml(grantName)}</h2>
-        <p class="cover-date">Generated: ${createdAt}</p>
-        <p class="cover-version">Version ${report.version_number}</p>
+        <h1 class="cover-title">${escapeHtml(coverTitle)}</h1>
+        <h2 class="cover-subtitle">${escapeHtml(coverSubtitle)}</h2>
+        ${coverLayout.show_date !== false ? `<p class="cover-date">Generated: ${createdAt}</p>` : ""}
+        ${coverLayout.show_version !== false ? `<p class="cover-version">Version ${report.version_number}</p>` : ""}
       </div>
       <div class="page-break"></div>`
     : "";
