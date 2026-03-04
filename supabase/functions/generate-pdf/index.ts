@@ -843,6 +843,7 @@ Deno.serve(async (req) => {
       .from("reports")
       .select(`
         *,
+        applications!inner(title),
         grant_versions!inner(
           grants!inner(name)
         )
@@ -859,6 +860,7 @@ Deno.serve(async (req) => {
     }
 
     const grantName = (report.grant_versions as any)?.grants?.name || "Grant Report";
+    const projectTitle = (report.applications as any)?.title || grantName;
 
     // Fetch default template
     const { data: template, error: templateError } = await supabase
@@ -885,7 +887,7 @@ Deno.serve(async (req) => {
     }
 
     // Build HTML
-    const htmlContent = buildHtml(report, template as PdfTemplate, logoUrl, grantName);
+    const htmlContent = buildHtml(report, template as PdfTemplate, logoUrl, grantName, projectTitle);
 
     // Call PDFShift API
     const PDFSHIFT_API_KEY = Deno.env.get("PDFSHIFT_API_KEY");
