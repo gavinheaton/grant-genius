@@ -23,6 +23,17 @@ import {
   ChevronRight,
   Terminal,
 } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 interface RunData {
   id: string;
@@ -134,6 +145,7 @@ export default function RunDetail() {
   const [run, setRun] = useState<RunData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
 
   // Auto-scroll on new logs
   useEffect(() => {
@@ -315,44 +327,70 @@ export default function RunDetail() {
           </div>
 
           {/* Action Buttons */}
-          <div className="flex gap-2 mt-6 pt-4 border-t">
-            {run.status === "failed" && (
-              <>
+          <div className="mt-6 pt-4 border-t space-y-3">
+            {run.status !== "completed" && (
+              <p className="text-sm text-muted-foreground">
+                Completed {run.current_step} of {run.total_steps} steps
+              </p>
+            )}
+            <div className="flex gap-2">
+              {(run.status === "failed" || run.status === "running" || run.status === "pending") && (
                 <Button
                   size="sm"
                   onClick={() => handleAction("resume")}
                   disabled={!!actionLoading}
                 >
                   {actionLoading === "resume" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Play className="h-4 w-4 mr-1" />}
-                  Resume
+                  Resume from Step {run.current_step}
                 </Button>
-                {isSuperAdmin && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => handleAction("restart")}
-                    disabled={!!actionLoading}
-                  >
-                    {actionLoading === "restart" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RotateCcw className="h-4 w-4 mr-1" />}
-                    Clear & Restart
-                  </Button>
-                )}
-              </>
-            )}
-            {(run.status === "running" || run.status === "pending") && (
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => handleAction("cancel")}
-                disabled={!!actionLoading}
-              >
-                {actionLoading === "cancel" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <XCircle className="h-4 w-4 mr-1" />}
-                Force Fail
-              </Button>
-            )}
-            {run.status === "completed" && (
-              <p className="text-sm text-muted-foreground">This run completed successfully.</p>
-            )}
+              )}
+              {(run.status === "running" || run.status === "pending") && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleAction("cancel")}
+                  disabled={!!actionLoading}
+                >
+                  {actionLoading === "cancel" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <XCircle className="h-4 w-4 mr-1" />}
+                  Force Fail
+                </Button>
+              )}
+              {isSuperAdmin && run.status !== "completed" && (
+                <AlertDialog open={confirmRestart} onOpenChange={setConfirmRestart}>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      disabled={!!actionLoading}
+                    >
+                      {actionLoading === "restart" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RotateCcw className="h-4 w-4 mr-1" />}
+                      Wipe & Restart
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Wipe all progress?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This will delete all {run.current_step} completed steps and restart from the beginning.
+                        If you just want to continue from where it stopped, close this and use <strong>Resume from Step {run.current_step}</strong> instead.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => { setConfirmRestart(false); handleAction("restart"); }}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Yes, wipe & restart
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+              {run.status === "completed" && (
+                <p className="text-sm text-muted-foreground">This run completed successfully.</p>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
