@@ -96,5 +96,8 @@ verify_jwt = false
 [functions.get-api-key]
 verify_jwt = false
 
+[functions.validate-references]
+verify_jwt = false
+
 [functions.run-claude-report]
 verify_jwt = false

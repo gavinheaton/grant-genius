@@ -234,25 +234,46 @@ serve(async (req) => {
     await logMessage(supabase, report_run_id, "info", `Preparing prompt and context (${assembledPrompt.length} chars)...`);
     await logMessage(supabase, report_run_id, "info", "Calling Claude API...");
 
-    // Call Anthropic Claude API
-    const claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": anthropicApiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 16000,
-        messages: [
-          {
-            role: "user",
-            content: assembledPrompt,
-          },
-        ],
-      }),
-    });
+    // Call Anthropic Claude API with 120s timeout guard
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+    let claudeResponse: Response;
+    try {
+      claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": anthropicApiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 16000,
+          messages: [
+            {
+              role: "user",
+              content: assembledPrompt,
+            },
+          ],
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      const isTimeout = fetchError instanceof DOMException && fetchError.name === "AbortError";
+      const reason = isTimeout
+        ? "Claude API call timed out after 120 seconds"
+        : `Claude API call failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
+      console.error(reason);
+      await markRunFailed(supabase, report_run_id, reason);
+      await logMessage(supabase, report_run_id, "error", reason);
+      return new Response(
+        JSON.stringify({ error: reason }),
+        { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+    clearTimeout(timeoutId);
 
     if (!claudeResponse.ok) {
       const errorText = await claudeResponse.text();
