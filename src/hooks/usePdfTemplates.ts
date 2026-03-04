@@ -57,7 +57,7 @@ function toTemplate(row: any): PdfTemplate {
     cover_layout_json: (row.cover_layout_json || {
       logo_position: "center",
       title_text: "Commercialisation Research Report",
-      subtitle_template: "{grant_name}",
+      subtitle_template: "{project_title}",
       show_date: true,
       show_version: true,
       background_style: "solid",
