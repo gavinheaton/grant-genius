@@ -92,10 +92,11 @@ interface PdfReportRendererProps {
   report: Report;
   template: PdfTemplate;
   grantName: string;
+  projectTitle?: string;
 }
 
 export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererProps>(
-  ({ report, template, grantName }, ref) => {
+  ({ report, template, grantName, projectTitle }, ref) => {
     const content = report.content_json as ContentJson;
     const generatedDate = format(new Date(report.created_at), "MMMM d, yyyy");
 
@@ -120,7 +121,7 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
     const coverLayout: CoverLayout = (template as any).cover_layout_json || {
       logo_position: "center",
       title_text: "Commercialisation Research Report",
-      subtitle_template: "{grant_name}",
+      subtitle_template: "{project_title}",
       show_date: true,
       show_version: true,
       background_style: "solid",
@@ -253,9 +254,10 @@ export const PdfReportRenderer = forwardRef<HTMLDivElement, PdfReportRendererPro
 
     // Replace template variables in cover subtitle
     const subtitle = coverLayout.subtitle_template
-      ?.replace("{grant_name}", grantName)
+      ?.replace("{project_title}", projectTitle || grantName)
+      .replace("{grant_name}", grantName)
       .replace("{date}", generatedDate)
-      .replace("{version}", String(report.version_number)) || grantName;
+      .replace("{version}", String(report.version_number)) || projectTitle || grantName;
 
     const logoAlignment = coverLayout.logo_position === "left" ? "flex-start" 
       : coverLayout.logo_position === "right" ? "flex-end" 

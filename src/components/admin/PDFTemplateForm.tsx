@@ -509,10 +509,10 @@ export function PDFTemplateForm({ template, onSave, isSaving }: PDFTemplateFormP
                       <Input
                         value={currentCoverLayout.subtitle_template || ""}
                         onChange={(e) => updateCoverLayout("subtitle_template", e.target.value)}
-                        placeholder="{grant_name}"
+                        placeholder="{project_title}"
                       />
                       <p className="text-xs text-muted-foreground">
-                        Variables: {"{grant_name}"}, {"{date}"}, {"{version}"}
+                        Variables: {"{project_title}"}, {"{grant_name}"}, {"{date}"}, {"{version}"}
                       </p>
                     </div>
 
