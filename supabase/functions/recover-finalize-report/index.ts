@@ -372,8 +372,9 @@ serve(async (req) => {
       return errorResponse("Application not found", 404);
     }
 
-    // Verify user owns this application
-    if (application.user_id !== user.id) {
+    // Verify user owns this application OR is an admin
+    const { data: adminCheck } = await supabase.rpc("is_admin", { _user_id: user.id });
+    if (application.user_id !== user.id && !adminCheck) {
       return errorResponse("Unauthorized - you don't own this application", 403);
     }
 

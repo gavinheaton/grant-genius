@@ -388,7 +388,18 @@ export default function RunDetail() {
                 </AlertDialog>
               )}
               {run.status === "completed" && (
-                <p className="text-sm text-muted-foreground">This run completed successfully.</p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleRecover}
+                    disabled={!!actionLoading}
+                  >
+                    {actionLoading === "recover" ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RotateCcw className="h-4 w-4 mr-1" />}
+                    Recover Report
+                  </Button>
+                  <span className="text-sm text-muted-foreground">Re-assemble report from completed step outputs</span>
+                </div>
               )}
             </div>
           </div>
