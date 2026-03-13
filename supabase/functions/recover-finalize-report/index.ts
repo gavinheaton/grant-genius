@@ -522,7 +522,18 @@ serve(async (req) => {
       console.log("[RECOVER] Using STANDARD multi-step recovery strategy");
       recoveryStrategy = "multi-step";
       
-      reportHtml = assembleSectionsStep.outputs_json.sections_html as string;
+      // Extract HTML: try sections_html first, then report_html, then convert report_markdown
+      if (assembleOutputs.sections_html && isReportHtml(assembleOutputs.sections_html)) {
+        reportHtml = assembleOutputs.sections_html as string;
+      } else if (assembleOutputs.report_html && isReportHtml(assembleOutputs.report_html)) {
+        reportHtml = assembleOutputs.report_html as string;
+      } else if (assembleOutputs.report_markdown && isReportMarkdown(assembleOutputs.report_markdown)) {
+        console.log("[RECOVER] Converting assemble step report_markdown to HTML");
+        reportHtml = markdownToHtml(assembleOutputs.report_markdown as string);
+      } else {
+        // Fallback: take whatever string is longest
+        reportHtml = (assembleOutputs.sections_html || assembleOutputs.report_html || "") as string;
+      }
       tables = (buildTablesStep.outputs_json.tables || {}) as Record<string, string>;
       allSources = (buildTablesStep.outputs_json.all_sources || []);
       dataGaps = (buildTablesStep.outputs_json.data_gaps || []) as string[];
