@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatDistanceToNow } from "date-fns";
-import { AlertCircle, XCircle, Ban } from "lucide-react";
+import { AlertCircle, XCircle, Ban, CheckCircle2 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -23,9 +23,18 @@ interface FailedRun {
   } | null;
 }
 
-interface FailuresPanelProps {
+interface CompletedRun {
+  id: string;
+  created_at: string;
+  completed_at: string | null;
+  application: { title: string | null } | null;
+  user_email: string | null;
+}
+
+interface RecentRunsPanelProps {
   stageFailures: FailedRun[];
   cancellations: FailedRun[];
+  completedRuns: CompletedRun[];
   isLoading: boolean;
 }
 
@@ -101,7 +110,53 @@ function FailuresList({ failures, isCancellation }: { failures: FailedRun[]; isC
   );
 }
 
-export function FailuresPanel({ stageFailures, cancellations, isLoading }: FailuresPanelProps) {
+function CompletedList({ runs }: { runs: CompletedRun[] }) {
+  if (runs.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+        <CheckCircle2 className="h-8 w-8 mb-2 opacity-50" />
+        <p className="text-sm">No recent completed runs</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {runs.map((run) => {
+        const runTime = run.completed_at || run.created_at;
+        return (
+          <Link
+            key={run.id}
+            to={`/admin/runs/${run.id}`}
+            className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors block"
+          >
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+              <div className="text-left">
+                <span className="text-sm font-medium truncate max-w-[200px] block text-primary hover:underline">
+                  {run.user_email || "Unknown user"}
+                </span>
+                <p className="text-xs text-muted-foreground">
+                  {run.application?.title || "Untitled"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline" className="text-xs text-green-700 border-green-300 bg-green-50">
+                Completed
+              </Badge>
+              <span className="text-xs text-muted-foreground">
+                {formatDistanceToNow(new Date(runTime), { addSuffix: true })}
+              </span>
+            </div>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+export function RecentRunsPanel({ stageFailures, cancellations, completedRuns, isLoading }: RecentRunsPanelProps) {
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -114,9 +169,9 @@ export function FailuresPanel({ stageFailures, cancellations, isLoading }: Failu
 
   return (
     <Tabs defaultValue="failures" className="w-full">
-      <TabsList className="grid w-full grid-cols-2">
+      <TabsList className="grid w-full grid-cols-3">
         <TabsTrigger value="failures" className="gap-2">
-          Stage Failures
+          Failures
           {stageFailures.length > 0 && (
             <Badge variant="destructive" className="ml-1 h-5 min-w-5 px-1.5">
               {stageFailures.length}
@@ -124,10 +179,18 @@ export function FailuresPanel({ stageFailures, cancellations, isLoading }: Failu
           )}
         </TabsTrigger>
         <TabsTrigger value="cancellations" className="gap-2">
-          Cancellations
+          Cancelled
           {cancellations.length > 0 && (
             <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5">
               {cancellations.length}
+            </Badge>
+          )}
+        </TabsTrigger>
+        <TabsTrigger value="completed" className="gap-2">
+          Completed
+          {completedRuns.length > 0 && (
+            <Badge variant="outline" className="ml-1 h-5 min-w-5 px-1.5">
+              {completedRuns.length}
             </Badge>
           )}
         </TabsTrigger>
@@ -137,6 +200,9 @@ export function FailuresPanel({ stageFailures, cancellations, isLoading }: Failu
       </TabsContent>
       <TabsContent value="cancellations" className="mt-4">
         <FailuresList failures={cancellations} isCancellation={true} />
+      </TabsContent>
+      <TabsContent value="completed" className="mt-4">
+        <CompletedList runs={completedRuns} />
       </TabsContent>
     </Tabs>
   );

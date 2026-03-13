@@ -6,7 +6,7 @@ import { RefreshCw, AlertTriangle } from "lucide-react";
 import { startOfDay, subDays, differenceInMinutes } from "date-fns";
 import { LiveOperationsCards } from "@/components/admin/LiveOperationsCards";
 import { ActiveRunsTable } from "@/components/admin/ActiveRunsTable";
-import { FailuresPanel } from "@/components/admin/FailuresPanel";
+import { RecentRunsPanel } from "@/components/admin/RecentRunsPanel";
 import { StepFailureBreakdown } from "@/components/admin/StepFailureBreakdown";
 import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
@@ -41,6 +41,7 @@ export default function AdminDashboard() {
         entitlementsRes,
         auditRes,
         stepFailuresRes,
+        completedRunsRes,
         stalledRunsRes,
       ] = await Promise.all([
         // Today's run statistics
@@ -97,6 +98,19 @@ export default function AdminDashboard() {
           .select("step_number, step_name, error_message")
           .eq("status", "failed")
           .gte("created_at", thirtyDaysAgo),
+
+        // Recent completed runs
+        supabase
+          .from("report_runs")
+          .select(`
+            id,
+            created_at,
+            completed_at,
+            applications!inner(title, user_id, profiles:user_id(email))
+          `)
+          .eq("status", "completed")
+          .order("created_at", { ascending: false })
+          .limit(20),
 
         // Stalled runs - fetch all running/pending, filter by activity client-side
         supabase
@@ -258,6 +272,15 @@ export default function AdminDashboard() {
           .filter((run: any) => run.lastActivity < fifteenMinAgo);
       }
 
+      // Map completed runs
+      const completedRuns = (completedRunsRes.data || []).map((run: any) => ({
+        id: run.id,
+        created_at: run.created_at,
+        completed_at: run.completed_at,
+        application: run.applications ? { title: run.applications.title } : null,
+        user_email: run.applications?.profiles?.email || null,
+      }));
+
       return {
         currentlyRunning,
         completedToday,
@@ -266,6 +289,7 @@ export default function AdminDashboard() {
         activeRuns,
         stageFailures,
         cancellations,
+        completedRuns,
         stepFailureBreakdown,
         stalledRuns,
         trendData,
@@ -360,13 +384,14 @@ export default function AdminDashboard() {
           {/* Recent Failures with Tabs */}
           <Card>
             <CardHeader>
-              <CardTitle>Recent Failures</CardTitle>
-              <CardDescription>Stage gate failures vs user cancellations</CardDescription>
+              <CardTitle>Recent Runs</CardTitle>
+              <CardDescription>Failures, cancellations, and completed runs</CardDescription>
             </CardHeader>
             <CardContent>
-              <FailuresPanel 
+              <RecentRunsPanel 
                 stageFailures={data?.stageFailures ?? []} 
                 cancellations={data?.cancellations ?? []}
+                completedRuns={data?.completedRuns ?? []}
                 isLoading={isLoading} 
               />
             </CardContent>
