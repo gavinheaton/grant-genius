@@ -41,6 +41,7 @@ export default function AdminDashboard() {
         entitlementsRes,
         auditRes,
         stepFailuresRes,
+        completedRunsRes,
         stalledRunsRes,
       ] = await Promise.all([
         // Today's run statistics
