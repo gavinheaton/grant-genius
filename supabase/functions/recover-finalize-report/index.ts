@@ -20,12 +20,73 @@ function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, status);
 }
 
+// ============ Markdown → HTML Converter ============
+
+function markdownToHtml(md: string): string {
+  let html = md;
+
+  // Headings (must come before other line-level transforms)
+  html = html.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^#{3}\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#{1}\s+(.+)$/gm, '<h1>$1</h1>');
+
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // Unordered lists (simple, consecutive lines starting with - or *)
+  html = html.replace(/(?:^[\-\*]\s+.+$\n?)+/gm, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      const content = line.replace(/^[\-\*]\s+/, '');
+      return `<li>${content}</li>`;
+    }).join('\n');
+    return `<ul>\n${items}\n</ul>\n`;
+  });
+
+  // Ordered lists
+  html = html.replace(/(?:^\d+\.\s+.+$\n?)+/gm, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      const content = line.replace(/^\d+\.\s+/, '');
+      return `<li>${content}</li>`;
+    }).join('\n');
+    return `<ol>\n${items}\n</ol>\n`;
+  });
+
+  // Simple markdown tables
+  html = html.replace(/(?:^\|.+\|$\n?)+/gm, (block) => {
+    const rows = block.trim().split('\n').filter(r => !r.match(/^\|\s*[-:]+/));
+    if (rows.length === 0) return block;
+    const headerCells = rows[0].split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const bodyRows = rows.slice(1).map(row => {
+      const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('\n');
+    return `<table><thead><tr>${headerCells}</tr></thead><tbody>\n${bodyRows}\n</tbody></table>\n`;
+  });
+
+  // Paragraphs: wrap remaining plain text lines (not already wrapped in tags)
+  html = html.replace(/^(?!<[a-z]).+$/gm, (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return '';
+    return `<p>${trimmed}</p>`;
+  });
+
+  // Clean up excessive blank lines
+  html = html.replace(/\n{3,}/g, '\n\n');
+
+  return html;
+}
+
 // ============ Strategy Detection Functions ============
 
 // Detect if a value looks like report HTML
 function isReportHtml(value: unknown): value is string {
   if (typeof value !== "string") return false;
-  // Must be substantial HTML with heading tags
   return value.length > 500 && (
     value.includes("<h1") || 
     value.includes("<h2") || 
@@ -34,23 +95,46 @@ function isReportHtml(value: unknown): value is string {
   );
 }
 
-// Try to extract report HTML from step outputs
+// Detect if a value looks like substantial report markdown
+function isReportMarkdown(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  return value.length > 500 && (
+    value.includes("## ") ||
+    value.includes("# ") ||
+    value.includes("### ")
+  );
+}
+
+// Try to extract report HTML from step outputs (also converts markdown)
 function extractReportFromStep(outputs: Record<string, unknown>): string | null {
-  // Priority order of field names to check
-  const fieldPriority = ["report_html", "report", "html", "content", "sections_html"];
-  
-  for (const field of fieldPriority) {
+  // Priority order: HTML fields first
+  const htmlFields = ["report_html", "report", "html", "content", "sections_html"];
+  for (const field of htmlFields) {
     if (outputs[field] && isReportHtml(outputs[field])) {
       return outputs[field] as string;
     }
   }
+
+  // Then try markdown fields and convert
+  const mdFields = ["report_markdown", "markdown", "report_md"];
+  for (const field of mdFields) {
+    if (outputs[field] && isReportMarkdown(outputs[field])) {
+      console.log(`[RECOVER] Converting ${field} from markdown to HTML`);
+      return markdownToHtml(outputs[field] as string);
+    }
+  }
   
-  // Also check nested structures (e.g., { assembledReport: { report_html: ... } })
+  // Also check nested structures
   if (outputs.assembledReport && typeof outputs.assembledReport === "object") {
     const nested = outputs.assembledReport as Record<string, unknown>;
-    for (const field of fieldPriority) {
+    for (const field of htmlFields) {
       if (nested[field] && isReportHtml(nested[field])) {
         return nested[field] as string;
+      }
+    }
+    for (const field of mdFields) {
+      if (nested[field] && isReportMarkdown(nested[field])) {
+        return markdownToHtml(nested[field] as string);
       }
     }
   }
@@ -58,9 +142,24 @@ function extractReportFromStep(outputs: Record<string, unknown>): string | null 
   return null;
 }
 
-// Extract tables from step outputs (flexible field names)
+// Extract tables from step outputs (flexible: object map or array)
 function extractTablesFromStep(outputs: Record<string, unknown>): Record<string, string> {
-  if (outputs.tables && typeof outputs.tables === "object" && !Array.isArray(outputs.tables)) {
+  if (outputs.tables && typeof outputs.tables === "object") {
+    if (Array.isArray(outputs.tables)) {
+      // Convert array of table objects to a map keyed by index or title
+      const result: Record<string, string> = {};
+      for (let i = 0; i < outputs.tables.length; i++) {
+        const t = outputs.tables[i];
+        if (typeof t === "string") {
+          result[`table_${i}`] = t;
+        } else if (t && typeof t === "object") {
+          const key = (t as any).id || (t as any).title || `table_${i}`;
+          const html = (t as any).html || (t as any).content || JSON.stringify(t);
+          result[key] = html;
+        }
+      }
+      return result;
+    }
     return outputs.tables as Record<string, string>;
   }
   return {};
