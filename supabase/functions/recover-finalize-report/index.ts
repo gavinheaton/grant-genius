@@ -498,11 +498,12 @@ serve(async (req) => {
     }
 
     // ============ STRATEGY 1: Standard Multi-Step Pipeline ============
+    // Support both naming conventions: _html suffix (legacy) and without (current)
     const assembleSectionsStep = steps?.find(
-      (s: any) => s.step_name === "assemble_sections_html" && s.status === "completed"
+      (s: any) => (s.step_name === "assemble_sections_html" || s.step_name === "assemble_sections") && s.status === "completed"
     );
     const buildTablesStep = steps?.find(
-      (s: any) => s.step_name === "build_tables_sources_html" && s.status === "completed"
+      (s: any) => (s.step_name === "build_tables_sources_html" || s.step_name === "build_tables_sources") && s.status === "completed"
     );
 
     let reportHtml: string | null = null;
@@ -511,8 +512,13 @@ serve(async (req) => {
     let dataGaps: string[] = [];
     let recoveryStrategy = "unknown";
 
-    if (assembleSectionsStep?.outputs_json?.sections_html && buildTablesStep?.outputs_json) {
-      // Standard multi-step recovery
+    // Check for sections_html (legacy) or report_markdown (current) in assemble step
+    const assembleOutputs = assembleSectionsStep?.outputs_json;
+    const hasAssembleContent = assembleOutputs && (
+      assembleOutputs.sections_html || assembleOutputs.report_html || assembleOutputs.report_markdown
+    );
+
+    if (hasAssembleContent && buildTablesStep?.outputs_json) {
       console.log("[RECOVER] Using STANDARD multi-step recovery strategy");
       recoveryStrategy = "multi-step";
       
