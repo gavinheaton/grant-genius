@@ -384,13 +384,14 @@ export default function AdminDashboard() {
           {/* Recent Failures with Tabs */}
           <Card>
             <CardHeader>
-              <CardTitle>Recent Failures</CardTitle>
-              <CardDescription>Stage gate failures vs user cancellations</CardDescription>
+              <CardTitle>Recent Runs</CardTitle>
+              <CardDescription>Failures, cancellations, and completed runs</CardDescription>
             </CardHeader>
             <CardContent>
-              <FailuresPanel 
+              <RecentRunsPanel 
                 stageFailures={data?.stageFailures ?? []} 
                 cancellations={data?.cancellations ?? []}
+                completedRuns={data?.completedRuns ?? []}
                 isLoading={isLoading} 
               />
             </CardContent>
