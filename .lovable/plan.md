@@ -1,51 +1,86 @@
+## Expose Report Generation Pipeline as a Secure API
 
-Root cause confirmed from runtime logs (not environment config): `recover-finalize-report` returns a deliberate 400 because it cannot find **HTML** in completed steps. Your run has:
-- `assemble_sections` with `report_markdown`
-- `build_tables_sources` with `tables`/`all_sources`
-- `finalize_report` still `running` with empty outputs
+### Status: ✅ IMPLEMENTED
 
-The recovery function currently only handles older `_html` step names and HTML-first outputs.
+### What was built
 
-Implementation plan:
+1. **Database**: `api_usage_logs` and `api_settings` tables with admin-only RLS; `webhook_url` column on `report_runs`; `api_source` column on `applications`; `api_system_user_id` column on `api_settings`
+2. **`api-generate-report` edge function**: Accepts summary + optional inputs, creates application/run, triggers pipeline via `enqueue-report`, bypasses credit checks (Option B)
+3. **`api-report-status` edge function**: Returns run progress, and when completed, the full report HTML + citations
+4. **`api-cancel-report` edge function**: Cancels a running/pending report run, refunds credits, fires failure webhook
+5. **Webhook support**: `worker-proxy` POSTs completed report data to `webhook_url` if configured on the run — **including on failure** (event: `report.failed`)
+6. **Admin UI**: `/admin/api` page with enable/disable toggle, usage stats, client breakdown, recent API call logs, **default grant selector**, and **system user selector**
+7. **Sidebar**: "API Access" link added to admin sidebar under System section
 
-1) Update recovery step detection to support both pipeline variants  
-- File: `supabase/functions/recover-finalize-report/index.ts`  
-- Accept both naming styles:
-  - `assemble_sections_html` and `assemble_sections`
-  - `build_tables_sources_html` and `build_tables_sources`
-  - `finalize_report_html` and `finalize_report`
-- Keep backward compatibility for older runs.
+### Fixes Applied (v2)
 
-2) Add markdown-first recovery path  
-- In the same function, add extraction logic for `report_markdown` (from finalize/assemble steps) when `report_html` is missing.
-- Add a lightweight markdown→HTML converter in the function (headings, paragraphs, lists, links, basic tables), so recovered reports still work with HTML consumers (email/PDF/export).
-- Keep citation normalization on the produced HTML.
+1. **User ownership**: API-generated apps now use `api_settings.api_system_user_id` instead of defaulting to first super admin
+2. **Grant selection**: Random fallback removed — returns 400 if no `grant_id` provided and no default configured
+3. **Failure webhooks**: `worker-proxy` now POSTs `report.failed` event to `webhook_url` when a run fails
 
-3) Make extraction utilities tolerant of real output shapes  
-- Expand helpers to handle:
-  - `tables` as either object map or array
-  - `all_sources` from multiple candidate fields/steps
-  - `data_gaps` from finalize/assemble/tables outputs
-- Avoid object-only assumptions that break on array-based `tables`.
+## Add Claude Single-Prompt Engine
 
-4) Save a complete assembled payload  
-- Ensure `content_json.assembledReport` includes:
-  - `report_html` (generated or extracted)
-  - `report_markdown` (when available)
-  - `tables`, `all_sources`, `data_gaps`
-- This keeps compatibility with both HTML and markdown viewers and admin tooling.
+### Status: ✅ IMPLEMENTED
 
-5) Finalize-step status update compatibility  
-- When marking recovery metadata, update whichever finalize step exists (`finalize_report` or `finalize_report_html`) instead of only the old name.
+### What was built
 
-6) Improve admin error visibility (quick UX hardening)  
-- File: `src/pages/admin/RunDetail.tsx`  
-- Parse function error body (when available) so toast shows the actual backend reason instead of generic “non-2xx status code”.  
-- This will make future recovery/debugging much faster.
+1. **Database**: `claude_prompt_template TEXT` column added to `grant_versions` for per-grant editable prompt templates
+2. **`run-claude-report` edge function**: Loads application inputs + grant context, interpolates shortcodes into the prompt template, calls Anthropic Claude API (claude-sonnet-4-20250514), saves HTML report, handles webhooks and emails
+3. **`generate-report` updated**: Early return branch when `execution_engine === 'claude'` — creates single-step run, dispatches to `run-claude-report`
+4. **`api-generate-report` updated**: Supports optional `engine: "claude"` parameter in API requests
+5. **`EngineSettingsCard` updated**: "Claude (Single Prompt)" as a third engine option with Brain icon
+6. **`GrantEdit.tsx` Pipeline tab**: When engine is `claude`, shows large editable textarea for the Claude prompt template with shortcode documentation, Reset to Default button, and guidelines status indicator
 
-Validation after implementation:
-- From `/admin/runs/466ad6de-52ef-4d57-84ff-556b320b1325`, click **Recover Report** again.
-- Confirm response is success (no 400), a new `reports` version is created, and `content_json` now contains `assembledReport`.
-- Confirm report opens in viewer and export paths still work.
+### Shortcodes
+- `{{summary}}`, `{{articleContent}}`, `{{trl}}`, `{{ipStatus}}`
+- `{{grantGuidelines}}`, `{{grantRubricFormatted}}`, `{{grantName}}`
+- Conditional: `{{#variable}}...{{/variable}}`
 
-No database schema/RLS changes are required for this fix.
+### Admin Flow
+1. Grant Edit > Advanced tab > Set engine to "Claude (Single Prompt)"
+2. Grant Edit > Guidelines tab > Upload PDF (existing)
+3. Grant Edit > Pipeline tab > Edit Claude prompt template
+4. Publish version
+
+### API Endpoints
+
+#### Generate Report
+```
+POST /functions/v1/api-generate-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
+
+{
+  "summary": "Research on novel polymer...",
+  "public_article_url": "https://...",
+  "client_name": "my-other-app",
+  "webhook_url": "https://my-app.com/webhook"
+}
+
+Response: { "run_id": "uuid", "status": "enqueued", "poll_url": "..." }
+```
+
+#### Report Status
+```
+GET /functions/v1/api-report-status?run_id=uuid
+Authorization: Bearer <API_SECRET_KEY>
+
+Response: { "status": "completed", "report_html": "...", "citations": [...] }
+```
+
+#### Cancel Report
+```
+POST /functions/v1/api-cancel-report
+Authorization: Bearer <API_SECRET_KEY>
+Content-Type: application/json
+
+{ "run_id": "uuid", "client_name": "my-app" }
+
+Success: { "success": true, "message": "Report generation cancelled" }
+Already stopped: { "success": true, "message": "Report generation already stopped", "already_stopped": true }
+```
+
+### Webhook Events
+
+**Success**: `{ "event": "report.completed", "run_id": "...", "report_html": "...", "citations": [...] }`
+**Failure**: `{ "event": "report.failed", "run_id": "...", "status": "failed", "halt_reason": "..." }`

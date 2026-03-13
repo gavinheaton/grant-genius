@@ -246,8 +246,17 @@ export default function RunDetail() {
       const { data, error } = await supabase.functions.invoke("recover-finalize-report", {
         body: { reportRunId: runId },
       });
-      if (error) throw error;
-      const strategy = data?.strategy || "unknown";
+      if (error) {
+        // Try to parse the actual error message from the response
+        let errorMsg = "Failed to recover report";
+        if (data?.error) {
+          errorMsg = data.error;
+        } else if (error instanceof Error) {
+          errorMsg = error.message;
+        }
+        throw new Error(errorMsg);
+      }
+      const strategy = data?.recoveryStrategy || data?.strategy || "unknown";
       toast.success(`Report recovered (strategy: ${strategy})`);
     } catch (err) {
       console.error("recover error:", err);
