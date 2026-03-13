@@ -272,6 +272,15 @@ export default function AdminDashboard() {
           .filter((run: any) => run.lastActivity < fifteenMinAgo);
       }
 
+      // Map completed runs
+      const completedRuns = (completedRunsRes.data || []).map((run: any) => ({
+        id: run.id,
+        created_at: run.created_at,
+        completed_at: run.completed_at,
+        application: run.applications ? { title: run.applications.title } : null,
+        user_email: run.applications?.profiles?.email || null,
+      }));
+
       return {
         currentlyRunning,
         completedToday,
@@ -280,6 +289,7 @@ export default function AdminDashboard() {
         activeRuns,
         stageFailures,
         cancellations,
+        completedRuns,
         stepFailureBreakdown,
         stalledRuns,
         trendData,
