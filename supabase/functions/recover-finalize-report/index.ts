@@ -694,10 +694,14 @@ serve(async (req) => {
     console.log(`[RECOVER] Final report_html length: ${reportHtml.length}`);
 
     // 5. Build content_json in expected format
+    // Try to preserve original markdown if available
+    const originalMarkdown = assembleSectionsStep?.outputs_json?.report_markdown as string | undefined;
+    
     const contentJson = {
       assembledReport: {
         title: application.title || "Commercialisation Research Report",
         report_html: reportHtml,
+        ...(originalMarkdown ? { report_markdown: originalMarkdown } : {}),
         tables: tables,
         all_sources: allSources,
         data_gaps: dataGaps,
