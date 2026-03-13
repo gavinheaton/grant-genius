@@ -6,7 +6,7 @@ import { RefreshCw, AlertTriangle } from "lucide-react";
 import { startOfDay, subDays, differenceInMinutes } from "date-fns";
 import { LiveOperationsCards } from "@/components/admin/LiveOperationsCards";
 import { ActiveRunsTable } from "@/components/admin/ActiveRunsTable";
-import { FailuresPanel } from "@/components/admin/FailuresPanel";
+import { RecentRunsPanel } from "@/components/admin/RecentRunsPanel";
 import { StepFailureBreakdown } from "@/components/admin/StepFailureBreakdown";
 import { TrendChart } from "@/components/admin/TrendChart";
 import { SystemHealthCards } from "@/components/admin/SystemHealthCards";
