@@ -732,9 +732,9 @@ serve(async (req) => {
 
     console.log(`[RECOVER] Created report: ${newReport.id}`);
 
-    // 8. Update finalize step if it exists
+    // 8. Update finalize step if it exists (support both naming conventions)
     const finalizeStep = steps?.find(
-      (s: any) => s.step_name === "finalize_report_html"
+      (s: any) => s.step_name === "finalize_report_html" || s.step_name === "finalize_report"
     );
 
     if (finalizeStep) {
@@ -752,11 +752,11 @@ serve(async (req) => {
           error_message: null,
         })
         .eq("report_run_id", reportRunId)
-        .eq("step_name", "finalize_report_html");
+        .eq("step_name", finalizeStep.step_name);
     } else {
-      // For pipelines without finalize step, mark the last failed step as recovered
+      // For pipelines without finalize step, mark the last non-completed step as recovered
       const lastStep = steps?.[steps.length - 1];
-      if (lastStep && lastStep.status === "failed") {
+      if (lastStep && lastStep.status !== "completed") {
         await supabase
           .from("report_run_steps")
           .update({
