@@ -592,7 +592,7 @@ serve(async (req) => {
         }
       }
       
-      // If still no report found, try extracting from any step's nested fields
+      // If still no report found, try extracting markdown or HTML from any step's nested fields
       if (!reportHtml) {
         for (const step of completedSteps) {
           const outputs = step.outputs_json || {};
@@ -601,6 +601,12 @@ serve(async (req) => {
               console.log(`[RECOVER] Found report HTML in step ${step.step_number}.${key}`);
               recoveryStrategy = "single-prompt-nested";
               reportHtml = value as string;
+              break;
+            }
+            if (isReportMarkdown(value)) {
+              console.log(`[RECOVER] Found report markdown in step ${step.step_number}.${key}, converting to HTML`);
+              recoveryStrategy = "single-prompt-markdown";
+              reportHtml = markdownToHtml(value as string);
               break;
             }
           }
