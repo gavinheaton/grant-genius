@@ -917,7 +917,25 @@ async function createFinalReport(
     ? (existingReports[0] as { version_number: number }).version_number + 1 
     : 1;
 
-  // Create the final report
+  // Build the assembledReport wrapper that the frontend expects
+  // Look through step outputs for the assembly/finalize data
+  const stepOutputs = reportContent as Record<string, any>;
+  const finalizeOutput = stepOutputs["finalize_report_html"] || stepOutputs["finalize_report"] || {};
+  const assembleOutput = stepOutputs["assemble_sections_html"] || stepOutputs["assemble_sections"] || {};
+  const tablesOutput = stepOutputs["build_tables_sources_html"] || stepOutputs["build_tables_sources"] || {};
+  const citationsOutput = stepOutputs["clean_citations_apa"] || {};
+
+  const assembledReport = {
+    report_markdown: finalizeOutput?.report_markdown || assembleOutput?.report_markdown || "",
+    report_html: finalizeOutput?.report_html || assembleOutput?.sections_html || null,
+    tables: tablesOutput?.tables || finalizeOutput?.tables || [],
+    all_sources: citationsOutput?.all_sources || tablesOutput?.all_sources || finalizeOutput?.all_sources || [],
+    data_gaps: finalizeOutput?.data_gaps || assembleOutput?.data_gaps || [],
+  };
+
+  console.log(`Assembled report wrapper: report_html length=${assembledReport.report_html?.length || 0}, report_markdown length=${assembledReport.report_markdown?.length || 0}, sources=${assembledReport.all_sources?.length || 0}`);
+
+  // Create the final report with the assembled wrapper
   const { data: newReport, error: reportInsertError } = await supabase.from("reports").insert({
     application_id: applicationId,
     user_id: userId,
@@ -925,7 +943,7 @@ async function createFinalReport(
     report_template_version_id: templateVersionId,
     report_run_id: reportRunId,
     version_number: nextVersion,
-    content_json: reportContent,
+    content_json: { assembledReport, ...stepOutputs },
     citations_json: citations,
     inputs_snapshot_json: inputs,
   }).select("id").single();
