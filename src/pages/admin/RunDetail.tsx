@@ -239,6 +239,24 @@ export default function RunDetail() {
     }
   };
 
+  const handleRecover = async () => {
+    if (!runId) return;
+    setActionLoading("recover");
+    try {
+      const { data, error } = await supabase.functions.invoke("recover-finalize-report", {
+        body: { reportRunId: runId },
+      });
+      if (error) throw error;
+      const strategy = data?.strategy || "unknown";
+      toast.success(`Report recovered (strategy: ${strategy})`);
+    } catch (err) {
+      console.error("recover error:", err);
+      toast.error(err instanceof Error ? err.message : "Failed to recover report");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-6">
