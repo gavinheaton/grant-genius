@@ -98,6 +98,19 @@ export default function AdminDashboard() {
           .eq("status", "failed")
           .gte("created_at", thirtyDaysAgo),
 
+        // Recent completed runs
+        supabase
+          .from("report_runs")
+          .select(`
+            id,
+            created_at,
+            completed_at,
+            applications!inner(title, user_id, profiles:user_id(email))
+          `)
+          .eq("status", "completed")
+          .order("created_at", { ascending: false })
+          .limit(20),
+
         // Stalled runs - fetch all running/pending, filter by activity client-side
         supabase
           .from("report_runs")
