@@ -85,10 +85,10 @@ export default function Auth() {
   };
 
   const handleVerifyOtp = async () => {
-    if (otpCode.length !== 6) {
+    if (otpCode.length !== 8) {
       toast({
         title: "Invalid code",
-        description: "Please enter the full 6-digit code.",
+        description: "Please enter the full 8-digit code.",
         variant: "destructive"
       });
       return;
@@ -151,7 +151,7 @@ export default function Auth() {
             <CardTitle className="text-2xl">Welcome to Grant Genius</CardTitle>
             <CardDescription>
               {isSuccess
-                ? "Enter the 6-digit code from your email"
+                ? "Enter the 8-digit code from your email"
                 : "Sign in with your email to continue"}
             </CardDescription>
           </CardHeader>
@@ -164,13 +164,13 @@ export default function Auth() {
                   </div>
                   <h3 className="text-lg font-semibold mb-2">Check your inbox</h3>
                   <p className="text-muted-foreground text-sm mb-6">
-                    We sent a 6-digit code to <strong>{email}</strong>
+                    We sent an 8-digit code to <strong>{email}</strong>
                   </p>
                 </div>
 
                 <div className="flex flex-col items-center gap-4">
                   <InputOTP
-                    maxLength={6}
+                    maxLength={8}
                     value={otpCode}
                     onChange={(value) => setOtpCode(value)}
                   >
@@ -181,6 +181,8 @@ export default function Auth() {
                       <InputOTPSlot index={3} />
                       <InputOTPSlot index={4} />
                       <InputOTPSlot index={5} />
+                      <InputOTPSlot index={6} />
+                      <InputOTPSlot index={7} />
                     </InputOTPGroup>
                   </InputOTP>
 
@@ -188,7 +190,7 @@ export default function Auth() {
                     className="w-full"
                     size="lg"
                     onClick={handleVerifyOtp}
-                    disabled={isVerifying || otpCode.length !== 6}
+                    disabled={isVerifying || otpCode.length !== 8}
                   >
                     {isVerifying ? (
                       <>

@@ -94,7 +94,7 @@ serve(async (req) => {
     const otpSection = otpCode ? `
     <div style="background: #F3F4F6; border-radius: 12px; padding: 24px; margin-bottom: 24px; text-align: center;">
       <p style="color: #374151; margin: 0 0 8px 0; font-size: 14px;">Your sign-in code:</p>
-      <div style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #4F46E5; font-family: monospace; margin: 12px 0;">
+      <div style="font-size: 32px; font-weight: 700; letter-spacing: 4px; color: #4F46E5; font-family: monospace; margin: 12px 0;">
         ${otpCode}
       </div>
       <p style="color: #6B7280; margin: 8px 0 0 0; font-size: 13px;">Enter this code on the sign-in page</p>
