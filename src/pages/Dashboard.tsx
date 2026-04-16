@@ -90,15 +90,12 @@ export default function Dashboard() {
   }, [searchParams, setSearchParams, toast, refetchEntitlements]);
 
   useEffect(() => {
-    const checkAuthAndFetch = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
-        navigate("/auth");
-        return;
-      }
+    // Detect if we're in the middle of processing a magic link redirect
+    const hashHasTokens = window.location.hash.includes("access_token");
+
+    const fetchApps = async (session: any) => {
       setUser({ email: session.user.email });
       
-      // Fetch only the current user's applications
       const { data, error } = await supabase
         .from("applications")
         .select(`
@@ -121,7 +118,6 @@ export default function Dashboard() {
           variant: "destructive",
         });
       } else if (data) {
-        // Transform the data to match our interface
         const transformedData = data.map((app: any) => ({
           id: app.id,
           title: app.title,
@@ -139,10 +135,26 @@ export default function Dashboard() {
     };
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "SIGNED_OUT" || !session) {
+      if (event === "SIGNED_IN" && session) {
+        fetchApps(session);
+      } else if (event === "SIGNED_OUT" || !session) {
         navigate("/auth");
       }
     });
+
+    const checkAuthAndFetch = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        // If the URL has auth tokens, Supabase is still processing the magic link.
+        // Wait for onAuthStateChange to fire instead of redirecting immediately.
+        if (hashHasTokens) {
+          return;
+        }
+        navigate("/auth");
+        return;
+      }
+      fetchApps(session);
+    };
 
     checkAuthAndFetch();
 
