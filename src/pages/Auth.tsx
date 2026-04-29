@@ -100,7 +100,7 @@ export default function Auth() {
       const { error } = await supabase.auth.verifyOtp({
         email: email.trim(),
         token: otpCode,
-        type: "magiclink",
+        type: "email",
       });
 
       if (error) {
