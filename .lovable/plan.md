@@ -1,20 +1,62 @@
+## Fix: OTP code verification fails with 403 `otp_expired` even seconds after generation
 
+### Root cause
 
-## Fix: OTP Input Supports Only 6 Digits, But 8-Digit Codes Are Being Sent
+`src/pages/Auth.tsx` calls:
+```ts
+supabase.auth.verifyOtp({ email, token: otpCode, type: "magiclink" })
+```
 
-### Problem
-The Supabase Auth API is now generating 8-digit OTP codes, but the Auth page's OTP input component (`InputOTP`) is configured for 6 digits (`maxLength={6}`, 6 `InputOTPSlot` components). Users cannot enter the full code.
+But Supabase has two distinct verify paths:
 
-### Fix
+- `type: "magiclink"` — verifies the **long hashed token** present in the magic link URL (`?token=<long_hash>&type=magiclink`). This is what the link click flow uses.
+- `type: "email"` — verifies the **short OTP code** (`email_otp`) the user types into the input.
 
-**File: `src/pages/Auth.tsx`**
-- Change `maxLength={6}` to `maxLength={8}` on the `InputOTP` component
-- Add 2 more `InputOTPSlot` components (index 6 and 7)
-- Update the validation check from `otpCode.length !== 6` to `otpCode.length !== 8` (appears twice: in `handleVerifyOtp` and in the button's `disabled` prop)
-- Update the UI copy from "6-digit code" to "8-digit code" (appears in card description and the check-inbox message)
+The 8-digit code returned by `admin.generateLink({ type: "magiclink" })` in `properties.email_otp` is an **email OTP**, not a magiclink token hash. When we ask Supabase to verify it as a magiclink, it can't find a matching token row and returns the generic `otp_expired` / `token has expired or is invalid` 403 — even though the code is brand new.
 
-**File: `supabase/functions/send-magic-link/index.ts`**
-- Update the email template's OTP display styling: reduce `letter-spacing` from `8px` to `4px` and `font-size` from `36px` to `32px` so the 8-digit code fits cleanly in the email
+This is why:
+- Joanne and the test user both hit "expired" errors within seconds of receiving the code
+- The magic **link** (clicking the button in the email) was working — that path uses the URL hash flow, not `verifyOtp`
+- Only the typed-code flow is broken
 
-No database or RLS changes needed.
+### Fix (single line change)
 
+**File: `src/pages/Auth.tsx`** (line ~100)
+
+Change:
+```ts
+const { error } = await supabase.auth.verifyOtp({
+  email: email.trim(),
+  token: otpCode,
+  type: "magiclink",
+});
+```
+
+To:
+```ts
+const { error } = await supabase.auth.verifyOtp({
+  email: email.trim(),
+  token: otpCode,
+  type: "email",
+});
+```
+
+### Why this is safe
+
+- `admin.generateLink({ type: "magiclink" })` generates **both** a magic link token and an email OTP in a single call. The two are independent verification paths against the same login attempt.
+- `type: "email"` is the documented verify type for OTP codes typed into a form. It will succeed for the freshly generated 8-digit code.
+- The link-click flow (handled by `onAuthStateChange` after Supabase consumes the URL hash) is unaffected.
+
+### No other changes needed
+
+- No DB / RLS changes
+- No edge function changes (`send-magic-link` already returns the correct OTP via `email_otp`)
+- 8-digit input UI from the previous fix is correct — the issue is only the verify type
+- The Dialog `aria-describedby` warning is unrelated cosmetic noise from a shadcn primitive and can be ignored
+
+### Validation after implementation
+
+1. Sign out, request a new code at `/auth`
+2. Type the 8-digit code from the email
+3. Confirm sign-in succeeds and redirects to `/dashboard` (no 403)
+4. Separately, click the magic link button in the email — confirm that path still works
