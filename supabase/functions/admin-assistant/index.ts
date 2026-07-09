@@ -249,9 +249,7 @@ serve(async (req) => {
             
             const { data, error } = await serviceClient.rpc("execute_readonly_query", { query_text: query });
             if (error) {
-              // If the RPC doesn't exist, fall back to direct query on allowed tables
-              const result = await executeDirectQuery(query);
-              return JSON.stringify(result);
+              return JSON.stringify({ error: error.message || "Query rejected" });
             }
             return JSON.stringify(data);
           }

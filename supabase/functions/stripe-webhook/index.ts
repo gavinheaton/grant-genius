@@ -34,23 +34,31 @@ serve(async (req) => {
 
     let event: Stripe.Event;
 
-    // Verify webhook signature if secret is configured
-    if (webhookSecret && signature) {
-      try {
-        event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret);
-        logStep("Webhook signature verified");
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        logStep("Webhook signature verification failed", { error: errorMessage });
-        return new Response(JSON.stringify({ error: "Invalid signature" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-          status: 400,
-        });
-      }
-    } else {
-      // For development/testing without webhook secret
-      event = JSON.parse(body);
-      logStep("Processing webhook without signature verification (dev mode)");
+    // Signature verification is REQUIRED — fail closed if secret or signature missing
+    if (!webhookSecret) {
+      logStep("ERROR: STRIPE_WEBHOOK_SECRET is not configured");
+      return new Response(JSON.stringify({ error: "Webhook not configured" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500,
+      });
+    }
+    if (!signature) {
+      logStep("ERROR: Missing stripe-signature header");
+      return new Response(JSON.stringify({ error: "Missing signature" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+      });
+    }
+    try {
+      event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret);
+      logStep("Webhook signature verified");
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      logStep("Webhook signature verification failed", { error: errorMessage });
+      return new Response(JSON.stringify({ error: "Invalid signature" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 400,
+      });
     }
 
     logStep("Event received", { type: event.type, id: event.id });
