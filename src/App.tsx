@@ -80,6 +80,7 @@ const App = () => (
             <Route path="/admin/reviews/:reviewId" element={<AdminLayout><ReportReview /></AdminLayout>} />
             <Route path="/admin/runs/:runId" element={<AdminLayout><RunDetail /></AdminLayout>} />
             <Route path="/admin/api" element={<AdminLayout><ApiManagement /></AdminLayout>} />
+            <Route path="/admin/login-notifications" element={<AdminLayout><LoginNotifications /></AdminLayout>} />
             
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
