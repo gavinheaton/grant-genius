@@ -20,6 +20,8 @@ export type Database = {
           default_grant_id: string | null
           id: string
           is_enabled: boolean
+          login_notifications_enabled: boolean
+          login_notifications_recipient: string
           updated_at: string
           updated_by: string | null
         }
@@ -28,6 +30,8 @@ export type Database = {
           default_grant_id?: string | null
           id?: string
           is_enabled?: boolean
+          login_notifications_enabled?: boolean
+          login_notifications_recipient?: string
           updated_at?: string
           updated_by?: string | null
         }
@@ -36,6 +40,8 @@ export type Database = {
           default_grant_id?: string | null
           id?: string
           is_enabled?: boolean
+          login_notifications_enabled?: boolean
+          login_notifications_recipient?: string
           updated_at?: string
           updated_by?: string | null
         }

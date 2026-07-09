@@ -24,6 +24,8 @@ export default function Auth() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === "SIGNED_IN" && mounted) {
+        // Fire-and-forget admin notification; never blocks login
+        supabase.functions.invoke("notify-user-login").catch(() => {});
         navigate("/dashboard", { replace: true });
       }
     });
