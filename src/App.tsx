@@ -36,6 +36,7 @@ import ReviewsList from "./pages/admin/ReviewsList";
 import HomepageEditor from "./pages/admin/HomepageEditor";
 import RunDetail from "./pages/admin/RunDetail";
 import ApiManagement from "./pages/admin/ApiManagement";
+import LoginNotifications from "./pages/admin/LoginNotifications";
 
 const queryClient = new QueryClient();
 
