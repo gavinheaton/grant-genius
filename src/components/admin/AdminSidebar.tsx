@@ -17,6 +17,7 @@ import {
   FileStack,
   Eye,
   Globe,
+  Bell,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import {
