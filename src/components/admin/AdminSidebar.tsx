@@ -74,6 +74,7 @@ const systemItems = [
 
 const superAdminItems = [
   { title: "AI Assistant", url: "/admin/assistant", icon: Sparkles },
+  { title: "Login Notifications", url: "/admin/login-notifications", icon: Bell },
 ];
 
 export function AdminSidebar({ isSuperAdmin }: AdminSidebarProps) {
