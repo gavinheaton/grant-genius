@@ -47,6 +47,29 @@ serve(async (req) => {
     const resolvedProductKey = productKey || "REPORT_ONE_OFF";
     logStep("Request parsed", { priceId, productKey: resolvedProductKey });
 
+    // Allowlist of valid redirect origins for successUrl/cancelUrl
+    const ALLOWED_ORIGINS = [
+      "https://grantgenius.com.au",
+      "https://grantgenius.disruptorsco.com",
+      "https://grant-genius-dc.lovable.app",
+    ];
+    const isAllowedRedirect = (url: string | undefined): url is string => {
+      if (!url || typeof url !== "string" || url.length > 2000) return false;
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) return false;
+        if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") return true;
+        if (parsed.hostname.endsWith(".lovable.app") || parsed.hostname.endsWith(".lovable.dev")) return true;
+        return ALLOWED_ORIGINS.some((o) => url.startsWith(o + "/") || url === o);
+      } catch {
+        return false;
+      }
+    };
+    const safeSuccessUrl = isAllowedRedirect(successUrl) ? successUrl : undefined;
+    const safeCancelUrl = isAllowedRedirect(cancelUrl) ? cancelUrl : undefined;
+    if (successUrl && !safeSuccessUrl) logStep("Rejected successUrl (not in allowlist)");
+    if (cancelUrl && !safeCancelUrl) logStep("Rejected cancelUrl (not in allowlist)");
+
     const stripe = new Stripe(stripeKey, { apiVersion: "2025-08-27.basil" });
 
     // Check if customer exists
@@ -72,8 +95,8 @@ serve(async (req) => {
       ],
       mode: "payment",
       allow_promotion_codes: true,
-      success_url: successUrl || `${origin}/dashboard?payment=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: cancelUrl || `${origin}/dashboard?payment=cancelled`,
+      success_url: safeSuccessUrl || `${origin}/dashboard?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: safeCancelUrl || `${origin}/dashboard?payment=cancelled`,
       metadata: {
         user_id: user.id,
         product_key: resolvedProductKey,

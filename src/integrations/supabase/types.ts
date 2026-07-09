@@ -1539,6 +1539,7 @@ export type Database = {
     }
     Functions: {
       decrement_entitlement: { Args: { ent_id: string }; Returns: undefined }
+      execute_readonly_query: { Args: { query_text: string }; Returns: Json }
       get_report_trend_7_days: {
         Args: never
         Returns: {
