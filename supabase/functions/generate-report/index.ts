@@ -15,7 +15,7 @@ function dispatchClaudeReport(reportRunId: string): void {
 
   // Do not await the long-running Claude response here. The child function owns
   // the generation; this dispatcher must return before the 150s request limit.
-  fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
+  const dispatch = fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -30,6 +30,8 @@ function dispatchClaudeReport(reportRunId: string): void {
   }).catch((error) => {
     console.error("Error dispatching run-claude-report:", error);
   });
+
+  EdgeRuntime.waitUntil(dispatch);
 }
 
 // 15-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Steps 12-14 (assembly)

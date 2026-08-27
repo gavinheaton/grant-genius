@@ -12,7 +12,7 @@ function dispatchClaudeReport(reportRunId: string): void {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-  fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
+  const dispatch = fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -27,6 +27,8 @@ function dispatchClaudeReport(reportRunId: string): void {
   }).catch((error) => {
     console.error("Claude resume dispatch error:", error);
   });
+
+  EdgeRuntime.waitUntil(dispatch);
 }
 
 // Model selection based on step complexity
@@ -361,6 +363,7 @@ serve(async (req) => {
       .select(`
         id,
         status,
+        started_at,
         current_step,
         total_steps,
         execution_engine,
@@ -429,6 +432,22 @@ serve(async (req) => {
             code: "ALREADY_COMPLETE",
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const startedAt = reportRun.started_at ? new Date(reportRun.started_at).getTime() : 0;
+      const isRecentlyActive =
+        (reportRun.status === "pending" || reportRun.status === "running") &&
+        Date.now() - startedAt < 15 * 60 * 1000;
+
+      if (isRecentlyActive) {
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: "processing",
+            message: "Claude report generation is still processing",
+          }),
+          { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
