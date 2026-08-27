@@ -9,6 +9,31 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
+function dispatchClaudeReport(reportRunId: string): void {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+  // Do not await the long-running Claude response here. The child function owns
+  // the generation; this dispatcher must return before the 150s request limit.
+  const dispatch = fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${serviceRoleKey}`,
+    },
+    body: JSON.stringify({ report_run_id: reportRunId }),
+  }).then(async (response) => {
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`run-claude-report failed: ${response.status} - ${errorText}`);
+    }
+  }).catch((error) => {
+    console.error("Error dispatching run-claude-report:", error);
+  });
+
+  EdgeRuntime.waitUntil(dispatch);
+}
+
 // 15-STEP ARCHITECTURE: Step 0 (source pack) + Steps 1-11 (research) + Steps 12-14 (assembly)
 const RESEARCH_STEPS = [
   { name: "build_source_pack", description: "Building Australia-first source pack" },
@@ -509,27 +534,9 @@ serve(async (req) => {
         report_run_id: reportRun.id,
       });
 
-      // Dispatch to Claude engine
-      try {
-        console.log(`Dispatching report run ${reportRun.id} to run-claude-report`);
-        const claudeResp = await fetch(
-          `${Deno.env.get("SUPABASE_URL")}/functions/v1/run-claude-report`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            },
-            body: JSON.stringify({ report_run_id: reportRun.id }),
-          }
-        );
-        if (!claudeResp.ok) {
-          const errorText = await claudeResp.text();
-          console.error(`run-claude-report failed: ${claudeResp.status} - ${errorText}`);
-        }
-      } catch (err) {
-        console.error("Error calling run-claude-report:", err);
-      }
+      // Start the child function and immediately acknowledge the enqueue request.
+      console.log(`Dispatching report run ${reportRun.id} to run-claude-report`);
+      dispatchClaudeReport(reportRun.id);
 
       return new Response(
         JSON.stringify({
@@ -645,30 +652,8 @@ serve(async (req) => {
     // DISPATCHER LOGIC: Route based on execution engine
     if (executionEngine === "claude") {
       // Claude single-prompt engine: dispatch to run-claude-report
-      try {
-        console.log(`Dispatching report run ${reportRun.id} to run-claude-report (Claude engine)`);
-        
-        const claudeResponse = await fetch(
-          `${Deno.env.get("SUPABASE_URL")}/functions/v1/run-claude-report`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            },
-            body: JSON.stringify({ report_run_id: reportRun.id }),
-          }
-        );
-
-        if (!claudeResponse.ok) {
-          const errorText = await claudeResponse.text();
-          console.error(`run-claude-report failed: ${claudeResponse.status} - ${errorText}`);
-        } else {
-          console.log(`Report run ${reportRun.id} dispatched to Claude engine`);
-        }
-      } catch (claudeError) {
-        console.error("Error calling run-claude-report:", claudeError);
-      }
+      console.log(`Dispatching report run ${reportRun.id} to run-claude-report (Claude engine)`);
+      dispatchClaudeReport(reportRun.id);
     } else {
       // Default: use enqueue-report to trigger external worker
       try {
