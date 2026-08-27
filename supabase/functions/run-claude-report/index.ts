@@ -124,7 +124,7 @@ serve(async (req) => {
   });
 
   try {
-    const { report_run_id } = await req.json();
+    const { report_run_id, chunk_index } = await req.json();
     if (!report_run_id) {
       return new Response(
         JSON.stringify({ error: "report_run_id is required" }),
@@ -179,23 +179,53 @@ serve(async (req) => {
     const grantData = Array.isArray(grantVersion.grant) ? grantVersion.grant[0] : grantVersion.grant;
     const inputs = (app.inputs_json || {}) as Record<string, string>;
 
+    // Staggered generation: each invocation produces one bounded chunk and then
+    // hands off to the next invocation, so we never exceed the edge runtime limit.
+    const chunkIndex = Number.isFinite(Number(chunk_index)) ? Math.max(0, Number(chunk_index)) : 0;
+    const isContinuation = chunkIndex > 0;
+
     // Update run to running
     await supabase
       .from("report_runs")
-      .update({ status: "running", started_at: new Date().toISOString(), current_step: 1, total_steps: 1 })
+      .update({
+        status: "running",
+        ...(isContinuation ? {} : { started_at: new Date().toISOString() }),
+        current_step: 1,
+        total_steps: 1,
+      })
       .eq("id", report_run_id);
 
-    // Create single step record
-    await supabase.from("report_run_steps").insert({
-      report_run_id,
-      step_number: 0,
-      step_name: "claude_single_prompt",
-      status: "running",
-      started_at: new Date().toISOString(),
-    });
+    // Load or create the single step record (holds the accumulated partial HTML)
+    const { data: existingStep } = await supabase
+      .from("report_run_steps")
+      .select("id, outputs_json")
+      .eq("report_run_id", report_run_id)
+      .eq("step_number", 0)
+      .maybeSingle();
+
+    if (!existingStep) {
+      await supabase.from("report_run_steps").insert({
+        report_run_id,
+        step_number: 0,
+        step_name: "claude_single_prompt",
+        status: "running",
+        started_at: new Date().toISOString(),
+      });
+    }
+
+    const stepState = (existingStep?.outputs_json || {}) as Record<string, unknown>;
+    const priorHtml = isContinuation ? String(stepState.partial_html ?? "") : "";
+    const emptyStreak = isContinuation ? Number(stepState.empty_streak ?? 0) : 0;
 
     // Log start
-    await logMessage(supabase, report_run_id, "info", "Starting Claude single-prompt report generation");
+    await logMessage(
+      supabase,
+      report_run_id,
+      "info",
+      isContinuation
+        ? `Resuming Claude generation (segment ${chunkIndex + 1}, ${priorHtml.length} chars so far)`
+        : "Starting Claude single-prompt report generation"
+    );
 
     // Build prompt from template
     const promptTemplate = grantVersion.claude_prompt_template || DEFAULT_CLAUDE_PROMPT;
@@ -241,18 +271,27 @@ serve(async (req) => {
     let claudeModel = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-4-5";
     console.log(`Using Claude model: ${claudeModel}`);
 
-    // Stream the Anthropic response. Long single-prompt generations regularly
-    // exceed a plain 120s request, so we stream and guard on idle time instead.
-    const MAX_TOTAL_MS = 600_000; // hard ceiling for the whole generation
-    const MAX_IDLE_MS = 120_000; // no bytes received for this long => abort
+    // Stagger the generation: one bounded slice per invocation. Each slice streams
+    // for at most CHUNK_BUDGET_MS, is persisted, and then the worker re-invokes
+    // itself to continue — keeping every invocation inside the edge runtime limit.
+    const CHUNK_BUDGET_MS = 120_000; // soft wall-clock budget for one slice
+    const MAX_IDLE_MS = 90_000; // no bytes received for this long => abort
+    const CHUNK_MAX_TOKENS = 8000;
+    const MAX_CHUNKS = 10;
+
     const controller = new AbortController();
     const startedAt = Date.now();
     let lastChunkAt = Date.now();
+    let abortReason: "idle" | "budget" | null = null;
     const watchdog = setInterval(() => {
-      if (Date.now() - lastChunkAt > MAX_IDLE_MS || Date.now() - startedAt > MAX_TOTAL_MS) {
+      if (Date.now() - startedAt > CHUNK_BUDGET_MS) {
+        abortReason = abortReason ?? "budget";
+        controller.abort();
+      } else if (Date.now() - lastChunkAt > MAX_IDLE_MS) {
+        abortReason = abortReason ?? "idle";
         controller.abort();
       }
-    }, 5_000);
+    }, 2_000);
 
     const failStreaming = async (reason: string, status: number) => {
       console.error(reason);
@@ -274,6 +313,15 @@ serve(async (req) => {
       aborted: boolean;
       transportError: string | null;
     };
+
+    // Continuation uses an assistant prefill: Claude carries on from exactly
+    // where the previous slice stopped, so the pieces concatenate seamlessly.
+    const messages: Array<{ role: string; content: string }> = [
+      { role: "user", content: assembledPrompt },
+    ];
+    if (priorHtml) {
+      messages.push({ role: "assistant", content: priorHtml.replace(/\s+$/, "") });
+    }
 
     const runStreamedAttempt = async (): Promise<StreamResult> => {
       const result: StreamResult = {
@@ -298,9 +346,9 @@ serve(async (req) => {
           },
           body: JSON.stringify({
             model: claudeModel,
-            max_tokens: 16000,
+            max_tokens: CHUNK_MAX_TOKENS,
             stream: true,
-            messages: [{ role: "user", content: assembledPrompt }],
+            messages,
           }),
           signal: controller.signal,
         });
@@ -404,33 +452,133 @@ serve(async (req) => {
       );
     }
 
-    if (!attempt.text) {
-      let reason: string;
+    const newText = attempt.text;
+    const combinedHtml = priorHtml + newText;
+    const stalledIdle = attempt.aborted && abortReason === "idle";
+    const budgetCut = attempt.aborted && abortReason === "budget";
+
+    if (!newText) {
+      const nextEmptyStreak = emptyStreak + 1;
+      let reason: string | null = null;
       let status = 502;
-      if (attempt.aborted) {
+
+      if (stalledIdle) {
         reason = `Claude stream stalled (no output for ${Math.round(MAX_IDLE_MS / 1000)}s)`;
         status = 504;
       } else if (attempt.streamErrorMessage) {
         reason = `Claude stream error (${attempt.streamErrorType}): ${attempt.streamErrorMessage}`;
-      } else if (attempt.transportError) {
+      } else if (attempt.transportError && !budgetCut) {
         reason = `Claude stream failed: ${attempt.transportError}`;
         status = 504;
-      } else if (attempt.stopReason) {
-        reason = `Claude produced no content (stop_reason: ${attempt.stopReason})`;
-      } else {
-        reason = "Claude stream closed with no content";
+      } else if (!combinedHtml) {
+        reason = attempt.stopReason
+          ? `Claude produced no content (stop_reason: ${attempt.stopReason})`
+          : "Claude stream closed with no content";
+      } else if (nextEmptyStreak >= 2) {
+        reason = `Claude stopped producing new content after ${chunkIndex + 1} segments (stop_reason: ${attempt.stopReason ?? "unknown"})`;
       }
-      return await failStreaming(reason, status);
+
+      if (reason) {
+        return await failStreaming(reason, status);
+      }
+
+      // One empty slice but we already have content: record and try once more.
+      await supabase
+        .from("report_run_steps")
+        .update({
+          outputs_json: {
+            partial_html: combinedHtml,
+            chunk_index: chunkIndex + 1,
+            empty_streak: nextEmptyStreak,
+            last_stop_reason: attempt.stopReason,
+            heartbeat_at: new Date().toISOString(),
+          },
+        })
+        .eq("report_run_id", report_run_id)
+        .eq("step_number", 0);
+    } else {
+      await logMessage(
+        supabase,
+        report_run_id,
+        "info",
+        `Segment ${chunkIndex + 1} generated (${newText.length} chars, total ${combinedHtml.length}, stop_reason: ${attempt.stopReason ?? (budgetCut ? "time_budget" : "unknown")})`
+      );
     }
 
-    const reportHtml = attempt.text;
+    // Decide whether the report is finished or another slice is needed.
+    const looksComplete =
+      attempt.stopReason === "end_turn" ||
+      attempt.stopReason === "stop_sequence" ||
+      /<\/html>\s*$/i.test(combinedHtml.trimEnd());
 
-    if (attempt.transportError || attempt.streamErrorMessage) {
+    if (!looksComplete && combinedHtml) {
+      if (chunkIndex + 1 >= MAX_CHUNKS) {
+        await logMessage(
+          supabase,
+          report_run_id,
+          "warn",
+          `Reached the maximum of ${MAX_CHUNKS} segments; finalizing the report with what was generated.`
+        );
+      } else {
+        await supabase
+          .from("report_run_steps")
+          .update({
+            status: "running",
+            outputs_json: {
+              partial_html: combinedHtml,
+              chunk_index: chunkIndex + 1,
+              empty_streak: newText ? 0 : emptyStreak + 1,
+              last_stop_reason: attempt.stopReason,
+              heartbeat_at: new Date().toISOString(),
+            },
+          })
+          .eq("report_run_id", report_run_id)
+          .eq("step_number", 0);
+
+        const continueCall = fetch(`${supabaseUrl}/functions/v1/run-claude-report`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${serviceRoleKey}`,
+          },
+          body: JSON.stringify({ report_run_id, chunk_index: chunkIndex + 1 }),
+        }).catch(async (err) => {
+          console.error("Failed to dispatch next Claude segment:", err);
+          await markRunFailed(
+            supabase,
+            report_run_id,
+            `Failed to continue generation after segment ${chunkIndex + 1}: ${err instanceof Error ? err.message : String(err)}`
+          );
+        });
+
+        // deno-lint-ignore no-explicit-any
+        const edgeRuntime = (globalThis as any).EdgeRuntime;
+        if (edgeRuntime?.waitUntil) {
+          edgeRuntime.waitUntil(continueCall);
+        } else {
+          await continueCall;
+        }
+
+        return new Response(
+          JSON.stringify({
+            status: "processing",
+            run_id: report_run_id,
+            next_chunk: chunkIndex + 1,
+            chars_so_far: combinedHtml.length,
+          }),
+          { status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
+    const reportHtml = combinedHtml;
+
+    if (attempt.streamErrorMessage) {
       await logMessage(
         supabase,
         report_run_id,
         "warn",
-        `Claude stream ended early but partial content was captured: ${attempt.streamErrorMessage ?? attempt.transportError}`
+        `Claude stream ended early but content was captured: ${attempt.streamErrorMessage}`
       );
     }
 
@@ -438,7 +586,7 @@ serve(async (req) => {
       supabase,
       report_run_id,
       "info",
-      `Claude stream finished (${reportHtml.length} chars, stop_reason: ${attempt.stopReason ?? "unknown"})`
+      `Claude generation finished in ${chunkIndex + 1} segment(s) (${reportHtml.length} chars, stop_reason: ${attempt.stopReason ?? "unknown"})`
     );
 
 
