@@ -253,9 +253,28 @@ serve(async (req) => {
     }
     console.log(`Using Claude model: ${claudeModel}`);
 
-    // Call Anthropic Claude API with 120s timeout guard
+    // Stream the Anthropic response. Long single-prompt generations regularly
+    // exceed a plain 120s request, so we stream and guard on idle time instead.
+    const MAX_TOTAL_MS = 600_000; // hard ceiling for the whole generation
+    const MAX_IDLE_MS = 120_000; // no bytes received for this long => abort
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000);
+    const startedAt = Date.now();
+    let lastChunkAt = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastChunkAt > MAX_IDLE_MS || Date.now() - startedAt > MAX_TOTAL_MS) {
+        controller.abort();
+      }
+    }, 5_000);
+
+    const failStreaming = async (reason: string, status: number) => {
+      console.error(reason);
+      await markRunFailed(supabase, report_run_id, reason);
+      await logMessage(supabase, report_run_id, "error", reason);
+      return new Response(
+        JSON.stringify({ error: reason }),
+        { status, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    };
 
     let claudeResponse: Response;
     try {
@@ -269,6 +288,7 @@ serve(async (req) => {
         body: JSON.stringify({
           model: claudeModel,
           max_tokens: 16000,
+          stream: true,
           messages: [
             {
               role: "user",
@@ -278,24 +298,17 @@ serve(async (req) => {
         }),
         signal: controller.signal,
       });
-
     } catch (fetchError) {
-      clearTimeout(timeoutId);
+      clearInterval(watchdog);
       const isTimeout = fetchError instanceof DOMException && fetchError.name === "AbortError";
       const reason = isTimeout
-        ? "Claude API call timed out after 120 seconds"
+        ? "Claude API call timed out before the response started"
         : `Claude API call failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
-      console.error(reason);
-      await markRunFailed(supabase, report_run_id, reason);
-      await logMessage(supabase, report_run_id, "error", reason);
-      return new Response(
-        JSON.stringify({ error: reason }),
-        { status: 504, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return await failStreaming(reason, 504);
     }
-    clearTimeout(timeoutId);
 
     if (!claudeResponse.ok) {
+      clearInterval(watchdog);
       const errorText = await claudeResponse.text();
       console.error(`Claude API error: ${claudeResponse.status} - ${errorText}`);
       await markRunFailed(supabase, report_run_id, `Claude API error: ${claudeResponse.status}`);
@@ -306,8 +319,45 @@ serve(async (req) => {
       );
     }
 
-    const claudeData = await claudeResponse.json();
-    const reportHtml = claudeData.content?.[0]?.text || "";
+    let reportHtml = "";
+    try {
+      const reader = claudeResponse.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let done = false;
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        done = streamDone;
+        if (!value) continue;
+        lastChunkAt = Date.now();
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          try {
+            const evt = JSON.parse(payload);
+            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+              reportHtml += evt.delta.text ?? "";
+            } else if (evt.type === "error") {
+              throw new Error(evt.error?.message || "Claude stream error");
+            }
+          } catch (_e) {
+            // ignore partial/unparseable SSE payloads
+          }
+        }
+      }
+    } catch (streamError) {
+      clearInterval(watchdog);
+      const isTimeout = streamError instanceof DOMException && streamError.name === "AbortError";
+      const reason = isTimeout
+        ? `Claude stream stalled (no output for ${Math.round(MAX_IDLE_MS / 1000)}s)`
+        : `Claude stream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`;
+      return await failStreaming(reason, 504);
+    }
+    clearInterval(watchdog);
 
     if (!reportHtml) {
       await markRunFailed(supabase, report_run_id, "Claude returned empty response");
@@ -316,6 +366,7 @@ serve(async (req) => {
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
 
     await logMessage(supabase, report_run_id, "info", `Claude response received (${reportHtml.length} chars). Processing result...`);
 
