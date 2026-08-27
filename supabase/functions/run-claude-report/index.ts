@@ -234,23 +234,11 @@ serve(async (req) => {
     await logMessage(supabase, report_run_id, "info", `Preparing prompt and context (${assembledPrompt.length} chars)...`);
     await logMessage(supabase, report_run_id, "info", "Calling Claude API...");
 
-    // Resolve model: env override, else newest available Sonnet from the API
+    // Pin the report model unless an explicit override is configured. Do not
+    // automatically select the newest Sonnet: Sonnet 5 enables adaptive
+    // thinking by default and can consume the output budget before emitting
+    // any report HTML, resulting in stop_reason=max_tokens with empty text.
     let claudeModel = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-4-5";
-    try {
-      const modelsResp = await fetch("https://api.anthropic.com/v1/models?limit=100", {
-        headers: { "x-api-key": anthropicApiKey, "anthropic-version": "2023-06-01" },
-      });
-      if (modelsResp.ok) {
-        const modelsJson = await modelsResp.json();
-        const ids: string[] = (modelsJson?.data ?? []).map((m: { id: string }) => m.id);
-        if (ids.length && !ids.includes(claudeModel)) {
-          const sonnet = ids.filter((id) => id.includes("sonnet")).sort().reverse()[0];
-          claudeModel = sonnet || ids[0];
-        }
-      }
-    } catch (e) {
-      console.error("Model discovery failed, using default:", e);
-    }
     console.log(`Using Claude model: ${claudeModel}`);
 
     // Stream the Anthropic response. Long single-prompt generations regularly
