@@ -234,6 +234,25 @@ serve(async (req) => {
     await logMessage(supabase, report_run_id, "info", `Preparing prompt and context (${assembledPrompt.length} chars)...`);
     await logMessage(supabase, report_run_id, "info", "Calling Claude API...");
 
+    // Resolve model: env override, else newest available Sonnet from the API
+    let claudeModel = Deno.env.get("CLAUDE_MODEL") || "claude-sonnet-4-5";
+    try {
+      const modelsResp = await fetch("https://api.anthropic.com/v1/models?limit=100", {
+        headers: { "x-api-key": anthropicApiKey, "anthropic-version": "2023-06-01" },
+      });
+      if (modelsResp.ok) {
+        const modelsJson = await modelsResp.json();
+        const ids: string[] = (modelsJson?.data ?? []).map((m: { id: string }) => m.id);
+        if (ids.length && !ids.includes(claudeModel)) {
+          const sonnet = ids.filter((id) => id.includes("sonnet")).sort().reverse()[0];
+          claudeModel = sonnet || ids[0];
+        }
+      }
+    } catch (e) {
+      console.error("Model discovery failed, using default:", e);
+    }
+    console.log(`Using Claude model: ${claudeModel}`);
+
     // Call Anthropic Claude API with 120s timeout guard
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000);
@@ -248,7 +267,7 @@ serve(async (req) => {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: claudeModel,
           max_tokens: 16000,
           messages: [
             {
@@ -259,6 +278,7 @@ serve(async (req) => {
         }),
         signal: controller.signal,
       });
+
     } catch (fetchError) {
       clearTimeout(timeoutId);
       const isTimeout = fetchError instanceof DOMException && fetchError.name === "AbortError";
