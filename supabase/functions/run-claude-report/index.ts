@@ -179,23 +179,53 @@ serve(async (req) => {
     const grantData = Array.isArray(grantVersion.grant) ? grantVersion.grant[0] : grantVersion.grant;
     const inputs = (app.inputs_json || {}) as Record<string, string>;
 
+    // Staggered generation: each invocation produces one bounded chunk and then
+    // hands off to the next invocation, so we never exceed the edge runtime limit.
+    const chunkIndex = Number.isFinite(Number(chunk_index)) ? Math.max(0, Number(chunk_index)) : 0;
+    const isContinuation = chunkIndex > 0;
+
     // Update run to running
     await supabase
       .from("report_runs")
-      .update({ status: "running", started_at: new Date().toISOString(), current_step: 1, total_steps: 1 })
+      .update({
+        status: "running",
+        ...(isContinuation ? {} : { started_at: new Date().toISOString() }),
+        current_step: 1,
+        total_steps: 1,
+      })
       .eq("id", report_run_id);
 
-    // Create single step record
-    await supabase.from("report_run_steps").insert({
-      report_run_id,
-      step_number: 0,
-      step_name: "claude_single_prompt",
-      status: "running",
-      started_at: new Date().toISOString(),
-    });
+    // Load or create the single step record (holds the accumulated partial HTML)
+    const { data: existingStep } = await supabase
+      .from("report_run_steps")
+      .select("id, outputs_json")
+      .eq("report_run_id", report_run_id)
+      .eq("step_number", 0)
+      .maybeSingle();
+
+    if (!existingStep) {
+      await supabase.from("report_run_steps").insert({
+        report_run_id,
+        step_number: 0,
+        step_name: "claude_single_prompt",
+        status: "running",
+        started_at: new Date().toISOString(),
+      });
+    }
+
+    const stepState = (existingStep?.outputs_json || {}) as Record<string, unknown>;
+    const priorHtml = isContinuation ? String(stepState.partial_html ?? "") : "";
+    const emptyStreak = isContinuation ? Number(stepState.empty_streak ?? 0) : 0;
 
     // Log start
-    await logMessage(supabase, report_run_id, "info", "Starting Claude single-prompt report generation");
+    await logMessage(
+      supabase,
+      report_run_id,
+      "info",
+      isContinuation
+        ? `Resuming Claude generation (segment ${chunkIndex + 1}, ${priorHtml.length} chars so far)`
+        : "Starting Claude single-prompt report generation"
+    );
 
     // Build prompt from template
     const promptTemplate = grantVersion.claude_prompt_template || DEFAULT_CLAUDE_PROMPT;
