@@ -124,7 +124,7 @@ serve(async (req) => {
   });
 
   try {
-    const { report_run_id } = await req.json();
+    const { report_run_id, chunk_index } = await req.json();
     if (!report_run_id) {
       return new Response(
         JSON.stringify({ error: "report_run_id is required" }),
