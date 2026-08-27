@@ -276,96 +276,183 @@ serve(async (req) => {
       );
     };
 
-    let claudeResponse: Response;
-    try {
-      claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": anthropicApiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: claudeModel,
-          max_tokens: 16000,
-          stream: true,
-          messages: [
-            {
-              role: "user",
-              content: assembledPrompt,
-            },
-          ],
-        }),
-        signal: controller.signal,
-      });
-    } catch (fetchError) {
-      clearInterval(watchdog);
-      const isTimeout = fetchError instanceof DOMException && fetchError.name === "AbortError";
-      const reason = isTimeout
-        ? "Claude API call timed out before the response started"
-        : `Claude API call failed: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`;
-      return await failStreaming(reason, 504);
+    type StreamResult = {
+      text: string;
+      stopReason: string | null;
+      streamErrorType: string | null;
+      streamErrorMessage: string | null;
+      httpStatus: number | null;
+      httpBody: string | null;
+      aborted: boolean;
+      transportError: string | null;
+    };
+
+    const runStreamedAttempt = async (): Promise<StreamResult> => {
+      const result: StreamResult = {
+        text: "",
+        stopReason: null,
+        streamErrorType: null,
+        streamErrorMessage: null,
+        httpStatus: null,
+        httpBody: null,
+        aborted: false,
+        transportError: null,
+      };
+
+      let claudeResponse: Response;
+      try {
+        claudeResponse = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": anthropicApiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: claudeModel,
+            max_tokens: 16000,
+            stream: true,
+            messages: [{ role: "user", content: assembledPrompt }],
+          }),
+          signal: controller.signal,
+        });
+      } catch (fetchError) {
+        result.aborted = fetchError instanceof DOMException && fetchError.name === "AbortError";
+        result.transportError = fetchError instanceof Error ? fetchError.message : String(fetchError);
+        return result;
+      }
+
+      if (!claudeResponse.ok) {
+        result.httpStatus = claudeResponse.status;
+        result.httpBody = (await claudeResponse.text()).substring(0, 800);
+        return result;
+      }
+
+      try {
+        const reader = claudeResponse.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let done = false;
+        while (!done) {
+          const { value, done: streamDone } = await reader.read();
+          done = streamDone;
+          if (!value) continue;
+          lastChunkAt = Date.now();
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === "[DONE]") continue;
+
+            // Only the parse is tolerant — event handling must not be swallowed.
+            let evt: any;
+            try {
+              evt = JSON.parse(payload);
+            } catch (_e) {
+              continue; // partial / unparseable SSE payload
+            }
+
+            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+              result.text += evt.delta.text ?? "";
+            } else if (evt.type === "message_delta" && evt.delta?.stop_reason) {
+              result.stopReason = evt.delta.stop_reason;
+            } else if (evt.type === "message_start" && evt.message?.model) {
+              console.log(
+                `Claude stream started (model: ${evt.message.model}, input tokens: ${evt.message?.usage?.input_tokens ?? "?"})`
+              );
+            } else if (evt.type === "error") {
+              result.streamErrorType = evt.error?.type ?? "stream_error";
+              result.streamErrorMessage = evt.error?.message ?? "Claude stream error";
+              done = true;
+              break;
+            }
+          }
+        }
+      } catch (streamError) {
+        result.aborted = streamError instanceof DOMException && streamError.name === "AbortError";
+        result.transportError = streamError instanceof Error ? streamError.message : String(streamError);
+      }
+
+      return result;
+    };
+
+    const RETRYABLE = ["overloaded_error", "rate_limit_error", "api_error"];
+    let attempt = await runStreamedAttempt();
+
+    if (
+      !attempt.text &&
+      !attempt.aborted &&
+      attempt.streamErrorType &&
+      RETRYABLE.includes(attempt.streamErrorType)
+    ) {
+      await logMessage(
+        supabase,
+        report_run_id,
+        "warn",
+        `Claude stream returned ${attempt.streamErrorType}; retrying once in 5s...`
+      );
+      await new Promise((r) => setTimeout(r, 5000));
+      lastChunkAt = Date.now();
+      attempt = await runStreamedAttempt();
     }
 
-    if (!claudeResponse.ok) {
-      clearInterval(watchdog);
-      const errorText = await claudeResponse.text();
-      console.error(`Claude API error: ${claudeResponse.status} - ${errorText}`);
-      await markRunFailed(supabase, report_run_id, `Claude API error: ${claudeResponse.status}`);
-      await logMessage(supabase, report_run_id, "error", `Claude API error: ${claudeResponse.status} - ${errorText.substring(0, 500)}`);
+    clearInterval(watchdog);
+
+    if (attempt.httpStatus) {
+      console.error(`Claude API error: ${attempt.httpStatus} - ${attempt.httpBody}`);
+      await markRunFailed(supabase, report_run_id, `Claude API error: ${attempt.httpStatus}`);
+      await logMessage(
+        supabase,
+        report_run_id,
+        "error",
+        `Claude API error: ${attempt.httpStatus} - ${attempt.httpBody ?? ""}`
+      );
       return new Response(
         JSON.stringify({ error: "Claude API call failed" }),
         { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    let reportHtml = "";
-    try {
-      const reader = claudeResponse.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-      while (!done) {
-        const { value, done: streamDone } = await reader.read();
-        done = streamDone;
-        if (!value) continue;
-        lastChunkAt = Date.now();
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data:")) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === "[DONE]") continue;
-          try {
-            const evt = JSON.parse(payload);
-            if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
-              reportHtml += evt.delta.text ?? "";
-            } else if (evt.type === "error") {
-              throw new Error(evt.error?.message || "Claude stream error");
-            }
-          } catch (_e) {
-            // ignore partial/unparseable SSE payloads
-          }
-        }
+    if (!attempt.text) {
+      let reason: string;
+      let status = 502;
+      if (attempt.aborted) {
+        reason = `Claude stream stalled (no output for ${Math.round(MAX_IDLE_MS / 1000)}s)`;
+        status = 504;
+      } else if (attempt.streamErrorMessage) {
+        reason = `Claude stream error (${attempt.streamErrorType}): ${attempt.streamErrorMessage}`;
+      } else if (attempt.transportError) {
+        reason = `Claude stream failed: ${attempt.transportError}`;
+        status = 504;
+      } else if (attempt.stopReason) {
+        reason = `Claude produced no content (stop_reason: ${attempt.stopReason})`;
+      } else {
+        reason = "Claude stream closed with no content";
       }
-    } catch (streamError) {
-      clearInterval(watchdog);
-      const isTimeout = streamError instanceof DOMException && streamError.name === "AbortError";
-      const reason = isTimeout
-        ? `Claude stream stalled (no output for ${Math.round(MAX_IDLE_MS / 1000)}s)`
-        : `Claude stream failed: ${streamError instanceof Error ? streamError.message : String(streamError)}`;
-      return await failStreaming(reason, 504);
+      return await failStreaming(reason, status);
     }
-    clearInterval(watchdog);
 
-    if (!reportHtml) {
-      await markRunFailed(supabase, report_run_id, "Claude returned empty response");
-      return new Response(
-        JSON.stringify({ error: "Empty response from Claude" }),
-        { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    const reportHtml = attempt.text;
+
+    if (attempt.transportError || attempt.streamErrorMessage) {
+      await logMessage(
+        supabase,
+        report_run_id,
+        "warn",
+        `Claude stream ended early but partial content was captured: ${attempt.streamErrorMessage ?? attempt.transportError}`
       );
     }
+
+    await logMessage(
+      supabase,
+      report_run_id,
+      "info",
+      `Claude stream finished (${reportHtml.length} chars, stop_reason: ${attempt.stopReason ?? "unknown"})`
+    );
+
 
 
     await logMessage(supabase, report_run_id, "info", `Claude response received (${reportHtml.length} chars). Processing result...`);
