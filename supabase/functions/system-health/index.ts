@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getCallerUserId, isAdminUser, isInternalCaller } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -35,6 +36,20 @@ serve(async (req) => {
   }
 
   try {
+    // Only admins or trusted internal callers may see infrastructure details.
+    let privileged = isInternalCaller(req);
+    if (!privileged) {
+      const userId = await getCallerUserId(req);
+      privileged = Boolean(userId && (await isAdminUser(userId)));
+    }
+
+    if (!privileged) {
+      return new Response(
+        JSON.stringify({ status: "ok", timestamp: new Date().toISOString() }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     // Check secrets presence (without exposing values)
     const secretsStatus: Record<string, boolean> = {};
     for (const secret of REQUIRED_SECRETS) {
