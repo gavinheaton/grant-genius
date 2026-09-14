@@ -1,6 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isPublicHttpUrl } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -571,7 +572,7 @@ async function handleUpdateRun(supabase: any, params: Record<string, unknown>) {
         .eq("id", report_run_id)
         .single();
 
-      if (runData?.webhook_url) {
+      if (runData?.webhook_url && isPublicHttpUrl(runData.webhook_url)) {
         const haltMsg = (halt_reason as string) || "No halt reason provided";
         await fetch(runData.webhook_url, {
           method: "POST",
@@ -1067,7 +1068,7 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
     }
     // 4. Fire webhook callback if configured
     const webhookUrl = runForEmail?.webhook_url;
-    if (webhookUrl) {
+    if (webhookUrl && isPublicHttpUrl(webhookUrl)) {
       try {
         const contentObj = content_json as Record<string, unknown>;
         let reportHtml: string | null = null;
