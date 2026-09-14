@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { authorizeReportRun } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -23,6 +24,10 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    // 1b. Authorize: internal secret, owning user, or admin
+    const denied = await authorizeReportRun(req, report_run_id, corsHeaders);
+    if (denied) return denied;
 
     // 2. Fetch the secrets
     const workerUrl = Deno.env.get("CLOUD_RUN_URL");
