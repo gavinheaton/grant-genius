@@ -147,7 +147,7 @@ serve(async (req) => {
     }
 
     log("Sent", { recipient, isTest });
-    return jsonResponse({ success: true, sent: true });
+    return jsonResponse({ success: true, sent: true, recipient });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     log("ERROR", { message: msg });
