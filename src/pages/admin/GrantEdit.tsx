@@ -896,10 +896,11 @@ export default function GrantEdit() {
                         size="sm"
                         onClick={async () => {
                           if (!selectedVersionId) return;
-                          const { error } = await supabase
-                            .from("grant_versions")
-                            .update({ claude_prompt_template: null } as any)
-                            .eq("id", selectedVersionId);
+                          const { error } = await supabase.rpc("admin_set_claude_prompt_template" as any, {
+                            _version_id: selectedVersionId,
+                            _template: null,
+                          });
+
                           if (!error) {
                             setClaudePromptTemplate(DEFAULT_CLAUDE_PROMPT);
                             toast({ title: "Reset to default prompt" });
