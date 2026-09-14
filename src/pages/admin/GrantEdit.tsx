@@ -173,8 +173,9 @@ export default function GrantEdit() {
           setAiAnalysisStatus(newData.ai_analysis_status || "pending");
           setPipelineStatus(newData.pipeline_generation_status || "none");
           setPromptBundleId(newData.prompt_bundle_id || null);
-          setAiSuggestions(newData.ai_suggestions_json || null);
-          setGuidelinesRawText(newData.guidelines_raw_text || null);
+          if (newData.ai_suggestions_json !== undefined) setAiSuggestions(newData.ai_suggestions_json || null);
+          if (newData.guidelines_raw_text !== undefined) setGuidelinesRawText(newData.guidelines_raw_text || null);
+
           setGuidelinesPath(newData.guidelines_source_path || null);
           
           // Also update inputs/rubric if they changed
