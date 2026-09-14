@@ -43,9 +43,28 @@ serve(async (req) => {
     logStep("User authenticated", { userId: user.id, email: user.email });
 
     const { priceId, productKey, successUrl, cancelUrl } = await req.json();
-    if (!priceId) throw new Error("Price ID is required");
     const resolvedProductKey = productKey || "REPORT_ONE_OFF";
-    logStep("Request parsed", { priceId, productKey: resolvedProductKey });
+
+    // Never trust a client-supplied price: resolve it from the products table.
+    const serviceClient = createClient(
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+      { auth: { persistSession: false } }
+    );
+    const { data: product, error: productError } = await serviceClient
+      .from("products")
+      .select("product_key, stripe_price_id, price_cents, is_active")
+      .eq("product_key", resolvedProductKey)
+      .maybeSingle();
+
+    if (productError || !product || product.is_active === false || !product.stripe_price_id) {
+      throw new Error("Unknown or inactive product");
+    }
+    if (priceId && priceId !== product.stripe_price_id) {
+      logStep("Ignoring client-supplied priceId that does not match product", { productKey: resolvedProductKey });
+    }
+    const resolvedPriceId = product.stripe_price_id;
+    logStep("Request parsed", { priceId: resolvedPriceId, productKey: resolvedProductKey });
 
     // Allowlist of valid redirect origins for successUrl/cancelUrl
     const ALLOWED_ORIGINS = [
