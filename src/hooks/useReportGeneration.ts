@@ -544,10 +544,9 @@ export function useReportGeneration(
         console.log("Step 12 stuck, triggering final step recovery...");
         
         // Set status to pending so backend accepts the resume
-        const { error: updateError } = await supabase
-          .from("report_runs")
-          .update({ status: "pending" })
-          .eq("id", runId);
+        const { error: updateError } = await supabase.rpc("request_report_run_retry" as any, {
+          _run_id: runId,
+        });
 
         if (updateError) {
           throw updateError;
@@ -571,10 +570,9 @@ export function useReportGeneration(
       }
 
       // CASE 3: Steps 1-10 - normal resume from checkpoint
-      const { error: updateError } = await supabase
-        .from("report_runs")
-        .update({ status: "pending" })
-        .eq("id", runId);
+      const { error: updateError } = await supabase.rpc("request_report_run_retry" as any, {
+        _run_id: runId,
+      });
 
       if (updateError) {
         throw updateError;
@@ -753,10 +751,9 @@ export function useReportGeneration(
       setIsGenerating(true);
 
       // Reset status to pending
-      const { error: updateError } = await supabase
-        .from("report_runs")
-        .update({ status: "pending" })
-        .eq("id", runId);
+      const { error: updateError } = await supabase.rpc("request_report_run_retry" as any, {
+        _run_id: runId,
+      });
 
       if (updateError) {
         throw updateError;
