@@ -200,13 +200,18 @@ export function GuidelinesUploader({
         .from("grant_versions")
         .update({ 
           guidelines_source_path: null,
-          guidelines_raw_text: null,
           ai_analysis_status: "pending",
-          ai_suggestions_json: {},
           pipeline_generation_status: "none",
           prompt_bundle_id: null
         })
         .eq("id", versionId);
+
+      await supabase.rpc("admin_set_grant_version_guidelines" as any, {
+        _version_id: versionId,
+        _raw_text: null,
+        _ai_suggestions: {},
+      });
+
 
       setUploadedFile(null);
       toast({ title: "Guidelines removed" });
