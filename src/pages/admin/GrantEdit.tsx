@@ -927,10 +927,11 @@ export default function GrantEdit() {
                     onClick={async () => {
                       if (!selectedVersionId) return;
                       const valueToSave = claudePromptTemplate === DEFAULT_CLAUDE_PROMPT ? null : (claudePromptTemplate || null);
-                      const { error } = await supabase
-                        .from("grant_versions")
-                        .update({ claude_prompt_template: valueToSave } as any)
-                        .eq("id", selectedVersionId);
+                      const { error } = await supabase.rpc("admin_set_claude_prompt_template" as any, {
+                        _version_id: selectedVersionId,
+                        _template: valueToSave,
+                      });
+
                       if (error) {
                         toast({ title: "Error saving prompt", variant: "destructive" });
                       } else {
