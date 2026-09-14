@@ -413,7 +413,9 @@ export default function GrantEdit() {
           required_inputs_json: latestVersion?.required_inputs_json || [],
           rubric_json: latestVersion?.rubric_json || {},
         })
-        .select()
+        .select(
+          "id, grant_id, version_number, guidelines_json, rubric_json, required_inputs_json, is_published, published_at, created_at, guidelines_source_path, ai_analysis_status, execution_engine_default, edge_allowed, prompt_bundle_id, pipeline_generation_status"
+        )
         .single();
 
       if (error) throw error;
