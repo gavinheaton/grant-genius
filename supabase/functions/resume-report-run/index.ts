@@ -436,10 +436,36 @@ serve(async (req) => {
         );
       }
 
-      const startedAt = reportRun.started_at ? new Date(reportRun.started_at).getTime() : 0;
+      // Activity is judged by the chunked worker's own heartbeat, not by when the
+      // run was created: a healthy staggered Claude run can legitimately span
+      // ~20 minutes across chunks, and a freshly dispatched run has no step yet.
+      const { data: claudeStep } = await supabaseAdmin
+        .from("report_run_steps")
+        .select("status, started_at, outputs_json, created_at")
+        .eq("report_run_id", reportRunId)
+        .eq("step_number", 0)
+        .maybeSingle();
+
+      const heartbeatAt =
+        (claudeStep?.outputs_json as Record<string, unknown> | null)?.heartbeat_at as string | undefined;
+
+      const activityTimestamps = [
+        heartbeatAt,
+        claudeStep?.started_at,
+        claudeStep?.created_at,
+        reportRun.started_at,
+      ]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map((value) => new Date(value).getTime())
+        .filter((value) => Number.isFinite(value));
+
+      const lastActivityAt = activityTimestamps.length > 0 ? Math.max(...activityTimestamps) : 0;
+      const STALL_THRESHOLD_MS = 5 * 60 * 1000;
+
       const isRecentlyActive =
         (reportRun.status === "pending" || reportRun.status === "running") &&
-        Date.now() - startedAt < 15 * 60 * 1000;
+        (claudeStep?.status !== "failed") &&
+        Date.now() - lastActivityAt < STALL_THRESHOLD_MS;
 
       if (isRecentlyActive) {
         return new Response(
