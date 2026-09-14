@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isPublicHttpUrl } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -69,6 +70,14 @@ serve(async (req) => {
       title,
       engine,
     } = body;
+
+    if (webhook_url && !isPublicHttpUrl(String(webhook_url))) {
+      responseStatus = 400;
+      return new Response(
+        JSON.stringify({ error: "webhook_url must be a public http(s) URL" }),
+        { status: responseStatus, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     if (!summary) {
       responseStatus = 400;

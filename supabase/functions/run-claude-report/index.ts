@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { authorizeReportRun, internalHeaders } from "../_shared/authz.ts";
+import { authorizeReportRun, internalHeaders, isPublicHttpUrl } from "../_shared/authz.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -698,7 +698,7 @@ serve(async (req) => {
     }
 
     // Fire webhook if configured
-    if (run.webhook_url) {
+    if (run.webhook_url && isPublicHttpUrl(run.webhook_url)) {
       try {
         await fetch(run.webhook_url, {
           method: "POST",
@@ -762,7 +762,7 @@ async function markRunFailed(supabase: any, runId: string, reason: string) {
       .eq("id", run.application_id);
   }
 
-  if (run?.webhook_url) {
+  if (run?.webhook_url && isPublicHttpUrl(run.webhook_url)) {
     try {
       await fetch(run.webhook_url, {
         method: "POST",

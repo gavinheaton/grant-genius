@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isPublicHttpUrl } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -155,7 +156,7 @@ serve(async (req) => {
     }
 
     // 10. Fire failure webhook if configured
-    if (reportRun.webhook_url) {
+    if (reportRun.webhook_url && isPublicHttpUrl(reportRun.webhook_url)) {
       try {
         await fetch(reportRun.webhook_url, {
           method: "POST",
