@@ -74,15 +74,6 @@ serve(async (req) => {
       });
 
       const userId = session.metadata?.user_id;
-      const productKey = session.metadata?.product_key || "REPORT_ONE_OFF";
-
-      // Determine credit quantity based on product
-      const PRODUCT_QUANTITIES: Record<string, number> = {
-        "REPORT_ONE_OFF": 1,
-        "REPORT_BUNDLE_10": 10,
-      };
-      const creditQuantity = PRODUCT_QUANTITIES[productKey] || 1;
-      logStep("Credit quantity determined", { productKey, creditQuantity });
 
       if (!userId) {
         logStep("No user_id in metadata, attempting to find by email");
@@ -95,18 +86,40 @@ serve(async (req) => {
         { auth: { persistSession: false } }
       );
 
-      // Get the product
-      const { data: product, error: productError } = await supabaseAdmin
+      // Derive the product from what was actually purchased, not client metadata.
+      const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 });
+      const paidPriceId = lineItems.data[0]?.price?.id ?? null;
+
+      let productQuery = supabaseAdmin
         .from("products")
-        .select("id, price_cents")
-        .eq("product_key", productKey)
-        .single();
+        .select("id, product_key, price_cents, stripe_price_id");
+      productQuery = paidPriceId
+        ? productQuery.eq("stripe_price_id", paidPriceId)
+        : productQuery.eq("product_key", session.metadata?.product_key || "REPORT_ONE_OFF");
+
+      const { data: product, error: productError } = await productQuery.maybeSingle();
 
       if (productError || !product) {
-        logStep("Product not found", { productKey, error: productError?.message });
-        throw new Error(`Product not found: ${productKey}`);
+        logStep("Product not found", { paidPriceId, error: productError?.message });
+        throw new Error(`Product not found for price: ${paidPriceId}`);
       }
-      logStep("Product found", { productId: product.id });
+      const productKey = product.product_key;
+      logStep("Product found", { productId: product.id, productKey });
+
+      // Verify the amount actually paid covers the product price.
+      const amountPaid = session.amount_total ?? 0;
+      if (session.payment_status === "paid" && amountPaid < (product.price_cents ?? 0)) {
+        logStep("Amount paid below product price — refusing to credit", { amountPaid, expected: product.price_cents });
+        throw new Error("Payment amount does not match product price");
+      }
+
+      // Determine credit quantity based on the verified product
+      const PRODUCT_QUANTITIES: Record<string, number> = {
+        "REPORT_ONE_OFF": 1,
+        "REPORT_BUNDLE_10": 10,
+      };
+      const creditQuantity = PRODUCT_QUANTITIES[productKey] || 1;
+      logStep("Credit quantity determined", { productKey, creditQuantity });
 
       // Find or create order
       let orderId: string;
