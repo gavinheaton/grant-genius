@@ -95,17 +95,34 @@ function parseTable(lines: string[], startIdx: number): { table: ParsedTable | n
 }
 
 /**
+ * Escape raw HTML so cell content can never inject markup
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
  * Format inline markdown (bold, italic, links) in cell content
  */
 function formatInlineMarkdown(content: string): string {
-  return content
+  return escapeHtml(content)
     // Bold
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     // Italic
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    // Links
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-primary hover:underline">$1</a>');
+    // Links (only safe http/https/mailto targets)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text: string, href: string) =>
+      /^(https?:|mailto:)/i.test(href.trim())
+        ? `<a href="${href.trim()}" class="text-primary hover:underline">${text}</a>`
+        : text
+    );
 }
+
 
 /**
  * Convert parsed table to HTML for in-app viewing (with Tailwind classes)
