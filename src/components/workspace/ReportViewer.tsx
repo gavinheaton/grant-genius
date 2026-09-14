@@ -21,6 +21,8 @@ import { Copy, Check, TrendingUp, Users, Building2, Globe, DollarSign, Handshake
 import { format } from "date-fns";
 import { type Report } from "@/hooks/useReportGeneration";
 import { parseMarkdownTables, parseMarkdownSections, extractNestedReportMarkdown } from "@/lib/markdownUtils";
+import { sanitizeHtml } from "@/lib/htmlReportUtils";
+
 
 // Types for the new unified assembledReport structure
 interface AssembledReport {
@@ -109,13 +111,14 @@ interface ReportViewerProps {
 
 // Helper component for rendering text content with markdown table support
 function TextContent({ content, className = "" }: { content: string; className?: string }) {
-  const parsedContent = parseMarkdownTables(content);
+  const parsedContent = sanitizeHtml(parseMarkdownTables(content));
   const hasTable = parsedContent.includes('<table');
   
   if (hasTable) {
     return (
       <div className={`prose prose-sm max-w-none text-muted-foreground bg-muted/30 rounded-lg p-4 ${className}`}>
         <div dangerouslySetInnerHTML={{ __html: parsedContent }} />
+
       </div>
     );
   }
