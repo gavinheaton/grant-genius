@@ -1051,6 +1051,7 @@ async function handleSaveReport(supabase: any, params: Record<string, unknown>) 
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({
             reportRunId: report_run_id,

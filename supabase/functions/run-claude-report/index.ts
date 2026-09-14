@@ -544,6 +544,7 @@ serve(async (req) => {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({ report_run_id, chunk_index: chunkIndex + 1 }),
         }).catch(async (err) => {
@@ -660,6 +661,7 @@ serve(async (req) => {
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
         },
         body: JSON.stringify({
           report_html: reportHtml,
@@ -681,6 +683,7 @@ serve(async (req) => {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({
             reportRunId: report_run_id,

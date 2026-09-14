@@ -220,6 +220,9 @@ serve(async (req) => {
       );
     }
 
+    const denied = await authorizeReportRun(req, reportRunId, corsHeaders);
+    if (denied) return denied;
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""

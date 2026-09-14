@@ -20,6 +20,7 @@ function dispatchClaudeReport(reportRunId: string): void {
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
     },
     body: JSON.stringify({ report_run_id: reportRunId }),
   }).then(async (response) => {
@@ -666,6 +667,7 @@ serve(async (req) => {
             headers: {
               "Content-Type": "application/json",
               "Authorization": `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
             },
             body: JSON.stringify({ report_run_id: reportRun.id }),
           }
