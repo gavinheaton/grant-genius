@@ -94,6 +94,7 @@ serve(async (req) => {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({
             reportRunId: report.report_run_id,

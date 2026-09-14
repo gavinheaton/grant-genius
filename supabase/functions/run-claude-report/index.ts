@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { authorizeReportRun, internalHeaders } from "../_shared/authz.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -131,6 +132,9 @@ serve(async (req) => {
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    const denied = await authorizeReportRun(req, report_run_id, corsHeaders);
+    if (denied) return denied;
 
     if (!anthropicApiKey) {
       await markRunFailed(supabase, report_run_id, "ANTHROPIC_API_KEY not configured");
@@ -540,6 +544,7 @@ serve(async (req) => {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({ report_run_id, chunk_index: chunkIndex + 1 }),
         }).catch(async (err) => {
@@ -656,6 +661,7 @@ serve(async (req) => {
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
         },
         body: JSON.stringify({
           report_html: reportHtml,
@@ -677,6 +683,7 @@ serve(async (req) => {
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${serviceRoleKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
           },
           body: JSON.stringify({
             reportRunId: report_run_id,

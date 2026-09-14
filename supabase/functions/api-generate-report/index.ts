@@ -223,6 +223,7 @@ serve(async (req) => {
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${anonKey}`,
+            "x-internal-secret": Deno.env.get("WORKER_SECRET") ?? "",
       },
       body: JSON.stringify(triggerPayload),
     });

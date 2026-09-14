@@ -110,14 +110,12 @@ export default function GrantEdit() {
             required_inputs_json,
             rubric_json,
             guidelines_source_path,
-            guidelines_raw_text,
             ai_analysis_status,
-            ai_suggestions_json,
             execution_engine_default,
             edge_allowed,
             pipeline_generation_status,
-            prompt_bundle_id,
-            claude_prompt_template
+            prompt_bundle_id
+
           )
         `)
         .eq("id", id)
@@ -175,8 +173,9 @@ export default function GrantEdit() {
           setAiAnalysisStatus(newData.ai_analysis_status || "pending");
           setPipelineStatus(newData.pipeline_generation_status || "none");
           setPromptBundleId(newData.prompt_bundle_id || null);
-          setAiSuggestions(newData.ai_suggestions_json || null);
-          setGuidelinesRawText(newData.guidelines_raw_text || null);
+          if (newData.ai_suggestions_json !== undefined) setAiSuggestions(newData.ai_suggestions_json || null);
+          if (newData.guidelines_raw_text !== undefined) setGuidelinesRawText(newData.guidelines_raw_text || null);
+
           setGuidelinesPath(newData.guidelines_source_path || null);
           
           // Also update inputs/rubric if they changed
@@ -198,6 +197,25 @@ export default function GrantEdit() {
     };
   }, [selectedVersionId, id, queryClient]);
 
+  // Load admin-only sensitive fields (prompt template, raw guidelines, AI suggestions)
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedVersionId) return;
+    (async () => {
+      const { data, error } = await supabase.rpc("admin_get_grant_version_sensitive" as any, {
+        _version_id: selectedVersionId,
+      });
+      if (cancelled || error) return;
+      const s = (data || {}) as any;
+      setAiSuggestions(s.ai_suggestions_json || null);
+      setGuidelinesRawText(s.guidelines_raw_text || null);
+      setClaudePromptTemplate(s.claude_prompt_template || DEFAULT_CLAUDE_PROMPT);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedVersionId, grant]);
+
   // Sync local state when grant data changes or version is selected
   useEffect(() => {
     if (grant && selectedVersionId) {
@@ -206,7 +224,6 @@ export default function GrantEdit() {
         setAiAnalysisStatus(version.ai_analysis_status || "pending");
         setPipelineStatus(version.pipeline_generation_status || "none");
         setPromptBundleId(version.prompt_bundle_id || null);
-        setAiSuggestions(version.ai_suggestions_json || null);
         setVersionInputs(JSON.stringify(version.required_inputs_json || [], null, 2));
         setVersionRubric(JSON.stringify(version.rubric_json || {}, null, 2));
       }
@@ -219,14 +236,11 @@ export default function GrantEdit() {
     setVersionRubric(JSON.stringify(version.rubric_json || {}, null, 2));
     setVersionGuidelines(JSON.stringify(version.guidelines_json || {}, null, 2));
     setGuidelinesPath(version.guidelines_source_path || null);
-    setGuidelinesRawText(version.guidelines_raw_text || null);
     setAiAnalysisStatus(version.ai_analysis_status || "pending");
     setPipelineStatus(version.pipeline_generation_status || "none");
     setPromptBundleId(version.prompt_bundle_id || null);
-    setAiSuggestions(version.ai_suggestions_json || null);
     setExecutionEngineDefault(version.execution_engine_default || "cloud_run");
     setEdgeAllowed(version.edge_allowed || false);
-    setClaudePromptTemplate(version.claude_prompt_template || DEFAULT_CLAUDE_PROMPT);
   };
 
   const handleRetryProcessing = async () => {
@@ -244,9 +258,15 @@ export default function GrantEdit() {
           ai_analysis_status: "pending",
           pipeline_generation_status: "none",
           prompt_bundle_id: null,
-          ai_suggestions_json: {},
         })
         .eq("id", selectedVersionId);
+
+      await supabase.rpc("admin_set_grant_version_guidelines" as any, {
+        _version_id: selectedVersionId,
+        _raw_text: guidelinesRawText,
+        _ai_suggestions: {},
+      });
+
 
       if (resetError) throw new Error("Failed to reset grant version: " + resetError.message);
 
@@ -877,10 +897,11 @@ export default function GrantEdit() {
                         size="sm"
                         onClick={async () => {
                           if (!selectedVersionId) return;
-                          const { error } = await supabase
-                            .from("grant_versions")
-                            .update({ claude_prompt_template: null } as any)
-                            .eq("id", selectedVersionId);
+                          const { error } = await supabase.rpc("admin_set_claude_prompt_template" as any, {
+                            _version_id: selectedVersionId,
+                            _template: null,
+                          });
+
                           if (!error) {
                             setClaudePromptTemplate(DEFAULT_CLAUDE_PROMPT);
                             toast({ title: "Reset to default prompt" });
@@ -907,10 +928,11 @@ export default function GrantEdit() {
                     onClick={async () => {
                       if (!selectedVersionId) return;
                       const valueToSave = claudePromptTemplate === DEFAULT_CLAUDE_PROMPT ? null : (claudePromptTemplate || null);
-                      const { error } = await supabase
-                        .from("grant_versions")
-                        .update({ claude_prompt_template: valueToSave } as any)
-                        .eq("id", selectedVersionId);
+                      const { error } = await supabase.rpc("admin_set_claude_prompt_template" as any, {
+                        _version_id: selectedVersionId,
+                        _template: valueToSave,
+                      });
+
                       if (error) {
                         toast({ title: "Error saving prompt", variant: "destructive" });
                       } else {

@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { authorizeReportRun, isPublicHttpUrl } from "../_shared/authz.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -59,6 +60,9 @@ function extractUrls(html: string): { url: string; surroundingText: string }[] {
 
 /** Quick HEAD check to see if URL is reachable at all */
 async function checkUrlReachable(url: string): Promise<{ reachable: boolean; statusCode?: number }> {
+  if (!isPublicHttpUrl(url)) {
+    return { reachable: false };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HEAD_TIMEOUT_MS);
   try {
@@ -266,6 +270,11 @@ serve(async (req) => {
 
   try {
     const { report_html, report_run_id, report_id } = await req.json();
+
+    if (report_run_id) {
+      const denied = await authorizeReportRun(req, report_run_id, corsHeaders);
+      if (denied) return denied;
+    }
 
     if (!report_html || !report_run_id) {
       return new Response(
