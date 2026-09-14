@@ -110,14 +110,12 @@ export default function GrantEdit() {
             required_inputs_json,
             rubric_json,
             guidelines_source_path,
-            guidelines_raw_text,
             ai_analysis_status,
-            ai_suggestions_json,
             execution_engine_default,
             edge_allowed,
             pipeline_generation_status,
-            prompt_bundle_id,
-            claude_prompt_template
+            prompt_bundle_id
+
           )
         `)
         .eq("id", id)
