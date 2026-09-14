@@ -1544,6 +1544,18 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      admin_get_grant_version_sensitive: {
+        Args: { _version_id: string }
+        Returns: Json
+      }
+      admin_set_claude_prompt_template: {
+        Args: { _template: string; _version_id: string }
+        Returns: undefined
+      }
+      admin_set_grant_version_guidelines: {
+        Args: { _ai_suggestions: Json; _raw_text: string; _version_id: string }
+        Returns: undefined
+      }
       decrement_entitlement: { Args: { ent_id: string }; Returns: undefined }
       execute_readonly_query: { Args: { query_text: string }; Returns: Json }
       get_report_trend_7_days: {
