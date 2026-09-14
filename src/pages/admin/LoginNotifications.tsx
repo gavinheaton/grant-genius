@@ -33,19 +33,24 @@ export default function LoginNotifications() {
     })();
   }, []);
 
-  const save = async () => {
-    if (!rowId) return;
-    setSaving(true);
-    const { error } = await supabase
+  const persistSettings = async () => {
+    if (!rowId) return null;
+    return await supabase
       .from("api_settings")
       .update({
         login_notifications_enabled: enabled,
         login_notifications_recipient: recipient.trim(),
       })
       .eq("id", rowId);
+  };
+
+  const save = async () => {
+    if (!rowId) return;
+    setSaving(true);
+    const result = await persistSettings();
     setSaving(false);
-    if (error) {
-      toast({ title: "Save failed", description: error.message, variant: "destructive" });
+    if (result?.error) {
+      toast({ title: "Save failed", description: result.error.message, variant: "destructive" });
     } else {
       toast({ title: "Settings saved" });
     }
@@ -53,6 +58,19 @@ export default function LoginNotifications() {
 
   const sendTest = async () => {
     setTesting(true);
+
+    // Save first so the test always goes to the address shown on screen.
+    const saveResult = await persistSettings();
+    if (saveResult?.error) {
+      setTesting(false);
+      toast({
+        title: "Test failed",
+        description: `Could not save the recipient first: ${saveResult.error.message}`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     const { data, error } = await supabase.functions.invoke("notify-user-login", {
       body: { test: true },
     });
@@ -64,7 +82,8 @@ export default function LoginNotifications() {
         variant: "destructive",
       });
     } else {
-      toast({ title: "Test email sent", description: `Delivered to ${recipient}` });
+      const deliveredTo = (data as { recipient?: string })?.recipient || recipient.trim();
+      toast({ title: "Test email sent", description: `Delivered to ${deliveredTo}` });
     }
   };
 
