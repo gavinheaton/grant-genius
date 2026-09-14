@@ -1576,6 +1576,10 @@ export type Database = {
       }
       is_admin: { Args: { _user_id: string }; Returns: boolean }
       reorder_step_numbers: { Args: { step_updates: Json }; Returns: undefined }
+      request_report_run_retry: {
+        Args: { _run_id: string }
+        Returns: undefined
+      }
       swap_step_numbers: {
         Args: { step_id_a: string; step_id_b: string }
         Returns: undefined
