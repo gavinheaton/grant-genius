@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { getCallerUserId, isAdminUser, isInternalCaller } from "../_shared/authz.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
